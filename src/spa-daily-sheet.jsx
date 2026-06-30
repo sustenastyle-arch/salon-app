@@ -68,6 +68,9 @@ const isCavCapable = (name) => CAV_CAPABLE.includes(name);
 const isDualLicense = (name) => DUAL_LICENSE.includes(name);
 const isBodyOnly = (name) => BODY_CAPABLE.includes(name) && !DUAL_LICENSE.includes(name) && name !== "Yuka";
 
+const WL_CAV_FIXED = 116;
+const isWLService = (name) => (name || '').toLowerCase().includes('weight loss');
+
 const EMPTY_APPOINTMENT = {
   id: null,
   clientName: "",
@@ -160,7 +163,6 @@ const EMPTY_TICKET_PURCHASE = { id: Date.now(), clientName: "", packageName: "",
 const EMPTY_STAFF_PURCHASE = { id: Date.now(), staffName: "", productName: "", amount: 0, paymentType: "cash", notes: "" };
 
 const PURCHASE_TAGS = [
-  { id: "newTicket", label: "🎟️ チケット新規購入", color: "#B71C1C", bg: "#FFEBEE" },
   { id: "ticketEnd",  label: "🏁 チケット最終回",   color: "#5D4037", bg: "#EFEBE9" },
   { id: "giftCard",  label: "🎁 ギフトカード購入",  color: "#00796B", bg: "#E0F2F1" },
   { id: "retail",    label: "🛍️ 物販購入",         color: "#6A1B9A", bg: "#F3E5F5" },
@@ -1542,6 +1544,36 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
               </div>
             )}
 
+            {/* Same-day purchase payment — shown first so user enters package price before selecting course details */}
+            {form.isSameDayTicket && (
+              <div style={{ marginBottom: 10, background: "#E8F5E9", borderRadius: 8, padding: 10, border: "1px solid #A5D6A7" }}>
+                <div style={{ fontWeight: 700, fontSize: 12, color: "#2E7D32", marginBottom: 8 }}>
+                  💰 当日購入 — パッケージ代金（売上計上）
+                  {form.useToday === false && <span style={{ color: "#888", fontWeight: 400 }}>（次回から使用）</span>}
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                  <Field label="パッケージ代金 ($)">
+                    <input type="number" value={form.packagePrice || ""} onChange={e => set("packagePrice", e.target.value)} style={inputStyle} placeholder="例: 432" />
+                  </Field>
+                  <Field label={form.useToday === false ? "チップ ($)" : "当日チップ ($)"}>
+                    <input type="number" value={form.packageTip ?? ""} onChange={e => set("packageTip", Number(e.target.value))} style={inputStyle} placeholder="例: 91" />
+                  </Field>
+                </div>
+                <div style={{ marginTop: 8 }}>
+                  <Field label="支払方法（施術代金）"><PaymentToggle value={form.paymentType} onChange={v => set("paymentType", v)} /></Field>
+                </div>
+                <div style={{ marginTop: 8 }}>
+                  <Field label="チップ支払方法"><PaymentToggle value={form.tipPaymentType||"cash"} onChange={v => set("tipPaymentType", v)} /></Field>
+                </div>
+                {form.useToday !== false && (form.price > 0 || form.cavPrice > 0) && (
+                  <div style={{ marginTop: 6, fontSize: 11, color: "#555", background: "#fff", borderRadius: 6, padding: 6 }}>
+                    スタッフ振り分け（1回目）：{form.therapist} 施術${form.price||0} / チップ${form.tip||0}
+                    {form.cavPrice > 0 ? ` ＋ ${form.cavTherapist} 施術$${form.cavPrice} / チップ$${form.cavTip||0}` : ""}
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* Treatment menu selector */}
             <Field label="施術メニュー">
               <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 4 }}>
@@ -1710,35 +1742,6 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
               );
             })()}
 
-            {/* Same-day purchase payment */}
-            {form.isSameDayTicket && (
-              <div style={{ marginTop: 10, background: "#E8F5E9", borderRadius: 8, padding: 10, border: "1px solid #A5D6A7" }}>
-                <div style={{ fontWeight: 700, fontSize: 12, color: "#2E7D32", marginBottom: 8 }}>
-                  💰 当日購入 — パッケージ代金（売上計上）
-                  {form.useToday === false && <span style={{ color: "#888", fontWeight: 400 }}>（次回から使用）</span>}
-                </div>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-                  <Field label="パッケージ代金 ($)">
-                    <input type="number" value={form.packagePrice || ""} onChange={e => set("packagePrice", e.target.value)} style={inputStyle} placeholder="例: 432" />
-                  </Field>
-                  <Field label={form.useToday === false ? "チップ ($)" : "当日チップ ($)"}>
-                    <input type="number" value={form.packageTip ?? ""} onChange={e => set("packageTip", Number(e.target.value))} style={inputStyle} placeholder="例: 91" />
-                  </Field>
-                </div>
-                <div style={{ marginTop: 8 }}>
-                  <Field label="支払方法（施術代金）"><PaymentToggle value={form.paymentType} onChange={v => set("paymentType", v)} /></Field>
-                </div>
-                <div style={{ marginTop: 8 }}>
-                  <Field label="チップ支払方法"><PaymentToggle value={form.tipPaymentType||"cash"} onChange={v => set("tipPaymentType", v)} /></Field>
-                </div>
-                {form.useToday !== false && (form.price > 0 || form.cavPrice > 0) && (
-                  <div style={{ marginTop: 6, fontSize: 11, color: "#555", background: "#fff", borderRadius: 6, padding: 6 }}>
-                    スタッフ振り分け（1回目）：{form.therapist} 施術${form.price||0} / チップ${form.tip||0}
-                    {form.cavPrice > 0 ? ` ＋ ${form.cavTherapist} 施術$${form.cavPrice} / チップ$${form.cavTip||0}` : ""}
-                  </div>
-                )}
-              </div>
-            )}
           </div>
         )}
 
@@ -1804,8 +1807,89 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                 </Field>
               </div>
 
-              {/* Minutes split — only shown when cav therapist selected */}
-              {form.cavTherapist && (
+              {/* WL Tip Calculator — $116 fixed cav split */}
+              {isWLService(form.serviceName) && (
+                <div style={{ marginTop: 10, background: "#E8F0FE", borderRadius: 8, padding: 10, border: "2px dashed #3F51B5" }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: "#3F51B5", marginBottom: 8 }}>
+                    ⚖️ ウェイトロス振り分け計算（キャビ${WL_CAV_FIXED}固定）
+                  </div>
+                  {(() => {
+                    const dep = Number(form.depositApplied || 0);
+                    const totalCash = Number(form.totalServiceInput ?? (Number(form.price || 0) + Number(form.cavPrice || 0)));
+                    const totalSvc = totalCash + dep;
+                    const totalTipAmt = Number(form.totalTipInput ?? (Number(form.tip || 0) + Number(form.cavTip || 0)));
+                    const cavSvc = totalSvc > 0 ? Math.min(WL_CAV_FIXED, totalSvc) : 0;
+                    const bodySvc = Math.max(0, totalSvc - cavSvc);
+                    const tipRate = totalSvc > 0 ? totalTipAmt / totalSvc : 0;
+                    const cavTipCalc = Math.round(cavSvc * tipRate * 10) / 10;
+                    const bodyTipCalc = Math.round(bodySvc * tipRate * 10) / 10;
+                    const tipPct = Math.round(tipRate * 1000) / 10;
+                    const hasSplit = !!form.cavTherapist;
+                    const cavCash = totalSvc > 0 ? Math.round(totalCash * cavSvc / totalSvc * 10) / 10 : 0;
+                    const bodyCash = totalSvc > 0 ? Math.round(totalCash * bodySvc / totalSvc * 10) / 10 : 0;
+                    return (
+                      <>
+                        {totalSvc > 0 && totalTipAmt > 0 && (
+                          <div style={{ fontSize: 11, color: "#3F51B5", marginBottom: 8, fontWeight: 600 }}>
+                            チップ率 <strong>{tipPct}%</strong>　（チップ${totalTipAmt} ÷ 施術${totalSvc}{dep > 0 ? `（デポ$${dep}含む）` : ''}）
+                          </div>
+                        )}
+                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, fontSize: 12 }}>
+                          <div style={{ background: "#F3E5F5", borderRadius: 8, padding: "8px 10px" }}>
+                            <div style={{ fontWeight: 700, color: "#6A1B9A", fontSize: 11, marginBottom: 4 }}>
+                              ⚡ キャビ（40min）{hasSplit && form.cavTherapist ? <span style={{ color: "#888", fontWeight: 400 }}> → {form.cavTherapist}</span> : form.therapist ? <span style={{ color: "#888", fontWeight: 400 }}> → {form.therapist}</span> : ""}
+                            </div>
+                            {dep > 0
+                              ? <div><span style={{ background: "#6A1B9A", color: "#fff", borderRadius: 4, padding: "2px 8px", fontWeight: 800 }}>payroll ${cavSvc}</span></div>
+                              : <div>施術 <strong style={{ color: "#6A1B9A" }}>${cavSvc}</strong></div>
+                            }
+                            {totalTipAmt > 0 && <div style={{ marginTop: 4 }}>チップ <strong style={{ color: "#6A1B9A" }}>${cavTipCalc}</strong></div>}
+                          </div>
+                          <div style={{ background: "#E8F5E9", borderRadius: 8, padding: "8px 10px" }}>
+                            <div style={{ fontWeight: 700, color: "#2E7D32", fontSize: 11, marginBottom: 4 }}>
+                              💚 ボディ（残り）{form.therapist ? <span style={{ color: "#888", fontWeight: 400 }}> → {form.therapist}</span> : ""}
+                            </div>
+                            {dep > 0
+                              ? <div><span style={{ background: "#C62828", color: "#fff", borderRadius: 4, padding: "2px 8px", fontWeight: 800 }}>payroll ${bodySvc}</span></div>
+                              : <div>施術 <strong style={{ color: "#2E7D32" }}>${bodySvc}</strong></div>
+                            }
+                            {totalTipAmt > 0 && <div style={{ marginTop: 4 }}>チップ <strong style={{ color: "#2E7D32" }}>${bodyTipCalc}</strong></div>}
+                          </div>
+                        </div>
+                        {dep > 0 && totalSvc > 0 && (
+                          <div style={{ marginTop: 6, fontSize: 11, color: "#888", borderTop: "1px solid #C5CAE9", paddingTop: 6 }}>
+                            受取 ${totalCash} ＋ デポジット ${dep} ＝ 施術合計 <strong style={{ color: "#3F51B5" }}>${totalSvc}</strong>
+                          </div>
+                        )}
+                        {totalSvc > 0 && hasSplit && (
+                          <button
+                            onClick={() => setForm(f => ({
+                              ...f,
+                              price: dep > 0 ? bodyCash : bodySvc,
+                              cavPrice: dep > 0 ? cavCash : cavSvc,
+                              tip: bodyTipCalc,
+                              cavTip: cavTipCalc,
+                              totalServiceInput: totalCash,
+                              totalTipInput: totalTipAmt,
+                            }))}
+                            style={{ marginTop: 10, width: "100%", padding: "9px", borderRadius: 8, border: "none", background: "#3F51B5", color: "#fff", fontWeight: 700, cursor: "pointer", fontSize: 12 }}
+                          >
+                            ✅ {form.cavTherapist}（キャビ）＋ {form.therapist}（ボディ）に設定する
+                          </button>
+                        )}
+                        {totalSvc > 0 && !hasSplit && isDualLicense(form.therapist) && (
+                          <div style={{ marginTop: 8, fontSize: 11, color: "#3F51B5" }}>
+                            ※ {form.therapist}はデュアルライセンス → 全額{form.therapist}に計上（内訳参照用）
+                          </div>
+                        )}
+                      </>
+                    );
+                  })()}
+                </div>
+              )}
+
+              {/* Minutes split — only shown when cav therapist selected, not for WL (uses fixed $116 split instead) */}
+              {form.cavTherapist && !isWLService(form.serviceName) && (
                 <div style={{ marginTop: 10, background: "#EEF4FF", borderRadius: 8, padding: 10 }}>
                   <div style={{ fontSize: 12, fontWeight: 700, color: "#1565C0", marginBottom: 8 }}>⏱️ 担当分数を入力 → 自動振り分け</div>
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
@@ -2060,40 +2144,6 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                   </button>
                 ))}
               </div>
-
-              {/* 🎟️ チケット新規購入 fields */}
-              {hasTag("newTicket") && (
-                <div style={{ background: "#FFEBEE", padding: "10px 12px", borderTop: "1px solid #FFCDD2", display: "flex", flexDirection: "column", gap: 8 }}>
-                  <div style={{ fontSize: 11, fontWeight: 700, color: "#B71C1C" }}>🎟️ チケット新規購入 — 詳細</div>
-                  <div style={{ display: "flex", gap: 8 }}>
-                    <div style={{ flex: 1 }}>
-                      <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>施術料 ($)</div>
-                      <input type="number" value={form.newTicketAmount || ""} onChange={e => set("newTicketAmount", e.target.value)}
-                        style={{ ...inputStyle, borderColor: "#EF9A9A" }} placeholder="例：719" />
-                    </div>
-                    <div style={{ flex: 1 }}>
-                      <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>チップ ($)</div>
-                      <input type="number" value={form.newTicketTip || ""} onChange={e => set("newTicketTip", e.target.value)}
-                        style={{ ...inputStyle, borderColor: "#EF9A9A" }} placeholder="例：46" />
-                    </div>
-                  </div>
-                  <div>
-                    <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>施術料の支払方法</div>
-                    {payBtns("newTicketPaymentType", true, "#B71C1C")}
-                  </div>
-                  {Number(form.newTicketTip) > 0 && (
-                    <div>
-                      <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>チップの支払方法</div>
-                      {payBtns("newTicketTipPaymentType", true, "#E65100")}
-                    </div>
-                  )}
-                  {(Number(form.newTicketAmount) > 0 || Number(form.newTicketTip) > 0) && (
-                    <div style={{ textAlign: "right", fontSize: 12, fontWeight: 700, color: "#B71C1C" }}>
-                      合計 ${(Number(form.newTicketAmount||0) + Number(form.newTicketTip||0)).toFixed(0)}
-                    </div>
-                  )}
-                </div>
-              )}
 
               {/* 🛍️ 物販購入 fields */}
               {hasTag("retail") && (
