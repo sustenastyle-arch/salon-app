@@ -3,7 +3,38 @@ import * as XLSX from "xlsx";
 
 const THERAPISTS = ["Mami", "Aya", "Megumi", "Hitomi", "Maki", "Yuka", "Mai", "Betsy"];
 const CUSTOMER_TYPES = ["RL", "RT", "NL", "NT"];
+const REFERRAL_SOURCES = ["Google / Website", "Google Map", "Instagram", "Yelp", "紹介"];
 const HOURS = Array.from({ length: 11 }, (_, i) => i + 9);
+// Weight Loss (regular, non-ticket): machine/cavitation allocation is a fixed $116 regardless
+// of duration or total price — the rest goes to the body therapist.
+const REGULAR_WL_CAV_PRICE = 116;
+const isWeightLossService = (name) => (name || "").toLowerCase().includes("weight loss");
+// Inline 物販購入 (within an appointment) supports multiple products in the same visit — the first
+// item lives directly on the appointment (retailProductName/retailPurchaseAmount/...), any further
+// items live in extraRetailItems[] so existing saved appointments (single item) keep working as-is.
+const getRetailItems = (a) => {
+  const items = [];
+  if (Number(a.retailPurchaseAmount || 0) > 0 || a.retailProductName) {
+    items.push({ productName: a.retailProductName || "", amount: Number(a.retailPurchaseAmount || 0), paymentType: a.retailPurchasePaymentType, sellers: a.retailSellers });
+  }
+  (a.extraRetailItems || []).forEach(it => {
+    if (Number(it.amount || 0) > 0 || it.productName) items.push(it);
+  });
+  return items;
+};
+
+// 社販 (staff self-purchase) — same pattern as getRetailItems: first item lives directly on the
+// record (productName/amount/paymentType), further items live in extraItems[].
+const getStaffPurchaseItems = (sp) => {
+  const items = [];
+  if (Number(sp.amount || 0) > 0 || sp.productName) {
+    items.push({ productName: sp.productName || "", amount: Number(sp.amount || 0), paymentType: sp.paymentType });
+  }
+  (sp.extraItems || []).forEach(it => {
+    if (Number(it.amount || 0) > 0 || it.productName) items.push(it);
+  });
+  return items;
+};
 
 // ============================================================
 // PRICE TABLE
@@ -31,6 +62,12 @@ const PRICE_TABLE = {
     // ProCell (Micro Channeling) — new 2026 pricing
     "MC-60-3":  { body: { service: 279, tip: 53.6 }, cav: null },
     "MC-60-5":  { body: { service: 251, tip: 48.2 }, cav: null },
+    // Sculpted Facial — replaces the old Glow Facial ticket; same price as the
+    // equivalent-length Improving Posture course (45min = IP-75, 60min = IP-90)
+    "SF-45-3":  { body: { service: 125, tip: 25 }, cav: null },
+    "SF-45-5":  { body: { service: 125, tip: 24 }, cav: null },
+    "SF-60-3":  { body: { service: 125, tip: 25 }, cav: { service: 25, tip: 5 }, combined: { service: 151 } },
+    "SF-60-5":  { body: { service: 125, tip: 24 }, cav: { service: 25, tip: 5 }, combined: { service: 151 } },
   },
   old: {
     // Improving Posture — old pricing (Sheet 3)
@@ -52,10 +89,37 @@ const PRICE_TABLE = {
   }
 };
 
+// Full-package (ticket bundle) prices — from "施術振り分け表" (2026 new pricing).
+// These are the total price for the whole 3- or 5-session ticket, used when a customer
+// buys a new ticket (not the per-visit price used above for redeeming one session).
+const TICKET_PACKAGE_PRICES = {
+  "IP-60-3":  { service: 335,  tip: 67 },
+  "IP-60-5":  { service: 542,  tip: 108 },
+  "IP-75-3":  { service: 375,  tip: 75 },
+  "IP-75-5":  { service: 608,  tip: 122 },
+  "IP-90-3":  { service: 452,  tip: 91 },
+  "IP-90-5":  { service: 729,  tip: 146 },
+  "IP-120-3": { service: 612,  tip: 123 },
+  "IP-120-5": { service: 1000, tip: 200 },
+  "WL-75-3":  { service: 565,  tip: 113 },
+  "WL-75-5":  { service: 917,  tip: 183 },
+  "WL-90-3":  { service: 605,  tip: 121 },
+  "WL-90-5":  { service: 967,  tip: 193 },
+  "WL-115-3": { service: 703,  tip: 140 },
+  "WL-115-5": { service: 1121, tip: 224 },
+  "MC-60-3":  { service: 839,  tip: 161 },
+  "MC-60-5":  { service: 1259, tip: 241 },
+  // Sculpted Facial — same package price as the equivalent-length Improving Posture course
+  "SF-45-3":  { service: 375,  tip: 75 },
+  "SF-45-5":  { service: 608,  tip: 122 },
+  "SF-60-3":  { service: 452,  tip: 91 },
+  "SF-60-5":  { service: 729,  tip: 146 },
+};
+
 const MENU_OPTIONS = [
   { group: "Improving Posture", prefix: "IP", durations: [60, 75, 90, 120] },
   { group: "Weight Loss", prefix: "WL", durations: [75, 90, 115] },
-  { group: "Glow Facial", prefix: "FA", durations: [60] },
+  { group: "Sculpted Facial", prefix: "SF", durations: [45, 60] },
   { group: "Micro Channeling", prefix: "MC", durations: [60] },
 ];
 
@@ -76,27 +140,34 @@ const EMPTY_APPOINTMENT = {
   duration: 60,
   isTicket: false,
   ticketMenu: "",       // e.g. "IP-90-3"
-  ticketTotal: 3,       // 3 or 5
-  ticketCurrent: 1,     // which session (1/3, 2/3...)
-  priceVersion: "new",  // new | old
+  ticketTotal: 3,       // 3 or 5 (fallback used for price lookup; ticketTotalChosen tracks explicit selection)
+  ticketTotalChosen: false,
+  ticketCurrent: null,  // which session (1/3, 2/3...) — must be explicitly chosen
+  priceVersion: "new",  // new | old (fallback used for price lookup; priceVersionChosen tracks explicit selection)
+  priceVersionChosen: false,
   cavTherapist: "",
   price: 0,
-  paymentType: "cash",
+  paymentType: "",
+  svcSplitPayment: false, svcCashPortion: 0, svcCardPortion: 0,
   tip: 0,
-  tipPaymentType: "cash",
+  tipPaymentType: "",
+  tipSplitPayment: false, tipCashPortion: 0, tipCardPortion: 0,
   cavPrice: 0,
   cavTip: 0,
-  customerType: "RL",
+  customerType: "",
   serviceName: "",  // コース名（Squareから自動入力）
   notes: "",
   purchaseTags: [],
   // Inline purchase records (recorded on same appointment)
-  newTicketAmount: 0, newTicketTip: 0, newTicketPaymentType: "card", newTicketTipPaymentType: "cash",
-  retailPurchaseAmount: 0, retailPurchasePaymentType: "cash", retailProductName: "",
+  newTicketMenu: "", newTicketTotal: 3, newTicketPackageName: "",
+  newTicketAmount: 0, newTicketTip: 0, newTicketPaymentType: "", newTicketTipPaymentType: "",
+  newTicketSplitPayment: false, newTicketCashPortion: 0, newTicketCardPortion: 0,
+  retailPurchaseAmount: 0, retailPurchasePaymentType: "", retailProductName: "",
   giftCardUsed: 0,
-  giftCardPurchaseAmount: 0, giftCardPurchasePaymentType: "card",
+  giftCardPurchaseAmount: 0, giftCardPurchasePaymentType: "",
   depositApplied: 0,
   isGiftCard: false,
+  isPromo: false,
   addons: [],
   fromSquare: false,
 };
@@ -155,33 +226,48 @@ const matchServiceName = (rawName) => {
   // Return as-is (will show in dropdown as custom value)
   return rawName;
 };
-const EMPTY_DEPOSIT = { id: Date.now(), type: "deposit", amount: 0, clientName: "", paymentType: "card", appointmentDate: "", appointmentTime: "", tip: 0, tipPaymentType: "cash", notes: "" };
-const EMPTY_TICKET_PURCHASE = { id: Date.now(), clientName: "", packageName: "", amount: 0, paymentType: "card", tip: 0, tipPaymentType: "cash", notes: "" };
-const EMPTY_STAFF_PURCHASE = { id: Date.now(), staffName: "", productName: "", amount: 0, paymentType: "cash", notes: "" };
+// A standalone retail sale not tied to any appointment (e.g. phone/walk-in customer). `sellers`
+// (up to 3) attributes each their own dollar share for payroll purposes — commission rates differ
+// per staff member, so the split is entered manually rather than assumed equal (see loadPayroll's
+// "Retail — standalone" block).
+const EMPTY_RETAIL = { id: Date.now(), item: "", price: 0, sellers: [{ therapist: "", amount: 0 }], paymentType: "" };
+const EMPTY_DEPOSIT = { id: Date.now(), type: "deposit", amount: 0, clientName: "", paymentType: "", appointmentDate: "", appointmentTime: "", tip: 0, tipPaymentType: "", notes: "" };
+const EMPTY_TICKET_PURCHASE = { id: Date.now(), clientName: "", packageName: "", ticketMenu: "", priceVersion: "new", ticketTotal: 3, amount: 0, paymentType: "", splitPayment: false, cashPortion: 0, cardPortion: 0, tip: 0, tipPaymentType: "", notes: "" };
+const EMPTY_STAFF_PURCHASE = { id: Date.now(), staffName: "", productName: "", amount: 0, paymentType: "", notes: "", extraItems: [] };
+// A same-day refund for a past visit (e.g. yesterday's client). Recorded as its own entry so it
+// deducts from *today's* revenue total without touching the original (possibly already-locked) day.
+// Doesn't touch any therapist's payroll — if a therapist's allocation also needs correcting, that's
+// done manually by unlocking and editing the original day's appointment.
+const EMPTY_REFUND = { id: Date.now(), clientName: "", serviceAmount: 0, tipAmount: 0, paymentType: "", originalDate: "", notes: "" };
 
 const PURCHASE_TAGS = [
   { id: "newTicket", label: "🎟️ チケット新規購入", color: "#B71C1C", bg: "#FFEBEE" },
-  { id: "ticketEnd",  label: "🏁 チケット最終回",   color: "#5D4037", bg: "#EFEBE9" },
   { id: "giftCard",  label: "🎁 ギフトカード購入",  color: "#00796B", bg: "#E0F2F1" },
   { id: "retail",    label: "🛍️ 物販購入",         color: "#6A1B9A", bg: "#F3E5F5" },
 ];
 
 const ADDON_PRESETS = [
+  "前回キャビ未消化分",
   "キャビ追加 +10分",
   "キャビ追加 +20分",
   "キャビ追加 +30分",
-  "マッサージ追加",
-  "ひしゃ追加",
+  "キャビ追加 +40分",
 ];
+
+// Sales tax subtracted before splitting a retail sale's commission-eligible amount among sellers.
+const RETAIL_TAX_RATE = 0.04712;
 
 const RETAIL_PRODUCTS = [
   { name: "Sheet Mask", price: 10 },
   { name: "Epicutis Sheet Mask", price: 30 },
   { name: "Epicutis Sample Set", price: 42 },
   { name: "Koso Shot", price: 10 },
+  { name: "Koso Shot Campaign", price: 5 },
   { name: "Koso Drink", price: 99 },
-  { name: "Belly Detox Tea", price: 25 },
-  { name: "Decaf Chocolate Truffle Tea", price: 25 },
+  { name: "Belly Bliss Gut Renewal Tea 4oz", price: 30 },
+  { name: "Detox Herbal Tea 4oz", price: 30 },
+  { name: "Botanical Beauty Tea 4oz", price: 30 },
+  { name: "Lymph Love Herbal Tea 4oz", price: 30 },
   { name: "Muscle Rub 5oz", price: 35 },
   { name: "Muscle Rub 8oz", price: 55 },
   { name: "Oil Cleanser", price: 85 },
@@ -198,6 +284,7 @@ const RETAIL_PRODUCTS = [
 ];
 
 const formatCurrency = (n) => `$${Number(n || 0).toLocaleString("en-US", { minimumFractionDigits: 0 })}`;
+const r2 = (n) => Math.round(n * 100) / 100;
 const formatTime = (hour) => { const h = hour % 12 || 12; return `${h}:00 ${hour < 12 ? "AM" : "PM"}`; };
 
 const PaymentToggle = ({ value, onChange, small }) => (
@@ -229,11 +316,14 @@ export default function SpaDailySheet() {
   const [deposits, setDeposits] = useState([]);
   const [ticketPurchases, setTicketPurchases] = useState([]);
   const [staffPurchases, setStaffPurchases] = useState([]);
+  const [refunds, setRefunds] = useState([]);
+  const [locked, setLocked] = useState(false);
   const [editingStaffPurchase, setEditingStaffPurchase] = useState(null);
   const [editingAppt, setEditingAppt] = useState(null);
   const [editingRetail, setEditingRetail] = useState(null);
   const [editingDeposit, setEditingDeposit] = useState(null);
   const [editingTicketPurchase, setEditingTicketPurchase] = useState(null);
+  const [editingRefund, setEditingRefund] = useState(null);
   const [squareLoading, setSquareLoading] = useState(false);
   const [squareStatus, setSquareStatus] = useState(null);
   const [activeTab, setActiveTab] = useState("schedule");
@@ -242,76 +332,31 @@ export default function SpaDailySheet() {
   const [showStaffPicker, setShowStaffPicker] = useState(false);
   const [toast, setToast] = useState(null);
   const [depositsForDate, setDepositsForDate] = useState([]);
+  const [gcSyncLoading, setGcSyncLoading] = useState(false);
 
   const showToast = (msg, type = "success") => { setToast({ msg, type }); setTimeout(() => setToast(null), 3000); };
 
-  // All Square data by date
-  const ALL_SQUARE_DATA = {
-    "2026-06-20": [
-      { id: "sq-njozv4l63l9po2", clientName: "Tony Quach",        therapist: "Mami",  startTime: "09:15", duration: 90,  serviceName: "Improving Posture 90min" },
-      { id: "sq-56o0myzdf4ut6b", clientName: "Natsume Minegishi", therapist: "Yuka",  startTime: "09:30", duration: 60,  serviceName: "Sculpted Face Lift 60min" },
-      { id: "sq-did02ytnrwdlgj", clientName: "Jamielynn Estrada", therapist: "Mami",  startTime: "11:00", duration: 60,  serviceName: "HIFU Full Face 60min" },
-      { id: "sq-pb3qfamgawhhjp", clientName: "Marilyn Remiglo",   therapist: "Yuka",  startTime: "11:00", duration: 60,  serviceName: "Epicutis Glow Facial 60min" },
-      { id: "sq-sbruu6ass34oir", clientName: "Nui",               therapist: "Yuka",  startTime: "12:30", duration: 60,  serviceName: "HIFU Full Face 60min", notes: "Couple gift card あり" },
-      { id: "sq-qzqxkcv7047ml3", clientName: "Jannie Lai",        therapist: "Mami",  startTime: "13:00", duration: 150, serviceName: "Improving Posture 90min + HIFU Full Face 60min" },
-    ],
-    "2026-06-21": [
-      { id: "p35cktixyc5n4y", clientName: "Brian Hasegawa",  therapist: "Mami",  startTime: "10:00", duration: 90, serviceName: "Improving Posture 90min" },
-      { id: "zg8iv61nvltg53", clientName: "Lisa Man",         therapist: "Hitomi",startTime: "10:00", duration: 90, serviceName: "Improving Posture 90min" },
-      { id: "2p4jkq26j781vc", clientName: "Esther",          therapist: "Maki",  startTime: "10:30", duration: 75, serviceName: "Improving Posture 75min" },
-      { id: "l8hakzoxx1jyna", clientName: "Anita",           therapist: "Betsy", startTime: "10:30", duration: 75, serviceName: "Improving Posture 75min" },
-      { id: "6jjrlzm6ofvba0", clientName: "Lani Arakaki",    therapist: "Hitomi",startTime: "12:30", duration: 90, serviceName: "Improving Posture 90min" },
-      { id: "nepeme2kn1qa7p", clientName: "Willo Shimamura", therapist: "Betsy", startTime: "12:30", duration: 90, serviceName: "Improving Posture 90min" },
-      { id: "ygk9eocp80snk4", clientName: "David Arakaki",   therapist: "Maki",  startTime: "12:30", duration: 90, serviceName: "Improving Posture 90min" },
-      { id: "ja225auquxd3s0", clientName: "Trina Le",        therapist: "Mami",  startTime: "14:00", duration: 60, serviceName: "Epicutis Glow Facial 60min" },
-      { id: "m32x1d808ofp5s", clientName: "Mio Lau",         therapist: "Maki",  startTime: "14:30", duration: 90, serviceName: "Improving Posture 90min" },
-      { id: "zmph4tmlbendps", clientName: "Miki Garcia",     therapist: "Mami",  startTime: "15:30", duration: 90, serviceName: "Improving Posture 90min" },
-      { id: "4tjqb1isq99s56", clientName: "Elizabeth Park",  therapist: "Maki",  startTime: "16:30", duration: 90, serviceName: "Improving Posture 90min" },
-      { id: "6odddpottup0zs", clientName: "Patrick Lau",     therapist: "Hitomi",startTime: "14:30", duration: 90, serviceName: "Improving Posture 90min" },
-      { id: "nk5rhk6b8jf1u6", clientName: "CeCe Bernstine", therapist: "Hitomi",startTime: "17:00", duration: 90, serviceName: "Deep Tissue / Lomi Lomi 90min", notes: "Booked for Jabari Bernstine" },
-    ],
-  };
 
   useEffect(() => {
     const saved = localStorage.getItem(`spa-sheet-${date}`);
-    const squareRef = ALL_SQUARE_DATA[date] || [];
     if (saved) {
       const d = JSON.parse(saved);
-      // Always patch serviceName from Square reference data
-      const patched = (d.appointments || []).map(a => {
-        const ref = squareRef.find(r => r.id === a.id);
-        if (ref && !a.serviceName) return { ...a, serviceName: ref.serviceName };
-        return a;
-      });
-      setAppointments(patched);
+      setAppointments(d.appointments || []);
       setRetails(d.retails || []);
       setDeposits(d.deposits || []);
       setTicketPurchases(d.ticketPurchases || []);
       setStaffPurchases(d.staffPurchases || []);
-      // Set working staff from Square data for this date
-      if (squareRef.length > 0) {
-        const staff = [...new Set(squareRef.map(a => a.therapist).filter(Boolean))];
-        if (staff.length > 0) setWorkingStaff(staff);
-      }
-    } else if (squareRef.length > 0) {
-      // No saved data — auto-load Square data for this date
-      const appts = squareRef.map(a => ({
-        ...EMPTY_APPOINTMENT, ...a, fromSquare: true,
-      }));
-      setAppointments(appts);
-      setRetails([]);
-      setDeposits([]);
-      setTicketPurchases([]);
-      setStaffPurchases([]);
-      // Auto-set working staff from Square data
-      const staff = [...new Set(appts.map(a => a.therapist).filter(Boolean))];
-      if (staff.length > 0) setWorkingStaff(staff);
+      setRefunds(d.refunds || []);
+      setLocked(!!d.locked);
     } else {
-      setAppointments([]); setRetails([]); setDeposits([]); setTicketPurchases([]); setStaffPurchases([]);
+      setAppointments([]); setRetails([]); setDeposits([]); setTicketPurchases([]); setStaffPurchases([]); setRefunds([]);
+      setLocked(false);
     }
   }, [date]);
 
-  // Scan all localStorage entries for deposits with appointmentDate matching current date
+  // Scan all localStorage entries for deposits/gift-card prepayments with appointmentDate
+  // matching current date — covers both a partial deposit and a fully prepaid ("ギフト"
+  // as advance payment) visit, since either can be booked for a future date that later changes.
   useEffect(() => {
     const found = [];
     for (let i = 0; i < localStorage.length; i++) {
@@ -321,7 +366,7 @@ export default function SpaDailySheet() {
         const d = JSON.parse(localStorage.getItem(key));
         const recordedDate = key.replace("spa-sheet-", "");
         (d.deposits || []).forEach(dep => {
-          if (dep.appointmentDate === date && dep.type === "deposit") {
+          if (dep.appointmentDate === date && (dep.type === "deposit" || dep.type === "giftcard")) {
             found.push({ ...dep, recordedDate });
           }
         });
@@ -330,50 +375,50 @@ export default function SpaDailySheet() {
     setDepositsForDate(found.sort((a, b) => (a.appointmentTime || "").localeCompare(b.appointmentTime || "")));
   }, [date, deposits]);
 
-  const save = useCallback((appts, rets, deps, tps, sps) => {
-    localStorage.setItem(`spa-sheet-${date}`, JSON.stringify({ appointments: appts, retails: rets, deposits: deps, ticketPurchases: tps || [], staffPurchases: sps || [] }));
-  }, [date]);
+  const save = useCallback((appts, rets, deps, tps, sps, refs) => {
+    localStorage.setItem(`spa-sheet-${date}`, JSON.stringify({ appointments: appts, retails: rets, deposits: deps, ticketPurchases: tps || [], staffPurchases: sps || [], refunds: refs || [], locked }));
+  }, [date, locked]);
+
+  // Toggling the lock writes immediately (doesn't wait for another edit) using current state.
+  const setDayLocked = (newLocked) => {
+    localStorage.setItem(`spa-sheet-${date}`, JSON.stringify({ appointments, retails, deposits, ticketPurchases, staffPurchases, refunds, locked: newLocked }));
+    setLocked(newLocked);
+  };
+
+  const MANAGER_PIN = import.meta.env.VITE_MANAGER_PIN || "0000";
+  const guardLocked = () => {
+    if (locked) { showToast("🔒 この日は確定済みです。解除してから編集してください", "error"); return true; }
+    return false;
+  };
+  const handleLockToggle = () => {
+    if (!locked) {
+      if (window.confirm(`${date} を確定してロックしますか？\nロック後は解除するまで編集・削除ができなくなります。`)) {
+        setDayLocked(true);
+        showToast("🔒 この日を確定しました");
+      }
+      return;
+    }
+    const pin = window.prompt("解除するにはPINコードを入力してください");
+    if (pin === null) return;
+    if (pin === MANAGER_PIN) {
+      setDayLocked(false);
+      showToast("🔓 ロックを解除しました");
+    } else {
+      showToast("PINが違います", "error");
+    }
+  };
 
   const fetchSquare = async () => {
+    if (guardLocked()) return;
     setSquareLoading(true); setSquareStatus(null);
     try {
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "claude-sonnet-4-6",
-          max_tokens: 2000,
-          system: `You have access to Square via MCP tool.
-Location ID: J84JMVZ7QNE10
-
-Steps:
-1. Call Square bookings list with location_id="J84JMVZ7QNE10", start_at_min and start_at_max covering ${date} in Hawaii time (UTC-10, so ${date}T10:00:00Z to next day T09:59:59Z)
-2. For each booking, get customer name via customers get endpoint
-3. Map team_member_id to therapist name using this map:
-   TME2bzx3XoNFV-jw=Mami, TMWQwOib7pJ7Sw22=Yuka, TMez6BJMpuw8PpVZ=Megumi,
-   TMZUOeE7bTyj6JrW=Betsy, TMhfddQBlrnZkR9n=Aya, TMu1v7kb0cgbl5mn=Mai,
-   TMwBMik2I8Xpyog2=Maki, TMW8eccMtM4pdMiM=Hitomi
-4. Convert start_at from UTC to Hawaii time (subtract 10 hours), format as HH:MM
-
-Return ONLY valid JSON array (no markdown, no explanation):
-[{"squareId":"...","clientName":"First Last","therapist":"Mami","startTime":"09:15","duration":90,"notes":""}]
-
-If no bookings return [].`,
-          messages: [{ role: "user", content: `Fetch Square bookings for ${date} Hawaii time and return JSON only.` }],
-          mcp_servers: [{ type: "url", url: "https://mcp.squareup.com/mcp", name: "square-mcp" }],
-        }),
-      });
-
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      // Calls the local dev-server proxy (vite.config.js → squareBookingsApi), which keeps
+      // SQUARE_ACCESS_TOKEN server-side and resolves customer name / service name / therapist
+      // for each booking. Only works while `npm run dev` is running.
+      const res = await fetch(`/api/square-bookings?date=${date}`);
       const data = await res.json();
-
-      // Extract JSON from response - look through all content blocks
-      let bookings = [];
-      const allText = (data.content || []).filter(b => b.type === "text").map(b => b.text).join("");
-      const jsonMatch = allText.match(/\[[\s\S]*\]/);
-      if (jsonMatch) {
-        bookings = JSON.parse(jsonMatch[0]);
-      }
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      const bookings = data.bookings || [];
 
       if (!bookings.length) {
         setSquareStatus("この日の予約がSquareに見つかりませんでした。");
@@ -386,6 +431,7 @@ If no bookings return [].`,
           therapist: b.therapist || "",
           startTime: b.startTime || "",
           duration: Number(b.duration) || 60,
+          serviceName: b.serviceName || "",
           notes: b.notes || "",
           fromSquare: true,
         }));
@@ -400,7 +446,12 @@ If no bookings return [].`,
         });
         merged.sort((a, b) => (a.startTime || "").localeCompare(b.startTime || ""));
         setAppointments(merged);
-        save(merged, retails, deposits, ticketPurchases, staffPurchases);
+        save(merged, retails, deposits, ticketPurchases, staffPurchases, refunds);
+
+        // Only show columns for staff who actually have a booking today.
+        const bookingTherapists = [...new Set(newAppts.map(a => a.therapist).filter(t => t && THERAPISTS.includes(t)))];
+        if (bookingTherapists.length > 0) setWorkingStaff(bookingTherapists);
+
         showToast(`✅ ${newAppts.length}件取得しました`);
       }
     } catch (e) {
@@ -411,75 +462,71 @@ If no bookings return [].`,
     setSquareLoading(false);
   };
 
-  const loadTodayFromSquare = () => {
-    const filtered = ALL_SQUARE_DATA[date] || [];
-    if (filtered.length === 0) {
-      showToast(`${date}のデータがありません`, "info");
-      return;
+  // Pull today's online e-gift-card purchases from Square (no client name, amount only)
+  // and add them as "giftcard"-type deposits so they land in the day's sales summary.
+  const syncOnlineGiftCards = async () => {
+    if (guardLocked()) return;
+    setGcSyncLoading(true);
+    try {
+      const res = await fetch(`/api/giftcard-activities?date=${date}`);
+      const data = await res.json();
+      if (!res.ok) {
+        showToast(data.error || "取得エラー", "error");
+        return;
+      }
+      const activities = data.activities || [];
+      const existingIds = new Set(deposits.map(d => d.id));
+      const newDeposits = activities
+        .filter(a => !existingIds.has(a.id))
+        .map(a => ({
+          id: a.id,
+          type: "giftcard",
+          amount: a.amount,
+          clientName: "ギフトカード購入（お客様名不明）",
+          paymentType: a.paymentType === "cash" ? "cash" : "card",
+          tip: 0,
+          tipPaymentType: "cash",
+          appointmentDate: "",
+          appointmentTime: "",
+          notes: `Square自動取得${a.createdAt ? ` (${a.createdAt})` : ""}`,
+        }));
+      if (newDeposits.length === 0) {
+        showToast(activities.length === 0 ? "この日のギフトカード購入はありません" : "すべて取得済みです", "info");
+        return;
+      }
+      const next = [...deposits, ...newDeposits];
+      setDeposits(next);
+      save(appointments, retails, next, ticketPurchases, staffPurchases, refunds);
+      showToast(`✅ ギフトカード購入 ${newDeposits.length}件追加しました`);
+    } catch (e) {
+      console.error("Gift card sync error:", e);
+      showToast("接続エラー", "error");
     }
-
-    // Build complete appointment objects with ALL fields
-    const newAppts = filtered.map(a => ({
-      id: a.id,
-      clientName: a.clientName,
-      therapist: a.therapist,
-      startTime: a.startTime,
-      duration: a.duration,
-      serviceName: a.serviceName,
-      notes: a.notes || "",
-      isTicket: false,
-      isCavSlot: false,
-      ticketMenu: "",
-      ticketTotal: 3,
-      ticketCurrent: 1,
-      priceVersion: "new",
-      cavTherapist: "",
-      price: 0,
-      paymentType: "cash",
-      tip: 0,
-      tipPaymentType: "cash",
-      cavPrice: 0,
-      cavTip: 0,
-      customerType: "RL",
-      fromSquare: true,
-      bodyMins: 0,
-      cavMins: 0,
-      referralSource: "",
-    }));
-
-    // ALWAYS overwrite — clear old Square data for this date, keep manual entries
-    const manualAppts = appointments.filter(a => !a.fromSquare && !a.isCavSlot);
-    const combined = [...manualAppts, ...newAppts];
-    combined.sort((a, b) => (a.startTime || "").localeCompare(b.startTime || ""));
-
-    // Also clear localStorage for this date and rewrite fresh
-    localStorage.removeItem(`spa-sheet-${date}`);
-    setAppointments(combined);
-    save(combined, retails, deposits, ticketPurchases, staffPurchases);
-
-    const staffInBookings = [...new Set(newAppts.map(a => a.therapist).filter(Boolean))];
-    if (staffInBookings.length > 0) setWorkingStaff(staffInBookings);
-
-    showToast(`✅ ${newAppts.length}件ロードしました！`);
-    // DEBUG: confirm serviceName
-    console.log("LOADED APPTS:", JSON.stringify(newAppts.map(a => ({name: a.clientName, serviceName: a.serviceName}))));
+    setGcSyncLoading(false);
   };
-  const calcCavStartTime = (startTime, duration) => {
+
+  const calcCavStartTime = (startTime, duration, cavDuration = 15) => {
     if (!startTime) return "";
     const [h, m] = startTime.split(":").map(Number);
-    const totalMins = h * 60 + m + (Number(duration) - 15);
+    const totalMins = h * 60 + m + (Number(duration) - Number(cavDuration));
     const ch = Math.floor(totalMins / 60);
     const cm = totalMins % 60;
     return `${String(ch).padStart(2, "0")}:${String(cm).padStart(2, "0")}`;
   };
 
   const saveAppt = (appt) => {
+    if (guardLocked()) return;
     const cavSlotId = `cav-${appt.id}`;
 
     // A separate cav slot is needed when:
     // - A cav therapist is selected (meaning the main therapist can't do machine)
     // - There are cav amounts to record
     const needsCavSlot = !!appt.cavTherapist && (Number(appt.cavPrice) > 0 || Number(appt.cavTip) > 0);
+    // Machine (cav) portion duration: use the minutes the staff actually entered
+    // (needed e.g. for Weight Loss, where machine=40min / body=75min), falling back
+    // to the old default of 15min for quick facial add-ons where it wasn't entered.
+    const cavDuration = Number(appt.cavMins) || 15;
+    const bodyDuration = appt.bodyMins ? Number(appt.bodyMins) : Number(appt.duration) - cavDuration;
 
     const cavSlot = needsCavSlot ? {
       id: cavSlotId,
@@ -487,9 +534,12 @@ If no bookings return [].`,
       parentId: appt.id,
       clientName: appt.clientName,
       therapist: appt.cavTherapist,
-      startTime: calcCavStartTime(appt.startTime, appt.duration),
-      duration: 15,
+      startTime: calcCavStartTime(appt.startTime, appt.duration, cavDuration),
+      duration: cavDuration,
       isTicket: appt.isTicket,
+      isSameDayTicket: appt.isSameDayTicket,
+      isGiftCard: appt.isGiftCard,
+      isPromo: appt.isPromo,
       ticketMenu: appt.ticketMenu,
       ticketTotal: appt.ticketTotal,
       ticketCurrent: appt.ticketCurrent,
@@ -512,24 +562,30 @@ If no bookings return [].`,
     // Main appt: cav amounts stay on mainAppt for dual-license (they keep it all),
     // but are stripped when there's a separate cav slot
     const mainAppt = needsCavSlot
-      ? { ...appt, cavPrice: 0, cavTip: 0 }  // body only — machine goes to cav slot
+      ? { ...appt, cavPrice: 0, cavTip: 0, duration: bodyDuration }  // body only — machine goes to cav slot
       : appt;
 
     next = [...next, mainAppt];
     if (cavSlot) next = [...next, cavSlot];
     next.sort((a, b) => (a.startTime || "").localeCompare(b.startTime || ""));
 
-    setAppointments(next); save(next, retails, deposits, ticketPurchases, staffPurchases); setEditingAppt(null); showToast("保存しました");
+    setAppointments(next); save(next, retails, deposits, ticketPurchases, staffPurchases, refunds); setEditingAppt(null); showToast("保存しました");
   };
 
   const deleteAppt = (id) => {
+    if (guardLocked()) return;
     const cavSlotId = `cav-${id}`;
     const next = appointments.filter(a => a.id !== id && a.id !== cavSlotId);
-    setAppointments(next); save(next, retails, deposits, ticketPurchases, staffPurchases); setEditingAppt(null);
+    setAppointments(next); save(next, retails, deposits, ticketPurchases, staffPurchases, refunds); setEditingAppt(null);
   };
 
-  // When editing an existing appointment, restore cavPrice/cavTip from the cav slot
-  // and infer bodyMins/cavMins from the price ratio so splits recalculate correctly
+  // When editing an existing appointment, restore cavPrice/cavTip from the cav slot.
+  // bodyMins/cavMins come from the saved durations (appt.duration is body-only once a cav
+  // slot is split off; cavSlot.duration is the machine minutes actually entered) — but records
+  // saved before that duration-split existed still have the OLD shape (appt.duration = full
+  // total, cavSlot.duration hardcoded to 15), which would double-count into a bogus total. Detect
+  // that by cross-checking against the course's real duration and blank the minutes out instead
+  // of trusting stale numbers — the Weight Loss auto-fill effect will then re-default them.
   const openApptForEdit = (appt) => {
     if (!appt.isCavSlot && appt.cavTherapist) {
       const cavSlot = appointments.find(a => a.isCavSlot && a.parentId === appt.id);
@@ -537,12 +593,21 @@ If no bookings return [].`,
         const restoredCavPrice = Number(cavSlot.price || 0);
         const restoredCavTip = Number(cavSlot.tip || 0);
         const bodyPrice = Number(appt.price || 0);
-        const total = bodyPrice + restoredCavPrice;
-        const dur = Number(appt.duration || 90);
-        const bodyMins = total > 0 ? Math.round(bodyPrice / total * dur) : 0;
-        const cavMins = bodyMins > 0 ? dur - bodyMins : 0;
+        const svc = SQUARE_SERVICES.find(s => s.name === appt.serviceName);
+        const savedBodyMins = Number(appt.duration || 0);
+        const savedCavMins = Number(cavSlot.duration || 0);
+        const trueTotal = svc ? svc.duration : savedBodyMins + savedCavMins;
+        // For Weight Loss the machine is always exactly 40min — if a saved record has some other
+        // cav duration (e.g. leftover minutes from a different course picked earlier in the same
+        // form, saved before that bug was fixed), treat it as inconsistent too, even though the
+        // two numbers happen to add up to the right total.
+        const sumMatches = savedBodyMins + savedCavMins === trueTotal;
+        const isConsistent = sumMatches && (!isWeightLossService(appt.serviceName) || savedCavMins === 40);
+        const bodyMins = isConsistent ? savedBodyMins : 0;
+        const cavMins = isConsistent ? savedCavMins : 0;
         setEditingAppt({
           ...appt,
+          duration: trueTotal,
           cavPrice: restoredCavPrice,
           cavTip: restoredCavTip,
           bodyMins,
@@ -555,83 +620,185 @@ If no bookings return [].`,
     }
     setEditingAppt(appt);
   };
-  const saveRetail = (r) => { const next = retails.find(x => x.id === r.id) ? retails.map(x => x.id === r.id ? r : x) : [...retails, r]; setRetails(next); save(appointments, next, deposits, ticketPurchases, staffPurchases); setEditingRetail(null); showToast("物販保存"); };
-  const deleteRetail = (id) => { const next = retails.filter(r => r.id !== id); setRetails(next); save(appointments, next, deposits, ticketPurchases, staffPurchases); };
-  const saveDeposit = (d) => { const next = deposits.find(x => x.id === d.id) ? deposits.map(x => x.id === d.id ? d : x) : [...deposits, d]; setDeposits(next); save(appointments, retails, next, ticketPurchases, staffPurchases); setEditingDeposit(null); showToast("保存しました"); };
-  const deleteDeposit = (id) => { const next = deposits.filter(d => d.id !== id); setDeposits(next); save(appointments, retails, next, ticketPurchases, staffPurchases); };
-  const saveTicketPurchase = (tp) => { const next = ticketPurchases.find(x => x.id === tp.id) ? ticketPurchases.map(x => x.id === tp.id ? tp : x) : [...ticketPurchases, tp]; setTicketPurchases(next); save(appointments, retails, deposits, next, staffPurchases); setEditingTicketPurchase(null); showToast("🎟️ チケット購入保存"); };
-  const deleteTicketPurchase = (id) => { const next = ticketPurchases.filter(tp => tp.id !== id); setTicketPurchases(next); save(appointments, retails, deposits, next, staffPurchases); };
-  const saveStaffPurchase = (sp) => { const next = staffPurchases.find(x => x.id === sp.id) ? staffPurchases.map(x => x.id === sp.id ? sp : x) : [...staffPurchases, sp]; setStaffPurchases(next); save(appointments, retails, deposits, ticketPurchases, next); setEditingStaffPurchase(null); showToast("👩‍💼 社販保存"); };
-  const deleteStaffPurchase = (id) => { const next = staffPurchases.filter(sp => sp.id !== id); setStaffPurchases(next); save(appointments, retails, deposits, ticketPurchases, next); };
+  const saveRetail = (r) => { if (guardLocked()) return; const next = retails.find(x => x.id === r.id) ? retails.map(x => x.id === r.id ? r : x) : [...retails, r]; setRetails(next); save(appointments, next, deposits, ticketPurchases, staffPurchases, refunds); setEditingRetail(null); showToast("物販保存"); };
+  const deleteRetail = (id) => { if (guardLocked()) return; const next = retails.filter(r => r.id !== id); setRetails(next); save(appointments, next, deposits, ticketPurchases, staffPurchases, refunds); };
+  const saveDeposit = (d) => { if (guardLocked()) return; const next = deposits.find(x => x.id === d.id) ? deposits.map(x => x.id === d.id ? d : x) : [...deposits, d]; setDeposits(next); save(appointments, retails, next, ticketPurchases, staffPurchases, refunds); setEditingDeposit(null); showToast("保存しました"); };
+  const deleteDeposit = (id) => { if (guardLocked()) return; const next = deposits.filter(d => d.id !== id); setDeposits(next); save(appointments, retails, next, ticketPurchases, staffPurchases, refunds); };
+  const saveTicketPurchase = (tp) => { if (guardLocked()) return; const next = ticketPurchases.find(x => x.id === tp.id) ? ticketPurchases.map(x => x.id === tp.id ? tp : x) : [...ticketPurchases, tp]; setTicketPurchases(next); save(appointments, retails, deposits, next, staffPurchases, refunds); setEditingTicketPurchase(null); showToast("🎟️ チケット購入保存"); };
+  const deleteTicketPurchase = (id) => { if (guardLocked()) return; const next = ticketPurchases.filter(tp => tp.id !== id); setTicketPurchases(next); save(appointments, retails, deposits, next, staffPurchases, refunds); };
+  const saveStaffPurchase = (sp) => { if (guardLocked()) return; const next = staffPurchases.find(x => x.id === sp.id) ? staffPurchases.map(x => x.id === sp.id ? sp : x) : [...staffPurchases, sp]; setStaffPurchases(next); save(appointments, retails, deposits, ticketPurchases, next, refunds); setEditingStaffPurchase(null); showToast("👩‍💼 社販保存"); };
+  const deleteStaffPurchase = (id) => { if (guardLocked()) return; const next = staffPurchases.filter(sp => sp.id !== id); setStaffPurchases(next); save(appointments, retails, deposits, ticketPurchases, next, refunds); };
+  const saveRefund = (rf) => { if (guardLocked()) return; const next = refunds.find(x => x.id === rf.id) ? refunds.map(x => x.id === rf.id ? rf : x) : [...refunds, rf]; setRefunds(next); save(appointments, retails, deposits, ticketPurchases, staffPurchases, next); setEditingRefund(null); showToast("🔙 返金を記録しました"); };
+  const deleteRefund = (id) => { if (guardLocked()) return; const next = refunds.filter(rf => rf.id !== id); setRefunds(next); save(appointments, retails, deposits, ticketPurchases, staffPurchases, next); };
 
   // Summary — tickets excluded from today's revenue; cav slots excluded (counted in parent)
-  const regularAppts = appointments.filter(a => !a.isTicket && !a.isCavSlot && !a.isGiftCard);
+  const regularAppts = appointments.filter(a => !a.isTicket && !a.isCavSlot && !a.isGiftCard && !a.isPromo);
   const ticketAppts = appointments.filter(a => a.isTicket && !a.isCavSlot);
   const pureTicketAppts = ticketAppts.filter(a => !a.isSameDayTicket);
   const sameDayAppts = ticketAppts.filter(a => a.isSameDayTicket);
   const gcAppts = appointments.filter(a => a.isGiftCard && !a.isCavSlot);
+  const promoAppts = appointments.filter(a => a.isPromo && !a.isCavSlot);
+  // Addons marked "本日のお支払い" (countsAsRevenue===true) are real money received today;
+  // "前回の未消化分" (countsAsRevenue===false) are makeup for an already-paid ticket session, so
+  // they're excluded here — same rule as GC消化/PR無料 — but still counted in 💴給料集計 payroll.
+  const revenueAddons = appointments.filter(a => !a.isCavSlot).flatMap(a => (a.addons || []).filter(ad => ad.countsAsRevenue === true));
+  // The cav (machine) therapist's own portion of a split visit lives on its own isCavSlot row
+  // (its price/tip fields hold the cav amounts, inheriting the same paymentType/tipPaymentType as
+  // the body row) — must be folded into today's revenue/tip totals same as the body side.
+  const cavSlotAppts = appointments.filter(a => a.isCavSlot && !a.isTicket && !a.isGiftCard && !a.isPromo);
+  // Refunds for a past (possibly already-locked) day's visit are recorded today and deducted from
+  // *today's* totals only — they never reach back to adjust that day's therapist payroll.
+  const totalRefundService = refunds.reduce((s, rf) => s + Number(rf.serviceAmount || 0), 0);
+  const totalRefundTip = refunds.reduce((s, rf) => s + Number(rf.tipAmount || 0), 0);
+  const totalRefundCash = refunds.filter(rf => rf.paymentType === "cash").reduce((s, rf) => s + Number(rf.serviceAmount || 0), 0);
+  const totalRefundCard = refunds.filter(rf => rf.paymentType === "card").reduce((s, rf) => s + Number(rf.serviceAmount || 0), 0);
+  const totalRefundTipCash = refunds.filter(rf => rf.paymentType === "cash").reduce((s, rf) => s + Number(rf.tipAmount || 0), 0);
+  const totalRefundTipCard = refunds.filter(rf => rf.paymentType === "card").reduce((s, rf) => s + Number(rf.tipAmount || 0), 0);
 
-  const totalRevenue = regularAppts.reduce((s, a) => s + Number(a.price || 0), 0)
-    + sameDayAppts.reduce((s, a) => s + Number(a.packagePrice || 0), 0);
-  const totalCavRevenue = regularAppts.reduce((s, a) => s + Number(a.cavPrice || 0), 0);
-  const totalTips = regularAppts.reduce((s, a) => s + Number(a.tip || 0), 0)
-    + sameDayAppts.reduce((s, a) => s + Number(a.packageTip ?? a.tip ?? 0), 0)
-    + pureTicketAppts.reduce((s, a) => s + Number(a.extraTip || 0), 0);
-  const totalCavTips = regularAppts.reduce((s, a) => s + Number(a.cavTip || 0), 0);
-  // GC allocation: covers service first, then tip, then retail (in order)
+  // GC allocation: a giftCardUsed amount was already collected as revenue on the (possibly earlier)
+  // day the gift card was purchased/loaded, so it must never also count as *today's* revenue —
+  // same rule as GC消化/PR無料. Covers service first, then tip, then retail (in order).
   const gcAlloc = (a) => {
     const gc = Number(a.giftCardUsed || 0);
     const svc = Number(a.price || 0);
     const tip = Number(a.tip || 0);
-    const retail = (a.purchaseTags?.includes("retail")) ? Number(a.retailPurchaseAmount || 0) : 0;
+    const retail = (a.purchaseTags?.includes("retail")) ? getRetailItems(a).reduce((s, it) => s + Number(it.amount || 0), 0) : 0;
     const gcSvc = Math.min(gc, svc);
     const gcTip = Math.min(gc - gcSvc, tip);
     const gcRetail = Math.min(gc - gcSvc - gcTip, retail);
     return { gcSvc, gcTip, gcRetail };
   };
-  const totalGCUsed = regularAppts.reduce((s, a) => s + Number(a.giftCardUsed || 0), 0);
-  const totalCash = regularAppts.filter(a => a.paymentType === "cash").reduce((s, a) => s + Math.max(0, Number(a.price || 0) - gcAlloc(a).gcSvc), 0)
-    + sameDayAppts.filter(a => a.paymentType === "cash").reduce((s, a) => s + Number(a.packagePrice || 0), 0);
-  const totalCard = regularAppts.filter(a => a.paymentType === "card").reduce((s, a) => s + Math.max(0, Number(a.price || 0) - gcAlloc(a).gcSvc), 0)
-    + sameDayAppts.filter(a => a.paymentType === "card").reduce((s, a) => s + Number(a.packagePrice || 0), 0);
-  const totalTipCash = regularAppts.filter(a => a.tipPaymentType === "cash").reduce((s, a) => s + Math.max(0, Number(a.tip || 0) - gcAlloc(a).gcTip), 0)
-    + sameDayAppts.filter(a => a.tipPaymentType === "cash").reduce((s, a) => s + Number(a.packageTip ?? a.tip ?? 0), 0)
-    + pureTicketAppts.filter(a => a.extraTipPaymentType === "cash").reduce((s, a) => s + Number(a.extraTip || 0), 0)
-    + deposits.filter(d => d.tipPaymentType === "cash" || !d.tipPaymentType).reduce((s, d) => s + Number(d.tip || 0), 0);
-  const totalTipCard = regularAppts.filter(a => a.tipPaymentType === "card").reduce((s, a) => s + Math.max(0, Number(a.tip || 0) - gcAlloc(a).gcTip), 0)
-    + sameDayAppts.filter(a => a.tipPaymentType === "card").reduce((s, a) => s + Number(a.packageTip ?? a.tip ?? 0), 0)
-    + pureTicketAppts.filter(a => a.extraTipPaymentType === "card").reduce((s, a) => s + Number(a.extraTip || 0), 0)
-    + deposits.filter(d => d.tipPaymentType === "card").reduce((s, d) => s + Number(d.tip || 0), 0);
+  // Same allocation, but for a same-day ticket *purchase*'s package price/tip (giftCardUsed there
+  // covers the package, not the per-visit staff-allocation price/tip fields).
+  const gcAllocPackage = (a) => {
+    const gc = Number(a.giftCardUsed || 0);
+    const svc = Number(a.packagePrice || 0);
+    const tip = Number(a.packageTip ?? a.tip ?? 0);
+    const gcSvc = Math.min(gc, svc);
+    const gcTip = Math.min(gc - gcSvc, tip);
+    return { gcSvc, gcTip };
+  };
+
+  const totalRevenue = regularAppts.reduce((s, a) => s + Number(a.price || 0) - gcAlloc(a).gcSvc, 0)
+    + sameDayAppts.reduce((s, a) => s + Number(a.packagePrice || 0) - gcAllocPackage(a).gcSvc, 0)
+    + revenueAddons.reduce((s, ad) => s + Number(ad.price || 0), 0)
+    - totalRefundService;
+  const totalCavRevenue = regularAppts.reduce((s, a) => s + Number(a.cavPrice || 0), 0)
+    + cavSlotAppts.reduce((s, a) => s + Number(a.price || 0), 0);
+  const totalTips = regularAppts.reduce((s, a) => s + Number(a.tip || 0) - gcAlloc(a).gcTip, 0)
+    + sameDayAppts.reduce((s, a) => s + Number(a.packageTip ?? a.tip ?? 0) - gcAllocPackage(a).gcTip, 0)
+    + ticketAppts.reduce((s, a) => s + Number(a.extraTip || 0), 0)
+    + revenueAddons.reduce((s, ad) => s + Number(ad.tip || 0), 0)
+    - totalRefundTip;
+  const totalCavTips = regularAppts.reduce((s, a) => s + Number(a.cavTip || 0), 0)
+    + cavSlotAppts.reduce((s, a) => s + Number(a.tip || 0), 0);
+  const totalGCUsed = regularAppts.reduce((s, a) => s + Number(a.giftCardUsed || 0), 0)
+    + sameDayAppts.reduce((s, a) => s + Number(a.giftCardUsed || 0), 0);
+  const totalCash = regularAppts.filter(a => !a.svcSplitPayment && a.paymentType === "cash").reduce((s, a) => s + Math.max(0, Number(a.price || 0) - gcAlloc(a).gcSvc), 0)
+    + regularAppts.filter(a => a.svcSplitPayment).reduce((s, a) => s + Number(a.svcCashPortion || 0), 0)
+    + sameDayAppts.filter(a => !a.packageSplitPayment && a.paymentType === "cash").reduce((s, a) => s + Math.max(0, Number(a.packagePrice || 0) - gcAllocPackage(a).gcSvc), 0)
+    + sameDayAppts.filter(a => a.packageSplitPayment).reduce((s, a) => s + Number(a.packageCashPortion || 0), 0)
+    + revenueAddons.filter(ad => ad.paymentType === "cash").reduce((s, ad) => s + Number(ad.price || 0), 0)
+    + cavSlotAppts.filter(a => a.paymentType === "cash").reduce((s, a) => s + Number(a.price || 0), 0)
+    - totalRefundCash;
+  const totalCard = regularAppts.filter(a => !a.svcSplitPayment && a.paymentType === "card").reduce((s, a) => s + Math.max(0, Number(a.price || 0) - gcAlloc(a).gcSvc), 0)
+    + regularAppts.filter(a => a.svcSplitPayment).reduce((s, a) => s + Number(a.svcCardPortion || 0), 0)
+    + sameDayAppts.filter(a => !a.packageSplitPayment && a.paymentType === "card").reduce((s, a) => s + Math.max(0, Number(a.packagePrice || 0) - gcAllocPackage(a).gcSvc), 0)
+    + sameDayAppts.filter(a => a.packageSplitPayment).reduce((s, a) => s + Number(a.packageCardPortion || 0), 0)
+    + revenueAddons.filter(ad => ad.paymentType !== "cash").reduce((s, ad) => s + Number(ad.price || 0), 0)
+    + cavSlotAppts.filter(a => a.paymentType !== "cash").reduce((s, a) => s + Number(a.price || 0), 0)
+    - totalRefundCard;
+  const totalTipCash = regularAppts.filter(a => !a.tipSplitPayment && a.tipPaymentType === "cash").reduce((s, a) => s + Math.max(0, Number(a.tip || 0) - gcAlloc(a).gcTip), 0)
+    + regularAppts.filter(a => a.tipSplitPayment).reduce((s, a) => s + Number(a.tipCashPortion || 0), 0)
+    + sameDayAppts.filter(a => a.tipPaymentType === "cash").reduce((s, a) => s + Math.max(0, Number(a.packageTip ?? a.tip ?? 0) - gcAllocPackage(a).gcTip), 0)
+    + ticketAppts.filter(a => a.extraTipPaymentType === "cash").reduce((s, a) => s + Number(a.extraTip || 0), 0)
+    + revenueAddons.filter(ad => ad.tipPaymentType === "cash").reduce((s, ad) => s + Number(ad.tip || 0), 0)
+    + cavSlotAppts.filter(a => a.tipPaymentType === "cash").reduce((s, a) => s + Number(a.tip || 0), 0)
+    + deposits.filter(d => d.tipPaymentType === "cash" || !d.tipPaymentType).reduce((s, d) => s + Number(d.tip || 0), 0)
+    - totalRefundTipCash;
+  const totalTipCard = regularAppts.filter(a => !a.tipSplitPayment && a.tipPaymentType === "card").reduce((s, a) => s + Math.max(0, Number(a.tip || 0) - gcAlloc(a).gcTip), 0)
+    + regularAppts.filter(a => a.tipSplitPayment).reduce((s, a) => s + Number(a.tipCardPortion || 0), 0)
+    + sameDayAppts.filter(a => a.tipPaymentType === "card").reduce((s, a) => s + Math.max(0, Number(a.packageTip ?? a.tip ?? 0) - gcAllocPackage(a).gcTip), 0)
+    + ticketAppts.filter(a => a.extraTipPaymentType === "card").reduce((s, a) => s + Number(a.extraTip || 0), 0)
+    + revenueAddons.filter(ad => ad.tipPaymentType !== "cash").reduce((s, ad) => s + Number(ad.tip || 0), 0)
+    + cavSlotAppts.filter(a => a.tipPaymentType === "card").reduce((s, a) => s + Number(a.tip || 0), 0)
+    + deposits.filter(d => d.tipPaymentType === "card").reduce((s, d) => s + Number(d.tip || 0), 0)
+    - totalRefundTipCard;
   const totalRetail = retails.reduce((s, r) => s + Number(r.price || 0), 0);
+  // 社販 (staff buying product for themselves) is still real product revenue for the salon.
+  // A single 社販 record can cover several items bought in one go (getStaffPurchaseItems).
+  const allStaffPurchaseItems = staffPurchases.flatMap(sp => getStaffPurchaseItems(sp));
+  const spCash = allStaffPurchaseItems.filter(it => it.paymentType === "cash").reduce((s, it) => s + Number(it.amount || 0), 0);
+  const spCard = allStaffPurchaseItems.filter(it => it.paymentType === "card").reduce((s, it) => s + Number(it.amount || 0), 0);
+  const spTotal = allStaffPurchaseItems.reduce((s, it) => s + Number(it.amount || 0), 0);
   const totalDepositAmt = deposits.filter(d => d.type === "deposit").reduce((s, d) => s + Number(d.amount || 0), 0);
   const totalDepositApplied = regularAppts.reduce((s, a) => s + Number(a.depositApplied || 0), 0);
   const totalGiftCard = deposits.filter(d => d.type === "giftcard").reduce((s, d) => s + Number(d.amount || 0), 0);
-  // Ticket new purchases (standalone section)
-  const tpCash = ticketPurchases.filter(tp => tp.paymentType === "cash").reduce((s, tp) => s + Number(tp.amount || 0), 0);
-  const tpCard = ticketPurchases.filter(tp => tp.paymentType === "card").reduce((s, tp) => s + Number(tp.amount || 0), 0);
-  const tpCheck = ticketPurchases.filter(tp => tp.paymentType === "check").reduce((s, tp) => s + Number(tp.amount || 0), 0);
+  const totalCancellation = deposits.filter(d => d.type === "cancellation").reduce((s, d) => s + Number(d.amount || 0), 0);
+  const totalCancellationCash = deposits.filter(d => d.type === "cancellation" && d.paymentType === "cash").reduce((s, d) => s + Number(d.amount || 0), 0);
+  const totalCancellationCard = deposits.filter(d => d.type === "cancellation" && d.paymentType === "card").reduce((s, d) => s + Number(d.amount || 0), 0);
+  // Deposit + gift card + cancellation combined by payment method — matches the Sales Report Excel's
+  // "Treatment" column, which folds all three of these in (they're money received today, just not
+  // tied to a specific service line item).
+  const depositAllCash = deposits.filter(d => d.paymentType === "cash").reduce((s, d) => s + Number(d.amount || 0), 0);
+  const depositAllCard = deposits.filter(d => d.paymentType === "card").reduce((s, d) => s + Number(d.amount || 0), 0);
+  // Ticket new purchases (standalone section) — split-payment entries contribute cashPortion/cardPortion instead
+  const tpCash = ticketPurchases.filter(tp => !tp.splitPayment && tp.paymentType === "cash").reduce((s, tp) => s + Number(tp.amount || 0), 0)
+    + ticketPurchases.filter(tp => tp.splitPayment).reduce((s, tp) => s + Number(tp.cashPortion || 0), 0);
+  const tpCard = ticketPurchases.filter(tp => !tp.splitPayment && tp.paymentType === "card").reduce((s, tp) => s + Number(tp.amount || 0), 0)
+    + ticketPurchases.filter(tp => tp.splitPayment).reduce((s, tp) => s + Number(tp.cardPortion || 0), 0);
   const tpTotal = ticketPurchases.reduce((s, tp) => s + Number(tp.amount || 0), 0);
-  const tpTipCash = ticketPurchases.filter(tp => tp.tipPaymentType === "cash").reduce((s, tp) => s + Number(tp.tip || 0), 0);
-  const tpTipCard = ticketPurchases.filter(tp => tp.tipPaymentType === "card").reduce((s, tp) => s + Number(tp.tip || 0), 0);
-  const tpTipCheck = ticketPurchases.filter(tp => tp.tipPaymentType === "check").reduce((s, tp) => s + Number(tp.tip || 0), 0);
   const tpTipTotal = ticketPurchases.reduce((s, tp) => s + Number(tp.tip || 0), 0);
+  const tpTipCash = ticketPurchases.filter(tp => tp.tipPaymentType === "cash" || !tp.tipPaymentType).reduce((s, tp) => s + Number(tp.tip || 0), 0);
+  const tpTipCard = ticketPurchases.filter(tp => tp.tipPaymentType === "card").reduce((s, tp) => s + Number(tp.tip || 0), 0);
   // Inline purchases recorded inside appointment cards
   const allApptsList = appointments.filter(a => !a.isCavSlot);
   const inlineNewTicketAppts = allApptsList.filter(a => (a.purchaseTags||[]).includes("newTicket"));
   const inlineRetailAppts   = allApptsList.filter(a => (a.purchaseTags||[]).includes("retail"));
   const inlineGCAppts       = allApptsList.filter(a => (a.purchaseTags||[]).includes("giftCard"));
-  const inlineNTCash  = inlineNewTicketAppts.filter(a=>a.newTicketPaymentType==="cash").reduce((s,a)=>s+Number(a.newTicketAmount||0),0);
-  const inlineNTCard  = inlineNewTicketAppts.filter(a=>a.newTicketPaymentType!=="cash").reduce((s,a)=>s+Number(a.newTicketAmount||0),0);
+  const inlineNTCash  = inlineNewTicketAppts.filter(a=>!a.newTicketSplitPayment && a.newTicketPaymentType==="cash").reduce((s,a)=>s+Number(a.newTicketAmount||0),0)
+    + inlineNewTicketAppts.filter(a=>a.newTicketSplitPayment).reduce((s,a)=>s+Number(a.newTicketCashPortion||0),0);
+  const inlineNTCard  = inlineNewTicketAppts.filter(a=>!a.newTicketSplitPayment && a.newTicketPaymentType!=="cash").reduce((s,a)=>s+Number(a.newTicketAmount||0),0)
+    + inlineNewTicketAppts.filter(a=>a.newTicketSplitPayment).reduce((s,a)=>s+Number(a.newTicketCardPortion||0),0);
   const inlineNTTipCash = inlineNewTicketAppts.filter(a=>a.newTicketTipPaymentType==="cash").reduce((s,a)=>s+Number(a.newTicketTip||0),0);
   const inlineNTTipCard = inlineNewTicketAppts.filter(a=>a.newTicketTipPaymentType!=="cash").reduce((s,a)=>s+Number(a.newTicketTip||0),0);
   const inlineNTTotal = inlineNewTicketAppts.reduce((s,a)=>s+Number(a.newTicketAmount||0),0);
   const inlineNTTipTotal = inlineNewTicketAppts.reduce((s,a)=>s+Number(a.newTicketTip||0),0);
-  const inlineRetailCash = inlineRetailAppts.filter(a=>a.retailPurchasePaymentType==="cash").reduce((s,a)=>s+Math.max(0,Number(a.retailPurchaseAmount||0)-gcAlloc(a).gcRetail),0);
-  const inlineRetailCard = inlineRetailAppts.filter(a=>a.retailPurchasePaymentType!=="cash").reduce((s,a)=>s+Math.max(0,Number(a.retailPurchaseAmount||0)-gcAlloc(a).gcRetail),0);
-  const inlineRetailTotal = inlineRetailAppts.reduce((s,a)=>s+Number(a.retailPurchaseAmount||0),0);
+  // Comprehensive Total Tip — every tip source (main/sameday/extraTip/addon/cav/deposit already
+  // folded into totalTipCash/totalTipCard above), plus standalone + inline new-ticket-purchase tips.
+  const tipCashAllSources = totalTipCash + tpTipCash + inlineNTTipCash;
+  const tipCardAllSources = totalTipCard + tpTipCard + inlineNTTipCard;
+  const totalTipAllCC = tipCashAllSources + tipCardAllSources;
+  // Multiple retail items can share one appointment; gc used against retail is distributed
+  // across items proportionally to each item's share of the appointment's retail total.
+  const retailCashCardSplit = (a) => {
+    const items = getRetailItems(a);
+    const itemsTotal = items.reduce((s, it) => s + Number(it.amount || 0), 0);
+    const gcRetail = gcAlloc(a).gcRetail;
+    let cash = 0, card = 0;
+    items.forEach(it => {
+      const amt = Number(it.amount || 0);
+      const gcShare = itemsTotal > 0 ? gcRetail * amt / itemsTotal : 0;
+      const net = Math.max(0, amt - gcShare);
+      if (it.paymentType === "cash") cash += net; else card += net;
+    });
+    return { cash, card };
+  };
+  const inlineRetailCash = inlineRetailAppts.reduce((s,a)=>s+retailCashCardSplit(a).cash,0);
+  const inlineRetailCard = inlineRetailAppts.reduce((s,a)=>s+retailCashCardSplit(a).card,0);
+  const inlineRetailTotal = inlineRetailAppts.reduce((s,a)=>s+getRetailItems(a).reduce((s2,it)=>s2+Number(it.amount||0),0)-gcAlloc(a).gcRetail,0);
   const inlineGCCash = inlineGCAppts.filter(a=>a.giftCardPurchasePaymentType==="cash").reduce((s,a)=>s+Number(a.giftCardPurchaseAmount||0),0);
   const inlineGCCard = inlineGCAppts.filter(a=>a.giftCardPurchasePaymentType!=="cash").reduce((s,a)=>s+Number(a.giftCardPurchaseAmount||0),0);
   const inlineGCTotal = inlineGCAppts.reduce((s,a)=>s+Number(a.giftCardPurchaseAmount||0),0);
+  // Treatment (Cash/Card) — regular+sameday+addon+cav revenue, plus deposit/GC/cancellation, plus
+  // any ticket purchased today (standalone ticket-purchase section or an inline チケット新規購入
+  // add-on) — all real money received today that isn't a retail product.
+  const cashTreatmentAll = totalCash + depositAllCash + tpCash + inlineNTCash;
+  const cardTreatmentAll = totalCard + depositAllCard + tpCard + inlineNTCard;
+  // Product (Cash/Card) — standalone retail sales plus inline 物販購入 recorded inside a visit.
+  const cashProductStd = retails.filter(r => r.paymentType === "cash").reduce((s, r) => s + Number(r.price || 0), 0) + inlineRetailCash + spCash;
+  const cardProductStd = retails.filter(r => r.paymentType === "card").reduce((s, r) => s + Number(r.price || 0), 0) + inlineRetailCard + spCard;
+  const totalSalesAll = cashTreatmentAll + cashProductStd + cardTreatmentAll + cardProductStd;
 
   const summaryByTherapist = THERAPISTS.map(t => {
     const appts = regularAppts.filter(a => a.therapist === t);
@@ -672,12 +839,21 @@ If no bookings return [].`,
             style={{ padding: "8px 16px", borderRadius: 8, border: "none", background: squareLoading ? "#666" : "#E8A84A", color: "#fff", fontWeight: 700, cursor: squareLoading ? "not-allowed" : "pointer", fontSize: 13 }}>
             {squareLoading ? "⏳ 取得中..." : "□ Square同期"}
           </button>
-          <button onClick={loadTodayFromSquare}
-            style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: "#5C6BC0", color: "#fff", fontWeight: 700, cursor: "pointer", fontSize: 13 }}>
-            📥 今日のデータ
+          <button onClick={syncOnlineGiftCards} disabled={gcSyncLoading}
+            style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: gcSyncLoading ? "#666" : "#B45309", color: "#fff", fontWeight: 700, cursor: gcSyncLoading ? "not-allowed" : "pointer", fontSize: 13 }}>
+            {gcSyncLoading ? "⏳ 取得中..." : "🎁 ギフトカード購入取得"}
+          </button>
+          <button onClick={handleLockToggle}
+            style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: locked ? "#C62828" : "rgba(255,255,255,0.15)", color: "#fff", fontWeight: 700, cursor: "pointer", fontSize: 13 }}>
+            {locked ? "🔒 確定済み（解除）" : "🔓 この日を確定する"}
           </button>
         </div>
       </div>
+      {locked && (
+        <div style={{ background: "#FFEBEE", padding: "8px 20px", fontSize: 13, color: "#C62828", fontWeight: 700, borderBottom: "2px solid #C62828" }}>
+          🔒 この日は確定済みです。編集・削除するには「確定済み」ボタンからPINを入力して解除してください。
+        </div>
+      )}
       {squareStatus && <div style={{ background: "#FFF3CD", padding: "8px 20px", fontSize: 13, color: "#856404" }}>⚠️ {squareStatus}</div>}
 
       {/* Tabs */}
@@ -729,7 +905,7 @@ If no bookings return [].`,
           {depositsForDate.length > 0 && (
             <div style={{ background: "#E3F2FD", borderRadius: 12, padding: 12, marginBottom: 14, border: "2px solid #1565C0" }}>
               <div style={{ fontWeight: 800, fontSize: 13, color: "#1565C0", marginBottom: 10 }}>
-                💰 本日来店予定 — デポジット済みのお客様 {depositsForDate.length}名
+                💰 本日来店予定 — 領収済みのお客様 {depositsForDate.length}名
               </div>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
                 {depositsForDate.map((dep, i) => (
@@ -738,12 +914,18 @@ If no bookings return [].`,
                     border: "2px solid #1565C0", minWidth: 170,
                     boxShadow: "0 2px 6px rgba(21,101,192,0.12)"
                   }}>
-                    <div style={{ fontWeight: 800, fontSize: 14, color: "#0D47A1" }}>{dep.clientName}</div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      <span style={{ fontWeight: 800, fontSize: 14, color: "#0D47A1" }}>{dep.clientName}</span>
+                      <span style={{ fontSize: 9, fontWeight: 700, padding: "1px 6px", borderRadius: 8, background: dep.type === "giftcard" ? "#FFF3E0" : "#E3F2FD", color: dep.type === "giftcard" ? "#E65100" : "#1565C0" }}>
+                        {dep.type === "giftcard" ? "🎁 全額ギフト" : "💰 デポジット"}
+                      </span>
+                    </div>
                     <div style={{ fontSize: 13, fontWeight: 700, color: "#1565C0", marginTop: 3 }}>
                       💰 ${dep.amount}
                       <span style={{ fontSize: 11, fontWeight: 400, color: "#888", marginLeft: 6 }}>
                         {dep.paymentType === "cash" ? "現金" : dep.paymentType === "card" ? "カード" : "Check"}
                       </span>
+                      {Number(dep.tip) > 0 && <span style={{ fontSize: 11, color: "#E65100", marginLeft: 6 }}>＋チップ${dep.tip}</span>}
                     </div>
                     {dep.appointmentTime && (
                       <div style={{ fontSize: 12, color: "#555", marginTop: 3 }}>🕐 {dep.appointmentTime}</div>
@@ -764,7 +946,8 @@ If no bookings return [].`,
                   <th key={t} style={{ padding: "8px 6px", fontSize: 13, fontWeight: 700, color: "#0D4F4F", textAlign: "center", borderBottom: "2px solid #0D4F4F", minWidth: 140 }}>
                     {t}
                     <button onClick={() => setEditingAppt({ ...EMPTY_APPOINTMENT, id: `m-${Date.now()}`, therapist: t, startTime: "09:00" })}
-                      style={{ display: "block", margin: "4px auto 0", fontSize: 10, padding: "2px 8px", borderRadius: 10, border: "1px dashed #0D4F4F", background: "none", cursor: "pointer", color: "#0D4F4F" }}>
+                      disabled={locked}
+                      style={{ display: "block", margin: "4px auto 0", fontSize: 10, padding: "2px 8px", borderRadius: 10, border: "1px dashed #0D4F4F", background: "none", cursor: locked ? "not-allowed" : "pointer", color: locked ? "#AAA" : "#0D4F4F" }}>
                       + 追加
                     </button>
                   </th>
@@ -790,8 +973,9 @@ If no bookings return [].`,
                     const hasContent = appts.length > 0 || addonItems.length > 0;
                     return (
                       <td key={t} style={{ padding: "4px", verticalAlign: "top" }}
-                        onClick={() => !hasContent && setEditingAppt({ ...EMPTY_APPOINTMENT, id: `m-${Date.now()}`, therapist: t, startTime: `${String(hour).padStart(2,"0")}:00` })}>
+                        onClick={() => !hasContent && !locked && setEditingAppt({ ...EMPTY_APPOINTMENT, id: `m-${Date.now()}`, therapist: t, startTime: `${String(hour).padStart(2,"0")}:00` })}>
                         {appts.map(a => <ApptCard key={a.id} appt={a} onClick={() => {
+                          if (locked) { showToast("🔒 この日は確定済みです。解除してから編集してください", "error"); return; }
                           if (a.isCavSlot) {
                             const parent = appointments.find(p => p.id === a.parentId);
                             if (parent) openApptForEdit(parent);
@@ -799,20 +983,32 @@ If no bookings return [].`,
                             openApptForEdit(a);
                           }
                         }} />)}
-                        {addonItems.map(({ parentAppt, addon }) => (
-                          <div key={`${parentAppt.id}-${addon.id}`}
-                            onClick={e => { e.stopPropagation(); openApptForEdit(parentAppt); }}
-                            style={{ background: "#E0F2F1", border: "1.5px solid #00796B", borderRadius: 8, padding: "5px 7px", marginBottom: 3, cursor: "pointer" }}>
-                            <div style={{ fontSize: 10, fontWeight: 800, color: "#00695C" }}>➕ オプション</div>
-                            <div style={{ fontSize: 11, fontWeight: 700, color: "#004D40" }}>{parentAppt.clientName}</div>
-                            <div style={{ fontSize: 10, color: "#00796B" }}>{addon.serviceName || "オプション"}</div>
-                            {(Number(addon.price||0) + Number(addon.tip||0)) > 0 && (
-                              <div style={{ fontSize: 10, fontWeight: 700, color: "#005F4A" }}>
-                                施術${addon.price||0}{Number(addon.tip||0) > 0 ? ` チップ$${addon.tip}` : ""}
+                        {addonItems.map(({ parentAppt, addon }) => {
+                          const aSvc = Number(addon.price||0);
+                          const aTip = Number(addon.tip||0);
+                          const aTotal = r2(aSvc + aTip);
+                          const aColor = addon.countsAsRevenue === true ? REVENUE_COLOR : addon.countsAsRevenue === false ? NON_REVENUE_COLOR : "#005F4A";
+                          const svcIcon = addon.paymentType === "card" ? "💳" : addon.paymentType === "cash" ? "💵" : "";
+                          const tipIcon = addon.tipPaymentType === "card" ? "💳" : addon.tipPaymentType === "cash" ? "💵" : "";
+                          return (
+                            <div key={`${parentAppt.id}-${addon.id}`}
+                              onClick={e => { e.stopPropagation(); openApptForEdit(parentAppt); }}
+                              style={{ background: "#E0F2F1", border: "1.5px solid #00796B", borderRadius: 8, padding: "5px 7px", marginBottom: 3, cursor: "pointer" }}>
+                              <div style={{ fontSize: 10, fontWeight: 800, color: "#00695C" }}>➕ オプション</div>
+                              <div style={{ fontSize: 11, fontWeight: 700, color: "#004D40" }}>{parentAppt.clientName}</div>
+                              <div style={{ fontSize: 10, color: "#00796B" }}>
+                                {addon.serviceName || "オプション"}{addon.ticketCurrent ? ` ${addon.ticketCurrent}/${parentAppt.ticketTotal||3}` : ""}
                               </div>
-                            )}
-                          </div>
-                        ))}
+                              {aTotal > 0 && (
+                                <div style={{ fontSize: 10, fontWeight: 700, color: aColor }}>
+                                  <div>{aSvc}{svcIcon}</div>
+                                  {aTip > 0 && <div>{aTip}{tipIcon}</div>}
+                                  <div style={{ fontWeight: 800 }}>{aTotal}</div>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
                         {!hasContent && <div style={{ height: 36, border: "1px dashed #DDD", borderRadius: 6, cursor: "pointer", opacity: 0.4 }} />}
                       </td>
                     );
@@ -823,55 +1019,79 @@ If no bookings return [].`,
           </table>
 
           {/* Retail */}
-          <SectionBox title="🛍️ 物販" color="#6A1B9A" onAdd={() => setEditingRetail({ ...EMPTY_RETAIL, id: Date.now() })}>
+          <SectionBox title="🛍️ 物販" color="#6A1B9A" onAdd={() => setEditingRetail({ ...EMPTY_RETAIL, id: Date.now() })} disabled={locked}>
             {retails.length === 0 && <p style={{ color: "#AAA", fontSize: 13 }}>なし</p>}
             {retails.map(r => (
               <div key={r.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: "1px solid #F0F0F0", flexWrap: "wrap" }}>
                 <span style={{ flex: 1, fontSize: 14 }}>{r.item || "（未入力）"}</span>
                 <span style={{ fontWeight: 700, color: "#6A1B9A" }}>{formatCurrency(r.price)}</span>
                 <PayBadge type={r.paymentType} />
-                <span style={{ fontSize: 12, color: "#888" }}>{r.soldBy}</span>
-                <button onClick={() => setEditingRetail(r)} style={iconBtn}>✏️</button>
-                <button onClick={() => deleteRetail(r.id)} style={iconBtn}>🗑️</button>
+                <span style={{ fontSize: 12, color: "#888" }}>
+                  {(r.sellers || (r.soldBy ? [{ therapist: r.soldBy, amount: r.price }] : [])).filter(sel => sel.therapist).map(sel => `${sel.therapist}$${sel.amount||0}`).join(" / ")}
+                </span>
+                <button onClick={() => setEditingRetail(r)} disabled={locked} style={{...iconBtn, opacity: locked ? 0.35 : 1, cursor: locked ? "not-allowed" : "pointer"}}>✏️</button>
+                <button onClick={() => deleteRetail(r.id)} disabled={locked} style={{...iconBtn, opacity: locked ? 0.35 : 1, cursor: locked ? "not-allowed" : "pointer"}}>🗑️</button>
               </div>
             ))}
           </SectionBox>
 
           {/* Deposits */}
-          <SectionBox title="💰 デポジット・ギフトカード" color="#1565C0" onAdd={() => setEditingDeposit({ ...EMPTY_DEPOSIT, id: Date.now() })}>
+          <SectionBox title="💰 デポジット・ギフトカード・キャンセル料" color="#1565C0" onAdd={() => setEditingDeposit({ ...EMPTY_DEPOSIT, id: Date.now() })} disabled={locked}>
             {deposits.length === 0 && <p style={{ color: "#AAA", fontSize: 13 }}>なし</p>}
             {deposits.map(d => (
               <div key={d.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: "1px solid #F0F0F0", flexWrap: "wrap" }}>
-                <span style={{ fontSize: 11, background: d.type === "deposit" ? "#E3F2FD" : "#FFF3E0", color: d.type === "deposit" ? "#1565C0" : "#E65100", padding: "2px 8px", borderRadius: 10, fontWeight: 700 }}>
-                  {d.type === "deposit" ? "デポジット" : "ギフトカード"}
+                <span style={{ fontSize: 11, background: d.type === "deposit" ? "#E3F2FD" : d.type === "cancellation" ? "#FFEBEE" : "#FFF3E0", color: d.type === "deposit" ? "#1565C0" : d.type === "cancellation" ? "#C62828" : "#E65100", padding: "2px 8px", borderRadius: 10, fontWeight: 700 }}>
+                  {d.type === "deposit" ? "デポジット" : d.type === "cancellation" ? "❌ キャンセル料" : "ギフトカード"}
                 </span>
                 <span style={{ flex: 1, fontSize: 14 }}>{d.clientName || "—"}</span>
                 <span style={{ fontWeight: 700 }}>{formatCurrency(d.amount)}</span>
                 <PayBadge type={d.paymentType} />
-                <button onClick={() => setEditingDeposit(d)} style={iconBtn}>✏️</button>
-                <button onClick={() => deleteDeposit(d.id)} style={iconBtn}>🗑️</button>
+                <button onClick={() => setEditingDeposit(d)} disabled={locked} style={{...iconBtn, opacity: locked ? 0.35 : 1, cursor: locked ? "not-allowed" : "pointer"}}>✏️</button>
+                <button onClick={() => deleteDeposit(d.id)} disabled={locked} style={{...iconBtn, opacity: locked ? 0.35 : 1, cursor: locked ? "not-allowed" : "pointer"}}>🗑️</button>
               </div>
             ))}
           </SectionBox>
 
           {/* Staff Purchases 社販 */}
-          <SectionBox title="👩‍💼 社販（スタッフ購入）" color="#37474F" onAdd={() => setEditingStaffPurchase({ ...EMPTY_STAFF_PURCHASE, id: Date.now() })}>
+          <SectionBox title="👩‍💼 社販（スタッフ購入・施術）" color="#37474F" onAdd={() => setEditingStaffPurchase({ ...EMPTY_STAFF_PURCHASE, id: Date.now() })} disabled={locked}>
             {staffPurchases.length === 0 && <p style={{ color: "#AAA", fontSize: 13 }}>なし</p>}
-            {staffPurchases.map(sp => (
-              <div key={sp.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 0", borderBottom: "1px solid #F0F0F0", flexWrap: "wrap" }}>
-                <span style={{ fontWeight: 700, fontSize: 14, color: "#37474F" }}>{sp.staffName || "—"}</span>
-                {sp.productName && sp.productName !== "__other__" && <span style={{ fontSize: 11, color: "#37474F", background: "#ECEFF1", borderRadius: 8, padding: "2px 8px" }}>{sp.productName}</span>}
-                <span style={{ fontWeight: 700, color: "#37474F" }}>{formatCurrency(sp.amount)}</span>
-                <PayBadge type={sp.paymentType} />
-                {sp.notes && <span style={{ fontSize: 11, color: "#888" }}>{sp.notes}</span>}
-                <button onClick={() => setEditingStaffPurchase(sp)} style={iconBtn}>✏️</button>
-                <button onClick={() => deleteStaffPurchase(sp.id)} style={iconBtn}>🗑️</button>
-              </div>
-            ))}
+            {staffPurchases.map(sp => {
+              const items = getStaffPurchaseItems(sp);
+              const total = items.reduce((s, it) => s + Number(it.amount || 0), 0);
+              return (
+                <div key={sp.id} style={{ padding: "8px 0", borderBottom: "1px solid #F0F0F0" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                    <span style={{ fontWeight: 700, fontSize: 14, color: "#37474F" }}>{sp.staffName || "—"}</span>
+                    {items.length === 1 && items[0].productName && items[0].productName !== "__other__" && (
+                      <span style={{ fontSize: 11, color: "#37474F", background: "#ECEFF1", borderRadius: 8, padding: "2px 8px" }}>{items[0].productName}</span>
+                    )}
+                    {items.length > 1 && (
+                      <span style={{ fontSize: 11, color: "#37474F", background: "#ECEFF1", borderRadius: 8, padding: "2px 8px" }}>{items.length}点</span>
+                    )}
+                    <span style={{ fontWeight: 700, color: "#37474F" }}>{formatCurrency(total)}</span>
+                    {items.length === 1 && <PayBadge type={items[0].paymentType} />}
+                    {sp.notes && <span style={{ fontSize: 11, color: "#888" }}>{sp.notes}</span>}
+                    <button onClick={() => setEditingStaffPurchase(sp)} disabled={locked} style={{...iconBtn, opacity: locked ? 0.35 : 1, cursor: locked ? "not-allowed" : "pointer"}}>✏️</button>
+                    <button onClick={() => deleteStaffPurchase(sp.id)} disabled={locked} style={{...iconBtn, opacity: locked ? 0.35 : 1, cursor: locked ? "not-allowed" : "pointer"}}>🗑️</button>
+                  </div>
+                  {items.length > 1 && (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 3, marginTop: 4, paddingLeft: 4 }}>
+                      {items.map((it, idx) => (
+                        <div key={idx} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "#555" }}>
+                          <span style={{ flex: 1 }}>{it.productName || "（商品名なし）"}</span>
+                          <span style={{ fontWeight: 700 }}>{formatCurrency(it.amount)}</span>
+                          <PayBadge type={it.paymentType} />
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </SectionBox>
 
           {/* Ticket New Purchases */}
-          <SectionBox title="🎟️ チケット新規購入（電話・当日）" color="#B71C1C" onAdd={() => setEditingTicketPurchase({ ...EMPTY_TICKET_PURCHASE, id: Date.now() })}>
+          <SectionBox title="🎟️ チケット新規購入（電話・当日）" color="#B71C1C" onAdd={() => setEditingTicketPurchase({ ...EMPTY_TICKET_PURCHASE, id: Date.now() })} disabled={locked}>
             {ticketPurchases.length === 0 && <p style={{ color: "#AAA", fontSize: 13 }}>なし</p>}
             {ticketPurchases.map(tp => {
               const tip = Number(tp.tip || 0);
@@ -882,15 +1102,43 @@ If no bookings return [].`,
                   {tp.packageName && <span style={{ fontSize: 11, color: "#B71C1C", background: "#FFEBEE", borderRadius: 8, padding: "2px 8px" }}>{tp.packageName}</span>}
                   <span style={{ fontWeight: 700, color: "#B71C1C" }}>{formatCurrency(amt)}</span>
                   {tip > 0 && <span style={{ fontSize: 11, color: "#E65100" }}>チップ{formatCurrency(tip)}</span>}
-                  <PayBadge type={tp.paymentType} />
-                  <button onClick={() => setEditingTicketPurchase(tp)} style={iconBtn}>✏️</button>
-                  <button onClick={() => deleteTicketPurchase(tp.id)} style={iconBtn}>🗑️</button>
+                  {tp.splitPayment
+                    ? <span style={{ fontSize: 11, color: "#B71C1C", background: "#FFEBEE", borderRadius: 8, padding: "2px 8px" }}>💵{formatCurrency(tp.cashPortion||0)}＋💳{formatCurrency(tp.cardPortion||0)}</span>
+                    : <PayBadge type={tp.paymentType} />}
+                  <button onClick={() => setEditingTicketPurchase(tp)} disabled={locked} style={{...iconBtn, opacity: locked ? 0.35 : 1, cursor: locked ? "not-allowed" : "pointer"}}>✏️</button>
+                  <button onClick={() => deleteTicketPurchase(tp.id)} disabled={locked} style={{...iconBtn, opacity: locked ? 0.35 : 1, cursor: locked ? "not-allowed" : "pointer"}}>🗑️</button>
                 </div>
               );
             })}
             {ticketPurchases.length > 0 && (
               <div style={{ marginTop: 8, fontSize: 11, color: "#B71C1C", fontWeight: 700, textAlign: "right" }}>
                 合計 {formatCurrency(tpTotal)}　チップ {formatCurrency(tpTipTotal)}
+              </div>
+            )}
+          </SectionBox>
+
+          {/* Refunds — for a past visit's refund processed today (deducts from today's totals only) */}
+          <SectionBox title="🔙 返金（リファンド）" color="#5D4037" onAdd={() => setEditingRefund({ ...EMPTY_REFUND, id: Date.now() })} disabled={locked}>
+            {refunds.length === 0 && <p style={{ color: "#AAA", fontSize: 13 }}>なし</p>}
+            {refunds.map(rf => {
+              const svc = Number(rf.serviceAmount || 0);
+              const tip = Number(rf.tipAmount || 0);
+              return (
+                <div key={rf.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 0", borderBottom: "1px solid #F0F0F0", flexWrap: "wrap" }}>
+                  <span style={{ flex: 1, fontWeight: 700, fontSize: 14 }}>{rf.clientName || "—"}</span>
+                  {rf.originalDate && <span style={{ fontSize: 11, color: "#5D4037", background: "#EFEBE9", borderRadius: 8, padding: "2px 8px" }}>来店日: {rf.originalDate}</span>}
+                  {svc > 0 && <span style={{ fontWeight: 700, color: "#C62828" }}>施術 -{formatCurrency(svc)}</span>}
+                  {tip > 0 && <span style={{ fontWeight: 700, color: "#C62828" }}>チップ -{formatCurrency(tip)}</span>}
+                  <PayBadge type={rf.paymentType} />
+                  {rf.notes && <span style={{ fontSize: 11, color: "#888" }}>{rf.notes}</span>}
+                  <button onClick={() => setEditingRefund(rf)} disabled={locked} style={{...iconBtn, opacity: locked ? 0.35 : 1, cursor: locked ? "not-allowed" : "pointer"}}>✏️</button>
+                  <button onClick={() => deleteRefund(rf.id)} disabled={locked} style={{...iconBtn, opacity: locked ? 0.35 : 1, cursor: locked ? "not-allowed" : "pointer"}}>🗑️</button>
+                </div>
+              );
+            })}
+            {refunds.length > 0 && (
+              <div style={{ marginTop: 8, fontSize: 11, color: "#C62828", fontWeight: 700, textAlign: "right" }}>
+                施術 -{formatCurrency(totalRefundService)}　チップ -{formatCurrency(totalRefundTip)}
               </div>
             )}
           </SectionBox>
@@ -915,26 +1163,27 @@ If no bookings return [].`,
               </div>
               <div style={{ background: "#FFF8E1", borderRadius: 10, padding: "10px 18px", textAlign: "center", flex: 1, minWidth: 120 }}>
                 <div style={{ fontSize: 11, color: "#888" }}>Total Sales（施術＋物販）</div>
-                <div style={{ fontSize: 26, fontWeight: 800, color: "#C62828" }}>{formatCurrency(totalRevenue + totalCavRevenue + totalRetail)}</div>
+                <div style={{ fontSize: 26, fontWeight: 800, color: "#C62828" }}>{formatCurrency(totalSalesAll)}</div>
               </div>
               <div style={{ background: "#F3E5F5", borderRadius: 10, padding: "10px 18px", textAlign: "center", flex: 1, minWidth: 120 }}>
                 <div style={{ fontSize: 11, color: "#888" }}>Total Sales ＋ Tip</div>
-                <div style={{ fontSize: 26, fontWeight: 800, color: "#6A1B9A" }}>{formatCurrency(totalRevenue + totalCavRevenue + totalRetail + totalTips + totalCavTips)}</div>
+                <div style={{ fontSize: 26, fontWeight: 800, color: "#6A1B9A" }}>{formatCurrency(totalSalesAll + totalTipAllCC)}</div>
               </div>
             </div>
 
             {/* Cash セクション */}
             <div style={{ marginBottom: 12 }}>
-              <div style={{ fontSize: 12, fontWeight: 700, color: "#2E7D32", background: "#E8F5E9", padding: "4px 10px", borderRadius: 6, marginBottom: 8, display: "inline-block" }}>💵 CASH</div>
+              <div style={{ fontSize: 13, fontWeight: 800, color: "#fff", background: "#2E7D32", padding: "5px 12px", borderRadius: 6, marginBottom: 8, display: "inline-block" }}>💵 CASH</div>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 8 }}>
                 {[
-                  { label: "Treatment", value: totalCash, color: "#2E7D32" },
-                  { label: "Product", value: retails.filter(r=>r.paymentType==="cash").reduce((s,r)=>s+Number(r.price||0),0), color: "#2E7D32" },
-                  { label: "Total Cash", value: totalCash + retails.filter(r=>r.paymentType==="cash").reduce((s,r)=>s+Number(r.price||0),0), color: "#1B5E20", bold: true },
-                  { label: "Tip", value: totalTipCash, color: "#558B2F" },
+                  { label: "Treatment", sub: "デポジット・GC・キャンセル料・チケット購入込み", value: cashTreatmentAll, color: "#2E7D32" },
+                  { label: "Product", value: cashProductStd, color: "#2E7D32" },
+                  { label: "Total Cash", value: cashTreatmentAll + cashProductStd, color: "#1B5E20", bold: true },
+                  { label: "Tip", value: tipCashAllSources, color: "#558B2F" },
                 ].map(s => (
-                  <div key={s.label} style={{ background: "#F1F8E9", borderRadius: 8, padding: "8px 10px", textAlign: "center" }}>
+                  <div key={s.label} style={{ background: "#F1F8E9", borderRadius: 8, padding: "8px 10px", textAlign: "center", border: s.bold ? "1.5px solid #2E7D32" : "none" }}>
                     <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>{s.label}</div>
+                    {s.sub && <div style={{ fontSize: 8, color: "#999", marginBottom: 3 }}>({s.sub})</div>}
                     <div style={{ fontSize: 17, fontWeight: s.bold ? 800 : 700, color: s.color }}>{formatCurrency(s.value)}</div>
                   </div>
                 ))}
@@ -943,34 +1192,44 @@ If no bookings return [].`,
 
             {/* Card セクション */}
             <div style={{ marginBottom: 12 }}>
-              <div style={{ fontSize: 12, fontWeight: 700, color: "#1565C0", background: "#E3F2FD", padding: "4px 10px", borderRadius: 6, marginBottom: 8, display: "inline-block" }}>💳 CARD</div>
+              <div style={{ fontSize: 13, fontWeight: 800, color: "#fff", background: "#1565C0", padding: "5px 12px", borderRadius: 6, marginBottom: 8, display: "inline-block" }}>💳 CARD</div>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 8 }}>
                 {[
-                  { label: "Treatment", value: totalCard, color: "#1565C0" },
-                  { label: "Product", value: retails.filter(r=>r.paymentType==="card").reduce((s,r)=>s+Number(r.price||0),0), color: "#1565C0" },
-                  { label: "Total Card", value: totalCard + retails.filter(r=>r.paymentType==="card").reduce((s,r)=>s+Number(r.price||0),0), color: "#0D47A1", bold: true },
-                  { label: "Tip", value: totalTipCard, color: "#1976D2" },
+                  { label: "Treatment", sub: "デポジット・GC・キャンセル料・チケット購入込み", value: cardTreatmentAll, color: "#1565C0" },
+                  { label: "Product", value: cardProductStd, color: "#1565C0" },
+                  { label: "Total Card", value: cardTreatmentAll + cardProductStd, color: "#0D47A1", bold: true },
+                  { label: "Tip", value: tipCardAllSources, color: "#1976D2" },
                 ].map(s => (
-                  <div key={s.label} style={{ background: "#E8F0FE", borderRadius: 8, padding: "8px 10px", textAlign: "center" }}>
+                  <div key={s.label} style={{ background: "#E8F0FE", borderRadius: 8, padding: "8px 10px", textAlign: "center", border: s.bold ? "1.5px solid #1565C0" : "none" }}>
                     <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>{s.label}</div>
+                    {s.sub && <div style={{ fontSize: 8, color: "#999", marginBottom: 3 }}>({s.sub})</div>}
                     <div style={{ fontSize: 17, fontWeight: s.bold ? 800 : 700, color: s.color }}>{formatCurrency(s.value)}</div>
                   </div>
                 ))}
               </div>
             </div>
 
-            {/* Tip & その他 */}
+            {/* Total Tip */}
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ background: "#FFF3E0", borderRadius: 8, padding: "8px 10px", textAlign: "center", border: "1.5px solid #E65100" }}>
+                <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>Total Tip（Cash＋Card）</div>
+                <div style={{ fontSize: 20, fontWeight: 800, color: "#E65100" }}>{formatCurrency(totalTipAllCC)}</div>
+              </div>
+            </div>
+
+            {/* その他内訳（上のTreatmentに含まれています） */}
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(110px,1fr))", gap: 8, marginBottom: 12 }}>
               {[
-                { label: "Total Tip", value: totalTips + totalCavTips, color: "#E65100", bg: "#FFF3E0" },
-                { label: "物販合計", value: totalRetail, color: "#6A1B9A", bg: "#F3E5F5" },
-                { label: "デポジット受取", value: totalDepositAmt, color: "#0277BD", bg: "#E1F5FE" },
+                { label: "デポジット受取", note: "Treatmentに計上済み", value: totalDepositAmt, color: "#0277BD", bg: "#E1F5FE" },
                 ...(totalDepositApplied > 0 ? [{ label: "💰 Payroll加算", value: totalDepositApplied, color: "#2E7D32", bg: "#C8E6C9", prefix: "+" }] : []),
-                { label: "ギフトカード購入", value: totalGiftCard, color: "#00796B", bg: "#E0F2F1" },
+                { label: "ギフトカード購入", note: "Treatmentに計上済み", value: totalGiftCard, color: "#00796B", bg: "#E0F2F1" },
                 ...(totalGCUsed > 0 ? [{ label: "🎁 GC使用", value: totalGCUsed, color: "#00695C", bg: "#B2DFDB" }] : []),
+                { label: "❌ キャンセル料", note: "Treatmentに計上済み", value: totalCancellation, color: "#C62828", bg: "#FFEBEE" },
+                { label: "物販合計", value: totalRetail + inlineRetailTotal + spTotal, color: "#6A1B9A", bg: "#F3E5F5" },
               ].map(s => (
                 <div key={s.label} style={{ background: s.bg, borderRadius: 8, padding: "8px 10px", textAlign: "center" }}>
                   <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>{s.label}</div>
+                  {s.note && <div style={{ fontSize: 8, color: "#999", marginBottom: 3 }}>({s.note})</div>}
                   <div style={{ fontSize: 17, fontWeight: 700, color: s.color }}>{s.prefix || ""}{formatCurrency(s.value)}</div>
                 </div>
               ))}
@@ -982,22 +1241,23 @@ If no bookings return [].`,
               {/* Treatment breakdown */}
               <div style={{ background: "#F9F9F9", borderRadius: 8, padding: "8px 12px", marginBottom: 8, fontSize: 11, color: "#555" }}>
                 <span style={{ fontWeight: 700 }}>施術料合計（Deposit・GC・チケット購入含む）：</span>
-                <span style={{ color: "#C62828", fontWeight: 800, fontSize: 14, marginLeft: 4 }}>{formatCurrency(totalCash + totalCard + totalDepositAmt + totalGiftCard + tpTotal + inlineNTTotal + inlineGCTotal)}</span>
+                <span style={{ color: "#C62828", fontWeight: 800, fontSize: 14, marginLeft: 4 }}>{formatCurrency(totalCash + totalCard + totalDepositAmt + totalGiftCard + totalCancellation + tpTotal + inlineNTTotal + inlineGCTotal)}</span>
                 <div style={{ marginTop: 4, color: "#999", fontSize: 10 }}>
                   Cash ${totalCash.toFixed(2)}　Card ${totalCard.toFixed(2)}
                   {totalDepositAmt > 0 && `　Deposit $${totalDepositAmt.toFixed(2)}`}
                   {totalGiftCard > 0 && `　GiftCard $${(totalGiftCard + inlineGCTotal).toFixed(2)}`}
-                  {(tpTotal + inlineNTTotal) > 0 && `　チケット購入 $${(tpTotal + inlineNTTotal).toFixed(2)}${tpCheck > 0 ? `（Check $${tpCheck.toFixed(2)}）` : ""}`}
+                  {totalCancellation > 0 && `　キャンセル料 $${totalCancellation.toFixed(2)}`}
+                  {(tpTotal + inlineNTTotal) > 0 && `　チケット購入 $${(tpTotal + inlineNTTotal).toFixed(2)}`}
                   {inlineRetailTotal > 0 && `　物販(inline) $${inlineRetailTotal.toFixed(2)}`}
                 </div>
               </div>
               {/* Final totals grid */}
               <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 6 }}>
                 {[
-                  { label: "Cash合計\n（全て）", value: totalCash + retails.filter(r=>r.paymentType==="cash").reduce((s,r)=>s+Number(r.price||0),0) + tpCash + inlineNTCash + inlineRetailCash + inlineGCCash, color: "#2E7D32", bg: "#E8F5E9" },
-                  { label: "Card合計\n（全て）", value: totalCard + retails.filter(r=>r.paymentType==="card").reduce((s,r)=>s+Number(r.price||0),0) + tpCard + tpCheck + inlineNTCard + inlineRetailCard + inlineGCCard, color: "#1565C0", bg: "#E3F2FD" },
-                  { label: "Tip合計", value: totalTips + totalCavTips + tpTipTotal + inlineNTTipTotal, color: "#E65100", bg: "#FFF3E0" },
-                  { label: "🏆 TOTAL\n（全て込み）", value: totalCash + totalCard + totalDepositAmt + totalGiftCard + totalRetail + totalTips + totalCavTips + tpTotal + tpTipTotal + inlineNTTotal + inlineNTTipTotal + inlineRetailTotal + inlineGCTotal, color: "#fff", bg: "#0D4F4F", bold: true },
+                  { label: "Cash合計\n（全て）", value: totalCash + retails.filter(r=>r.paymentType==="cash").reduce((s,r)=>s+Number(r.price||0),0) + tpCash + inlineNTCash + inlineRetailCash + inlineGCCash + totalCancellationCash + spCash, color: "#2E7D32", bg: "#E8F5E9" },
+                  { label: "Card合計\n（全て）", value: totalCard + retails.filter(r=>r.paymentType==="card").reduce((s,r)=>s+Number(r.price||0),0) + tpCard + inlineNTCard + inlineRetailCard + inlineGCCard + totalCancellationCard + spCard, color: "#1565C0", bg: "#E3F2FD" },
+                  { label: "Tip合計", value: totalTipAllCC, color: "#E65100", bg: "#FFF3E0" },
+                  { label: "🏆 TOTAL\n（全て込み）", value: totalCash + totalCard + totalDepositAmt + totalGiftCard + totalCancellation + totalRetail + totalTipAllCC + tpTotal + inlineNTTotal + inlineRetailTotal + inlineGCTotal + spTotal, color: "#fff", bg: "#0D4F4F", bold: true },
                 ].map(s => (
                   <div key={s.label} style={{ background: s.bg, borderRadius: 8, padding: "8px 6px", textAlign: "center" }}>
                     <div style={{ fontSize: 9, color: s.color === "#fff" ? "#B2EBF2" : "#888", marginBottom: 3, whiteSpace: "pre-line", lineHeight: 1.3 }}>{s.label}</div>
@@ -1014,7 +1274,12 @@ If no bookings return [].`,
               <div style={{ fontSize: 12, fontWeight: 700, color: "#2E7D32", marginBottom: 8 }}>🟢 当日購入チケット {sameDayAppts.length}件</div>
               {sameDayAppts.map(a => {
                 const pkgTip = Number(a.packageTip ?? a.tip ?? 0);
-                const total = Number(a.packagePrice||0) + pkgTip;
+                const pkgSvc = Number(a.packagePrice||0);
+                const gc = Number(a.giftCardUsed||0);
+                const gcSvc = Math.min(gc, pkgSvc);
+                const gcTip = Math.min(gc - gcSvc, pkgTip);
+                const extra = Number(a.extraTip||0);
+                const total = pkgSvc + pkgTip - gcSvc - gcTip + extra;
                 return (
                 <div key={a.id} onClick={() => openApptForEdit(a)} style={{ background: "#fff", borderRadius: 8, padding: "8px 12px", marginBottom: 6, cursor: "pointer" }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 6 }}>
@@ -1023,9 +1288,14 @@ If no bookings return [].`,
                     <span style={{ fontSize: 12, color: "#888" }}>{a.therapist}{a.cavTherapist ? ` ＋ ${a.cavTherapist}(機械)` : ""}</span>
                   </div>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 4 }}>
-                    <span style={{ fontSize: 11, color: "#2E7D32" }}>💰 ${Number(a.packagePrice||0)} / チップ ${pkgTip}{a.paymentType==="card"?"💳":"💵"}</span>
-                    <span style={{ fontWeight: 800, color: "#0D4F4F", fontSize: 14 }}>合計 ${total}</span>
+                    <span style={{ fontSize: 11, color: "#2E7D32" }}>💰 {a.packageSplitPayment ? `💵$${a.packageCashPortion||0}＋💳$${a.packageCardPortion||0}` : `$${pkgSvc}${a.paymentType==="card"?"💳":"💵"}`} / チップ ${pkgTip}{a.tipPaymentType==="card"?"💳":"💵"}{extra > 0 && <span style={{ color: "#F57F17" }}> +${extra}💝{a.extraTipPaymentType==="card"?"💳":"💵"}</span>}</span>
+                    <span style={{ fontWeight: 800, color: "#0D4F4F", fontSize: 14 }}>合計 ${pkgSvc + pkgTip + extra}</span>
                   </div>
+                  {gc > 0 && (
+                    <div style={{ marginTop: 4, fontSize: 10, color: NON_REVENUE_COLOR }}>
+                      🔵 ギフトカード残高 ${gcSvc + gcTip} 使用（本日の売上には含まれません。実質の本日売上 ${total}）
+                    </div>
+                  )}
                 </div>
                 );
               })}
@@ -1037,8 +1307,8 @@ If no bookings return [].`,
             <div style={{ background: "#E3F2FD", borderRadius: 12, padding: 12, marginBottom: 12, borderLeft: "4px solid #1565C0" }}>
               <div style={{ fontSize: 12, fontWeight: 700, color: "#1565C0", marginBottom: 8 }}>🔵 領収済み（チケット消化）{pureTicketAppts.length}件</div>
               {pureTicketAppts.map(a => {
-                const svc = Number(a.price||0) + Number(a.cavPrice||0);
-                const tip = Number(a.tip||0) + Number(a.cavTip||0) + Number(a.extraTip||0);
+                const svc = r2(Number(a.price||0) + Number(a.cavPrice||0));
+                const tip = r2(Number(a.tip||0) + Number(a.cavTip||0) + Number(a.extraTip||0));
                 return (
                   <div key={a.id} onClick={() => openApptForEdit(a)} style={{ background: "#fff", borderRadius: 8, padding: "8px 12px", marginBottom: 6, cursor: "pointer" }}>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 6 }}>
@@ -1061,8 +1331,8 @@ If no bookings return [].`,
             <div style={{ background: "#FFFDE7", borderRadius: 12, padding: 12, marginBottom: 12, borderLeft: "4px solid #F59E0B" }}>
               <div style={{ fontSize: 12, fontWeight: 700, color: "#B45309", marginBottom: 8 }}>🎁 領収済み（GC消化）{gcAppts.length}件</div>
               {gcAppts.map(a => {
-                const svc = Number(a.price||0) + Number(a.cavPrice||0);
-                const tip = Number(a.tip||0) + Number(a.cavTip||0);
+                const svc = r2(Number(a.price||0) + Number(a.cavPrice||0));
+                const tip = r2(Number(a.tip||0) + Number(a.cavTip||0));
                 return (
                   <div key={a.id} onClick={() => openApptForEdit(a)} style={{ background: "#fff", borderRadius: 8, padding: "8px 12px", marginBottom: 6, cursor: "pointer" }}>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 6 }}>
@@ -1074,6 +1344,31 @@ If no bookings return [].`,
                       <span style={{ fontSize: 11, color: "#B45309" }}>施術 ${svc} / チップ ${tip}</span>
                       <span style={{ fontWeight: 800, color: "#0D4F4F", fontSize: 14 }}>合計 ${svc + tip}</span>
                     </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* PR無料 (comped treatments for influencers etc.) */}
+          {promoAppts.length > 0 && (
+            <div style={{ background: "#E3F2FD", borderRadius: 12, padding: 12, marginBottom: 12, borderLeft: "4px solid #1565C0" }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: "#1565C0", marginBottom: 8 }}>📸 PR無料（施術売上には計上されません）{promoAppts.length}件</div>
+              {promoAppts.map(a => {
+                const svc = r2(Number(a.price||0) + Number(a.cavPrice||0));
+                const tip = r2(Number(a.tip||0) + Number(a.cavTip||0));
+                return (
+                  <div key={a.id} onClick={() => openApptForEdit(a)} style={{ background: "#fff", borderRadius: 8, padding: "8px 12px", marginBottom: 6, cursor: "pointer" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 6 }}>
+                      <span style={{ fontWeight: 700 }}>{a.clientName}</span>
+                      <span style={{ fontSize: 12, color: "#1565C0" }}>{a.serviceName || `${a.duration}分`}</span>
+                      <span style={{ fontSize: 12, color: "#888" }}>{a.therapist}{a.cavTherapist ? ` ＋ ${a.cavTherapist}(機械)` : ""}</span>
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 4 }}>
+                      <span style={{ fontSize: 11, color: "#1565C0" }}>施術 ${svc} / チップ ${tip}</span>
+                      <span style={{ fontWeight: 800, color: "#0D4F4F", fontSize: 14 }}>合計 ${svc + tip}</span>
+                    </div>
+                    {a.notes && <div style={{ fontSize: 11, color: "#888", marginTop: 2 }}>📝 {a.notes}</div>}
                   </div>
                 );
               })}
@@ -1098,7 +1393,7 @@ If no bookings return [].`,
               <>
                 <div style={{ fontWeight: 700, marginBottom: 8, color: "#9C27B0", fontSize: 13 }}>📍 新規きっかけ</div>
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                  {["Google / Website", "Google Map", "Instagram", "Yelp", "紹介"].map(src => {
+                  {REFERRAL_SOURCES.map(src => {
                     const count = appointments.filter(a => !a.isCavSlot && a.referralSource === src).length;
                     if (!count) return null;
                     return (
@@ -1159,7 +1454,7 @@ If no bookings return [].`,
               const d = JSON.parse(localStorage.getItem(key));
               const sheetDate = key.replace("spa-sheet-", "");
               (d.deposits || []).forEach(dep => {
-                if ((dep.clientName || "").toLowerCase().trim() === name && dep.type === "deposit") {
+                if ((dep.clientName || "").toLowerCase().trim() === name && (dep.type === "deposit" || dep.type === "giftcard")) {
                   found.push({ ...dep, sheetDate });
                 }
               });
@@ -1172,6 +1467,7 @@ If no bookings return [].`,
       {editingDeposit && <DepositModal deposit={editingDeposit} onSave={saveDeposit} onDelete={() => { deleteDeposit(editingDeposit.id); setEditingDeposit(null); }} onClose={() => setEditingDeposit(null)} />}
       {editingTicketPurchase && <TicketPurchaseModal tp={editingTicketPurchase} onSave={saveTicketPurchase} onDelete={() => { deleteTicketPurchase(editingTicketPurchase.id); setEditingTicketPurchase(null); }} onClose={() => setEditingTicketPurchase(null)} />}
       {editingStaffPurchase && <StaffPurchaseModal sp={editingStaffPurchase} onSave={saveStaffPurchase} onDelete={() => { deleteStaffPurchase(editingStaffPurchase.id); setEditingStaffPurchase(null); }} onClose={() => setEditingStaffPurchase(null)} />}
+      {editingRefund && <RefundModal rf={editingRefund} onSave={saveRefund} onDelete={() => { deleteRefund(editingRefund.id); setEditingRefund(null); }} onClose={() => setEditingRefund(null)} />}
 
       {toast && (
         <div style={{ position: "fixed", bottom: 20, right: 20, padding: "12px 20px", borderRadius: 10, background: toast.type === "error" ? "#C62828" : toast.type === "info" ? "#1565C0" : "#0D4F4F", color: "#fff", fontWeight: 600, fontSize: 14, boxShadow: "0 4px 12px rgba(0,0,0,0.2)", zIndex: 9999 }}>
@@ -1182,27 +1478,45 @@ If no bookings return [].`,
   );
 }
 
+// Red = counts toward today's sales revenue (walk-in service, same-day ticket/GC purchase, extra tip).
+// Blue = does NOT count toward today's revenue (redeeming a ticket/gift card paid for previously, applying a prior deposit).
+const REVENUE_COLOR = "#C62828";
+const NON_REVENUE_COLOR = "#1565C0";
+
 function ApptCard({ appt, onClick }) {
   const typeColors = { RL: "#4CAF50", RT: "#2196F3", NL: "#FF9800", NT: "#9C27B0" };
   const isTicket = appt.isTicket;
   const isCavSlot = appt.isCavSlot;
 
   const isGiftCard = appt.isGiftCard;
-  const borderColor = isCavSlot ? "#9C27B0" : isGiftCard ? "#F59E0B" : isTicket ? "#1565C0" : appt.paymentType === "cash" ? "#4CAF50" : "#2196F3";
-  const bg = isCavSlot ? "#F9F0FF" : isGiftCard ? "#FFFDE7" : isTicket ? "#EEF5FF" : appt.paymentType === "cash" ? "#F1FBF3" : "#EEF5FF";
+  const isPromo = appt.isPromo;
+  // Revenue today: regular walk-in visits, and same-day ticket purchases. Not revenue: redeeming
+  // a previously-bought ticket or gift card (the money already came in on the day it was sold),
+  // or a comped/PR treatment (no money is ever received for it).
+  const isRevenueToday = !isGiftCard && !isPromo && (!isTicket || appt.isSameDayTicket);
+  const amountColor = isRevenueToday ? REVENUE_COLOR : NON_REVENUE_COLOR;
+  const borderColor = isCavSlot ? "#9C27B0" : isGiftCard ? "#F59E0B" : isPromo ? "#1565C0" : isTicket ? "#1565C0" : appt.paymentType === "cash" ? "#4CAF50" : "#2196F3";
+  const bg = isCavSlot ? "#F9F0FF" : isGiftCard ? "#FFFDE7" : isPromo ? "#E3F2FD" : isTicket ? "#EEF5FF" : appt.paymentType === "cash" ? "#F1FBF3" : "#EEF5FF";
 
   if (isCavSlot) {
-    const cavTotal = Number(appt.price||0) + Number(appt.tip||0);
+    const cavSvc = Number(appt.price||0);
+    const cavTip = Number(appt.tip||0);
+    const cavTotal = r2(cavSvc + cavTip);
+    const svcIcon = appt.paymentType === "card" ? "💳" : appt.paymentType === "cash" ? "💵" : "";
+    const tipIcon = appt.tipPaymentType === "card" ? "💳" : appt.tipPaymentType === "cash" ? "💵" : "";
     return (
       <div onClick={onClick} style={{ background: bg, border: `2px solid ${borderColor}`, borderRadius: 8, padding: "5px 8px", marginBottom: 3, cursor: "pointer", opacity: 0.9 }}>
         <div style={{ fontSize: 11, fontWeight: 700, color: "#6A1B9A" }}>⚡ 機械 {appt.isTicket ? "🎟️" : ""}</div>
         <div style={{ fontSize: 11, color: "#555" }}>
           {appt.clientName} <span style={{ color: "#888", fontSize: 10 }}>({appt.startTime}〜)</span>
         </div>
-        <div style={{ fontSize: 11, color: "#6A1B9A", fontWeight: 700 }}>
-          施術${appt.price}{appt.tip > 0 ? ` チップ$${appt.tip}` : ""}
-          {cavTotal > 0 && <span style={{ color: "#0D4F4F", fontWeight: 800 }}> ＝${cavTotal}</span>}
-        </div>
+        {(cavSvc > 0 || cavTip > 0) && (
+          <div style={{ fontSize: 11, color: amountColor, fontWeight: 700 }}>
+            <div>{cavSvc}{svcIcon}</div>
+            {cavTip > 0 && <div>{cavTip}{tipIcon}</div>}
+            <div style={{ fontWeight: 800 }}>{cavTotal}</div>
+          </div>
+        )}
       </div>
     );
   }
@@ -1215,91 +1529,136 @@ function ApptCard({ appt, onClick }) {
           {appt.customerType}
         </span>
       </div>
-      {isTicket ? (
-        <div style={{ fontSize: 11, marginTop: 2 }}>
-          <div style={{ color: "#1565C0", fontWeight: 700 }}>
-            🎟️ {appt.serviceName || appt.ticketMenu} {appt.ticketCurrent > 0 ? `${appt.ticketCurrent}/${appt.ticketTotal}` : `（${appt.ticketTotal}回購入）`}
+      {(() => {
+        const isSameDay = isTicket && appt.isSameDayTicket;
+        const isRedemption = isTicket && !isSameDay;
+        const svc = r2(Number(appt.price||0) + Number(appt.cavPrice||0));
+        const tip = r2(Number(appt.tip||0) + Number(appt.cavTip||0));
+        const extra = Number(appt.extraTip||0);
+        const paidIcon = isGiftCard ? "🎁" : isPromo ? "📸" : appt.paymentType === "card" ? "💳" : appt.paymentType === "cash" ? "💵" : "";
+        const tipIcon = isGiftCard ? "🎁" : isPromo ? "📸" : appt.tipPaymentType === "card" ? "💳" : appt.tipPaymentType === "cash" ? "💵" : "";
+
+        // Same-day ticket purchase: the real money is packagePrice/packageTip, not the staff-split price/tip.
+        const pkgSvc = Number(appt.packagePrice||0);
+        const pkgTip = Number(appt.packageTip ?? appt.tip ?? 0);
+
+        const dispSvc = isSameDay ? pkgSvc : svc;
+        const dispTip = isSameDay ? pkgTip : tip;
+        const dispTotal = r2(dispSvc + dispTip);
+
+        const svcText = isSameDay
+          ? (appt.packageSplitPayment ? `💵$${appt.packageCashPortion||0}＋💳$${appt.packageCardPortion||0}` : `${dispSvc}${paidIcon}`)
+          : !isRedemption && appt.svcSplitPayment ? `💵$${appt.svcCashPortion||0}＋💳$${appt.svcCardPortion||0}` : `${dispSvc}${paidIcon}`;
+        const tipText = !isRedemption && !isSameDay && appt.tipSplitPayment
+          ? `💵$${appt.tipCashPortion||0}＋💳$${appt.tipCardPortion||0}` : `${dispTip}${tipIcon}`;
+
+        const courseName = isTicket ? (appt.serviceName || appt.ticketMenu) : (appt.serviceName || `${appt.duration}分`);
+        const sessionSuffix = isRedemption && appt.ticketCurrent > 0 ? ` ${appt.ticketCurrent}/${appt.ticketTotal}`
+          : isSameDay ? ` ×${appt.ticketTotal}回` : "";
+
+        const gc = (!isGiftCard && !isPromo) ? Number(appt.giftCardUsed||0) : 0;
+        const dep = isSameDay ? Number(appt.packageDepositAmount||0) : Number(appt.depositApplied||0);
+        const depDate = isSameDay ? appt.packageDepositDate : appt.depositPaidDate;
+
+        return (
+          <div style={{ fontSize: 11, marginTop: 2 }}>
+            <div style={{ color: isGiftCard ? "#B45309" : isPromo ? "#1565C0" : "#222", fontWeight: 700, lineHeight: 1.4 }}>
+              {isGiftCard && <span style={{ fontSize: 10, background: "#F59E0B", color: "#fff", padding: "1px 5px", borderRadius: 6, marginRight: 4 }}>🎁GC消化</span>}
+              {isPromo && <span style={{ fontSize: 10, background: "#1565C0", color: "#fff", padding: "1px 5px", borderRadius: 6, marginRight: 4 }}>📸PR無料</span>}
+              {courseName}{sessionSuffix}
+              {(appt.extraServiceNames || []).map(n => ` + ${n}`).join("")}
+            </div>
+            {(dispSvc > 0 || dispTip > 0) && (
+              <div style={{ color: amountColor, fontWeight: 700 }}>
+                <div>{svcText}</div>
+                {dispTip > 0 && <div>{tipText}</div>}
+                <div style={{ fontWeight: 800 }}>
+                  {dispTotal}
+                  {extra > 0 && <span style={{ color: REVENUE_COLOR }}> +Extra tip{extra}💝{appt.extraTipPaymentType==="card"?"💳":"💵"}</span>}
+                </div>
+              </div>
+            )}
             {appt.cavTherapist && !isDualLicense(appt.therapist) && (
-              <span style={{ color: "#6A1B9A", fontWeight: 400, fontSize: 10 }}> +{appt.cavTherapist}</span>
+              <div style={{ color: "#6A1B9A", fontSize: 10 }}>with {appt.cavTherapist}</div>
+            )}
+            {dep > 0 && (
+              <div style={{ color: "#2E7D32", fontSize: 10 }}>Deposit ${dep}{depDate ? ` ${depDate}` : ""}</div>
+            )}
+            {gc > 0 && (
+              <div style={{ color: "#2E7D32", fontSize: 10 }}>GC使用 ${gc}</div>
+            )}
+            {(appt.addons || []).length > 0 && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 3, marginTop: 3 }}>
+                {(appt.addons || []).map(addon => {
+                  const label = addon.serviceName || addon.name || "オプション";
+                  const aSvc = Number(addon.price||0);
+                  const aTip = Number(addon.tip||0);
+                  const aTotal = r2(aSvc + aTip);
+                  const chipColor = addon.countsAsRevenue === true ? REVENUE_COLOR : addon.countsAsRevenue === false ? NON_REVENUE_COLOR : "#00695C";
+                  const svcIcon = addon.paymentType === "card" ? "💳" : addon.paymentType === "cash" ? "💵" : "";
+                  const tipIcon = addon.tipPaymentType === "card" ? "💳" : addon.tipPaymentType === "cash" ? "💵" : "";
+                  return (
+                    <div key={addon.id} style={{ fontSize: 10, color: chipColor, fontWeight: 700 }}>
+                      <div>➕ {label}{addon.ticketCurrent ? ` ${addon.ticketCurrent}/${appt.ticketTotal||3}` : ""}{addon.countsAsRevenue === null && " ⚠️"}</div>
+                      {aTotal > 0 && (
+                        <>
+                          <div>{aSvc}{svcIcon}</div>
+                          {aTip > 0 && <div>{aTip}{tipIcon}</div>}
+                          <div style={{ fontWeight: 800 }}>{aTotal}</div>
+                        </>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
             )}
           </div>
-          {(appt.price > 0 || appt.tip > 0) && (() => {
-            const svc = Number(appt.price||0) + Number(appt.cavPrice||0);
-            const tip = Number(appt.tip||0) + Number(appt.cavTip||0);
-            const extra = Number(appt.extraTip||0);
-            return (
-              <div>
-                <span style={{ color: "#C62828" }}>施術${svc}</span>
-                <span style={{ color: "#E65100" }}> チップ${tip}</span>
-                <span style={{ color: "#0D4F4F", fontWeight: 800 }}> ＝${svc + tip}</span>
-                {extra > 0 && <span style={{ color: "#F57F17", fontWeight: 700 }}> +${extra}💝{appt.extraTipPaymentType==="card"?"💳":"💵"}</span>}
-              </div>
-            );
-          })()}
-        </div>
-      ) : (
-        <div style={{ fontSize: 11, marginTop: 2 }}>
-          <div style={{ color: isGiftCard ? "#B45309" : "#222", fontWeight: 700, lineHeight: 1.4 }}>
-            {isGiftCard && <span style={{ fontSize: 10, background: "#F59E0B", color: "#fff", padding: "1px 5px", borderRadius: 6, marginRight: 4 }}>🎁GC消化</span>}
-            {appt.serviceName || `${appt.duration}分`}
-          </div>
-          {(appt.price > 0 || appt.tip > 0) && (() => {
-            const svc = Number(appt.price||0) + Number(appt.cavPrice||0);
-            const tip = Number(appt.tip||0) + Number(appt.cavTip||0);
-            const total = svc + tip;
-            return (
-              <div>
-                <span style={{ color: "#C62828", fontWeight: 700 }}>施術${svc}{isGiftCard ? "🎁" : appt.paymentType === "card" ? "💳" : "💵"}</span>
-                {!isGiftCard && Number(appt.giftCardUsed) > 0 && <span style={{ color: "#00796B", fontSize: 10 }}> (GC🎁${appt.giftCardUsed})</span>}
-                {tip > 0 && <span style={{ color: "#E65100" }}> チップ${tip}{isGiftCard ? "🎁" : appt.tipPaymentType==="card"?"💳":"💵"}</span>}
-                {total > 0 && <span style={{ color: "#0D4F4F", fontWeight: 800 }}> ＝${total}</span>}
-                {Number(appt.depositApplied) > 0 && (
-                  <span style={{ fontSize: 10, background: "#C8E6C9", color: "#1B5E20", padding: "1px 5px", borderRadius: 6, fontWeight: 700, marginLeft: 3 }}>
-                    💰payroll${svc + Number(appt.depositApplied)}
-                  </span>
-                )}
-              </div>
-            );
-          })()}
-          {appt.cavTherapist && !isDualLicense(appt.therapist) && (
-            <div style={{ color: "#6A1B9A", fontSize: 10 }}>（with {appt.cavTherapist} 機械）</div>
-          )}
-          {(appt.addons || []).length > 0 && (
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 3, marginTop: 3 }}>
-              {(appt.addons || []).map(addon => {
-                const label = addon.serviceName || addon.name || "オプション";
-                const total = Number(addon.price||0) + Number(addon.tip||0);
-                return (
-                  <span key={addon.id} style={{ fontSize: 9, background: "#E0F2F1", color: "#00695C", padding: "1px 6px", borderRadius: 8, fontWeight: 700 }}>
-                    ➕ {label}{total > 0 ? ` $${total}` : ""}
-                  </span>
-                );
-              })}
-            </div>
-          )}
-        </div>
-      )}
+        );
+      })()}
       {(appt.purchaseTags || []).length > 0 && (
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 3, marginTop: 4 }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 3, marginTop: 4 }}>
           {(appt.purchaseTags || []).map(tagId => {
             const tag = PURCHASE_TAGS.find(t => t.id === tagId);
             if (!tag) return null;
-            let amt = null;
-            if (tagId === "newTicket") {
-              const total = Number(appt.newTicketAmount||0) + Number(appt.newTicketTip||0);
-              if (total > 0) amt = `$${total}`;
-            } else if (tagId === "retail") {
-              const total = Number(appt.retailPurchaseAmount||0);
-              if (total > 0) amt = `$${total}`;
-            } else if (tagId === "giftCard") {
-              const total = Number(appt.giftCardPurchaseAmount||0);
-              if (total > 0) amt = `$${total}`;
-            }
-            return (
-              <span key={tagId} style={{ fontSize: 9, background: tag.bg, color: tag.color, padding: "2px 6px", borderRadius: 8, fontWeight: 700 }}>
-                {tag.label}{amt ? ` ${amt}` : ""}
-              </span>
+            const emptyChip = (
+              <span key={tagId} style={{ fontSize: 9, background: tag.bg, color: tag.color, padding: "2px 6px", borderRadius: 8, fontWeight: 700, alignSelf: "flex-start" }}>{tag.label}</span>
             );
+
+            if (tagId === "newTicket") {
+              const ntSvc = Number(appt.newTicketAmount||0);
+              const ntTip = Number(appt.newTicketTip||0);
+              if (ntSvc + ntTip === 0) return emptyChip;
+              const ntSvcIcon = appt.newTicketPaymentType==="card"?"💳":appt.newTicketPaymentType==="cash"?"💵":"";
+              const ntTipIcon = appt.newTicketTipPaymentType==="card"?"💳":appt.newTicketTipPaymentType==="cash"?"💵":"";
+              const ntSvcText = appt.newTicketSplitPayment ? `💵$${appt.newTicketCashPortion||0}＋💳$${appt.newTicketCardPortion||0}` : `${ntSvc}${ntSvcIcon}`;
+              return (
+                <div key={tagId} style={{ fontSize: 10, color: REVENUE_COLOR, fontWeight: 700 }}>
+                  <div>{tag.label}{appt.newTicketPackageName && ` (${appt.newTicketPackageName})`}</div>
+                  <div>{ntSvcText}</div>
+                  {ntTip > 0 && <div>{ntTip}{ntTipIcon}</div>}
+                  <div style={{ fontWeight: 800 }}>{r2(ntSvc + ntTip)}</div>
+                </div>
+              );
+            }
+            if (tagId === "retail") {
+              const items = getRetailItems(appt);
+              const total = items.reduce((s,it)=>s+Number(it.amount||0),0);
+              if (total === 0) return emptyChip;
+              const uniformType = items.every(it => it.paymentType === items[0].paymentType) ? items[0].paymentType : null;
+              const icon = uniformType === "card" ? "💳" : uniformType === "cash" ? "💵" : "";
+              return (
+                <div key={tagId} style={{ fontSize: 10, color: REVENUE_COLOR, fontWeight: 700 }}>物販 ${total}{icon}</div>
+              );
+            }
+            if (tagId === "giftCard") {
+              const total = Number(appt.giftCardPurchaseAmount||0);
+              if (total === 0) return emptyChip;
+              const icon = appt.giftCardPurchasePaymentType==="card"?"💳":appt.giftCardPurchasePaymentType==="cash"?"💵":"";
+              return (
+                <div key={tagId} style={{ fontSize: 10, color: REVENUE_COLOR, fontWeight: 700 }}>{tag.label} ${total}{icon}</div>
+              );
+            }
+            return emptyChip;
           })}
         </div>
       )}
@@ -1307,10 +1666,113 @@ function ApptCard({ appt, onClick }) {
   );
 }
 
+const APPT_ERROR_LABELS = {
+  clientName: "お客様名",
+  serviceName: "コース名／施術メニュー",
+  therapist: "セラピスト（ボディ）",
+  startTime: "開始時間",
+  customerType: "顧客タイプ（RL/RT/NL/NT）",
+  referralSource: "どこで知りましたか（新規のきっかけ）",
+  price: "施術料金",
+  packagePrice: "パッケージ代金",
+  ticketMenu: "施術メニュー・時間",
+  ticketTotal: "コース回数（3回／5回）",
+  priceVersionChosen: "料金バージョン（新料金／旧料金）",
+  ticketCurrent: "今日は何回目か",
+  paymentType: "施術 支払方法",
+  tipPaymentType: "チップ 支払方法",
+  packagePaymentType: "パッケージ代金 支払方法",
+  packageTipPaymentType: "当日チップ 支払方法",
+  extraTipPaymentType: "エクストラチップ 支払方法",
+  newTicketPaymentType: "チケット新規購入 支払方法",
+  newTicketTipPaymentType: "チケット新規購入チップ 支払方法",
+  retailPurchasePaymentType: "物販購入 支払方法",
+  giftCardPurchasePaymentType: "ギフトカード購入 支払方法",
+  depositPaidDate: "デポジット 支払われた日",
+  packageDepositDate: "デポジット 支払われた日",
+};
+
 function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
-  const [form, setForm] = useState({ tipPaymentType: "cash", ...appt });
+  const [form, setForm] = useState({
+    tipPaymentType: "cash",
+    // Legacy appointments saved before these validation flags existed already have a
+    // real ticketMenu, so treat them as "chosen" rather than forcing a redundant re-click.
+    ticketTotalChosen: !!appt.ticketMenu,
+    priceVersionChosen: !!appt.ticketMenu,
+    ...appt,
+  });
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
   const [addonPick, setAddonPick] = useState("");
+  const [showAddonSection, setShowAddonSection] = useState((appt.addons || []).length > 0);
+  const [errors, setErrors] = useState([]);
+  const isRegularWeightLoss = isWeightLossService(form.serviceName);
+
+  const validate = (f) => {
+    const errs = [];
+    if (!f.clientName?.trim()) errs.push("clientName");
+    if (!f.serviceName?.trim() && !f.ticketMenu) errs.push("serviceName");
+    if (!f.therapist) errs.push("therapist");
+    if (!f.startTime) errs.push("startTime");
+    if (!f.customerType) errs.push("customerType");
+    if ((f.customerType === "NL" || f.customerType === "NT") && !f.referralSource) errs.push("referralSource");
+    if (f.isTicket) {
+      if (!f.ticketMenu) errs.push("ticketMenu");
+      if (!f.ticketTotalChosen) errs.push("ticketTotal");
+      if (!f.priceVersionChosen) errs.push("priceVersionChosen");
+      if (!f.isSameDayTicket && !f.ticketCurrent) errs.push("ticketCurrent");
+    }
+    if (f.isSameDayTicket) {
+      if (f.useToday !== false && Number(f.packagePrice || 0) <= 0) errs.push("packagePrice");
+      if (f.useToday !== false && !f.packageSplitPayment && Number(f.packagePrice || 0) > 0 && !f.paymentType) errs.push("packagePaymentType");
+      if (f.useToday !== false && Number(f.packageTip || 0) > 0 && !f.tipPaymentType) errs.push("packageTipPaymentType");
+      if (Number(f.packageDepositAmount || 0) > 0 && !f.packageDepositDate) errs.push("packageDepositDate");
+    } else if (Number(f.price || 0) + Number(f.cavPrice || 0) + Number(f.tip || 0) + Number(f.cavTip || 0) <= 0) {
+      errs.push("price");
+    }
+    // チケット消化 (isTicket && !isSameDayTicket): price/tip here are payroll-reference only —
+    // no real money changes hands (already paid when the ticket bundle was purchased), and there's
+    // no payment-method control shown for it, so it must never require one. Same-day ticket
+    // purchases ARE real money but are validated separately above via packagePaymentType.
+    if (!f.isGiftCard && !f.isPromo && !f.isTicket) {
+      const gc = Number(f.giftCardUsed || 0);
+      const svc = Number(f.price || 0);
+      const tip = Number(f.tip || 0);
+      const gcSvc = Math.min(gc, svc);
+      const gcTip = Math.min(Math.max(0, gc - gcSvc), tip);
+      if (svc > 0 && gcSvc < svc && !f.svcSplitPayment && !f.paymentType) errs.push("paymentType");
+      if (tip > 0 && gcTip < tip && !f.tipSplitPayment && !f.tipPaymentType) errs.push("tipPaymentType");
+    }
+    if (Number(f.extraTip || 0) > 0 && !f.extraTipPaymentType) errs.push("extraTipPaymentType");
+    if ((f.purchaseTags || []).includes("newTicket")) {
+      if (!f.newTicketSplitPayment && Number(f.newTicketAmount || 0) > 0 && !f.newTicketPaymentType) errs.push("newTicketPaymentType");
+      if (Number(f.newTicketTip || 0) > 0 && !f.newTicketTipPaymentType) errs.push("newTicketTipPaymentType");
+    }
+    if ((f.purchaseTags || []).includes("retail")) {
+      if (Number(f.retailPurchaseAmount || 0) > 0 && !f.retailPurchasePaymentType) errs.push("retailPurchasePaymentType");
+      if ((f.extraRetailItems || []).some(it => Number(it.amount || 0) > 0 && !it.paymentType)) errs.push("retailPurchasePaymentType");
+    }
+    if ((f.purchaseTags || []).includes("giftCard")) {
+      if (Number(f.giftCardPurchaseAmount || 0) > 0 && !f.giftCardPurchasePaymentType) errs.push("giftCardPurchasePaymentType");
+    }
+    if (Number(f.depositApplied || 0) > 0 && !f.depositPaidDate) errs.push("depositPaidDate");
+    return errs;
+  };
+
+  const handleSave = () => {
+    const errs = validate(form);
+    if (errs.length > 0) { setErrors(errs); return; }
+    setErrors([]);
+    onSave(form);
+  };
+
+  const ErrorBanner = () => errors.length === 0 ? null : (
+    <div style={{ background: "#FFEBEE", border: "2px solid #C62828", borderRadius: 10, padding: "10px 14px", marginBottom: 12 }}>
+      <div style={{ fontWeight: 800, fontSize: 13, color: "#C62828", marginBottom: 4 }}>⚠️ 保存できません — 未入力・未選択の項目があります</div>
+      <div style={{ fontSize: 12, color: "#B71C1C" }}>
+        {errors.map(e => APPT_ERROR_LABELS[e]).join("　／　")}
+      </div>
+    </div>
+  );
 
   const therapistIsDual = isDualLicense(form.therapist);
   const menuHasCav = form.isTicket && form.ticketMenu ? !!PRICE_TABLE[form.priceVersion]?.[form.ticketMenu]?.cav : false;
@@ -1339,13 +1801,30 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
     }));
   };
 
+  // For the inline "📌 当日の追加購入 → 🎟️ チケット新規購入" block — a brand-new package sold
+  // alongside today's visit. Auto-fills the package service/tip from TICKET_PACKAGE_PRICES
+  // (still editable afterward, e.g. for occasional discounts).
+  const applyNewTicketMenuPrice = (menu, total) => {
+    const group = MENU_OPTIONS.find(m => menu.startsWith(m.prefix));
+    const durLabel = menu.split("-")[1];
+    const packageName = group ? `${group.group} ${durLabel}分 ×${total}回` : "";
+    const pkg = TICKET_PACKAGE_PRICES[menu];
+    setForm(f => ({
+      ...f,
+      newTicketMenu: menu,
+      newTicketTotal: total,
+      newTicketPackageName: packageName,
+      ...(pkg ? { newTicketAmount: pkg.service, newTicketTip: pkg.tip } : {}),
+    }));
+  };
+
   const autoDetectAndApplyTicket = () => {
     if (!form.ticketMenu && form.serviceName) {
       const name = form.serviceName.toLowerCase();
       let prefix = null, dur = null;
       if (name.includes("improving posture")) prefix = "IP";
       else if (name.includes("weight loss")) prefix = "WL";
-      else if (name.includes("facial") || name.includes("glow") || name.includes("sculpt")) prefix = "FA";
+      else if (name.includes("facial") || name.includes("glow") || name.includes("sculpt")) prefix = "SF";
       else if (name.includes("channeling") || name.includes("procell")) prefix = "MC";
       if (prefix) {
         const m = form.serviceName.match(/(\d+)\s*min/i);
@@ -1370,7 +1849,7 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
         let prefix = null;
         if (name.includes("improving posture")) prefix = "IP";
         else if (name.includes("weight loss")) prefix = "WL";
-        else if (name.includes("facial") || name.includes("glow") || name.includes("sculpt")) prefix = "FA";
+        else if (name.includes("facial") || name.includes("glow") || name.includes("sculpt")) prefix = "SF";
         else if (name.includes("channeling") || name.includes("procell")) prefix = "MC";
         if (prefix) {
           const m = appt.serviceName.match(/(\d+)\s*min/i);
@@ -1387,6 +1866,19 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Machine (cav) minutes default to a fixed number regardless of the total course length —
+  // 40min for Weight Loss, 15min for everything else (e.g. Improving Posture) — with the rest
+  // going to the body therapist. Defaults in once a cav therapist is picked, but only if the
+  // staff hasn't already typed their own minutes.
+  useEffect(() => {
+    if (!form.isTicket && form.cavTherapist && !form.bodyMins && !form.cavMins) {
+      const cavMins = isRegularWeightLoss ? 40 : 15;
+      const bodyMins = Math.max(0, Number(form.duration) - cavMins);
+      setForm(f => ({ ...f, cavMins, bodyMins }));
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form.cavTherapist, form.duration, form.isTicket]);
+
   return (
     <Modal onClose={onClose}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
@@ -1396,67 +1888,129 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
 
       {clientDeposits.length > 0 && (
         <div style={{ background: "#FFF3E0", borderRadius: 10, padding: "10px 14px", marginBottom: 12, border: "2px solid #FF9800" }}>
-          <div style={{ fontWeight: 800, fontSize: 13, color: "#E65100" }}>💰 デポジットあり！</div>
+          <div style={{ fontWeight: 800, fontSize: 13, color: "#E65100" }}>💰 デポジット／ギフト先払いあり！</div>
           {clientDeposits.map((d, i) => (
-            <div key={i} style={{ fontSize: 12, color: "#BF360C", marginTop: 4 }}>
-              <strong>{d.sheetDate}</strong> — ${d.amount} ({d.paymentType === "cash" ? "現金" : "カード"})
-              {d.appointmentDate ? ` → 予約：${d.appointmentDate}${d.appointmentTime ? ` ${d.appointmentTime}` : ""}` : ""}
-              {d.notes ? ` — ${d.notes}` : ""}
+            <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, fontSize: 12, color: "#BF360C", marginTop: 4 }}>
+              <div>
+                {d.type === "giftcard" ? "🎁 " : "💰 "}
+                <strong>{d.sheetDate}</strong> — ${d.amount}{Number(d.tip) > 0 ? `（＋チップ$${d.tip}）` : ""} ({d.paymentType === "cash" ? "現金" : "カード"})
+                {d.appointmentDate ? ` → 来店予定：${d.appointmentDate}${d.appointmentTime ? ` ${d.appointmentTime}` : ""}` : ""}
+                {d.notes ? ` — ${d.notes}` : ""}
+              </div>
+              {d.type === "deposit" && (
+                <button onClick={() => setForm(f => ({ ...f, depositApplied: Number(d.amount) || 0, depositPaidDate: d.sheetDate }))}
+                  style={{ flexShrink: 0, padding: "4px 10px", borderRadius: 8, border: "none", background: "#E65100", color: "#fff", fontWeight: 700, cursor: "pointer", fontSize: 11 }}>
+                  この内容を使う
+                </button>
+              )}
             </div>
           ))}
         </div>
       )}
 
+      <ErrorBanner />
+
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-        <Field label="お客様名">
-          <input value={form.clientName} onChange={e => set("clientName", e.target.value)} style={inputStyle} placeholder="お客様名" />
+        <Field label="顧客タイプ" error={errors.includes("customerType")}>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            {CUSTOMER_TYPES.map(ct => {
+              const colors = { RL:"#4CAF50", RT:"#2196F3", NL:"#FF9800", NT:"#9C27B0" };
+              const labels = { RL:"リピ・ローカル", RT:"リピ・トラベラー", NL:"ニュー・ローカル", NT:"ニュー・トラベラー" };
+              return (
+                <button key={ct} onClick={() => set("customerType", ct)}
+                  style={{ flex: 1, minWidth: 90, padding: "7px 4px", borderRadius: 8, border: `2px solid ${form.customerType===ct?colors[ct]:(errors.includes("customerType")?"#C62828":"#DDD")}`, background: form.customerType===ct?colors[ct]:"#fff", cursor: "pointer", fontWeight: 700, fontSize: 11, color: form.customerType===ct?"#fff":"#888" }}>
+                  {ct}<br /><span style={{ fontWeight: 400, fontSize: 9 }}>{labels[ct]}</span>
+                </button>
+              );
+            })}
+          </div>
         </Field>
-        <Field label="コース名">
-          <select value={form.serviceName || ""} onChange={e => {
+
+        {/* How they found us — shown for NT and NL */}
+        {(form.customerType === "NT" || form.customerType === "NL") && (
+          <Field label={form.customerType === "NT" ? "📍 どこで知りましたか？（NT）" : "📍 どこで知りましたか？（NL）"} error={errors.includes("referralSource")}>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+              {REFERRAL_SOURCES.map(src => (
+                <button key={src} onClick={() => set("referralSource", form.referralSource === src ? "" : src)}
+                  style={{
+                    padding: "6px 12px", borderRadius: 20, border: `2px solid ${form.referralSource === src ? "#9C27B0" : "#DDD"}`,
+                    background: form.referralSource === src ? "#9C27B0" : "#fff",
+                    cursor: "pointer", fontWeight: 600, fontSize: 12,
+                    color: form.referralSource === src ? "#fff" : "#666"
+                  }}>
+                  {src}
+                </button>
+              ))}
+            </div>
+          </Field>
+        )}
+
+        <Field label="お客様名" error={errors.includes("clientName")}>
+          <input value={form.clientName} onChange={e => set("clientName", e.target.value)} style={{ ...inputStyle, ...(errors.includes("clientName") ? { borderColor: "#C62828", borderWidth: 2 } : {}) }} placeholder="お客様名" />
+        </Field>
+        <Field label="コース名" error={errors.includes("serviceName")}>
+          <select value={SQUARE_SERVICES.find(s => s.name === form.serviceName) ? form.serviceName : (form.serviceName ? "__custom__" : "")} onChange={e => {
             const name = e.target.value;
+            // Clear any body/cav minute split left over from a previously-selected course —
+            // it belongs to that course's duration, not this one, and would otherwise block
+            // the Weight Loss auto-default (fixed 40min machine) from kicking in.
+            if (name === "__custom__") {
+              setForm(f => ({ ...f, serviceName: "", bodyMins: undefined, cavMins: undefined }));
+              return;
+            }
             const svc = SQUARE_SERVICES.find(s => s.name === name);
-            setForm(f => ({ ...f, serviceName: name, ...(svc ? { duration: svc.duration } : {}) }));
-          }} style={{ ...inputStyle, color: "#1a1a1a", fontWeight: 600 }}>
+            setForm(f => ({ ...f, serviceName: name, bodyMins: undefined, cavMins: undefined, ...(svc ? { duration: svc.duration } : {}) }));
+          }} style={{ ...inputStyle, color: "#1a1a1a", fontWeight: 600, ...(errors.includes("serviceName") ? { borderColor: "#C62828", borderWidth: 2 } : {}) }}>
             <option value="">コースを選択</option>
-            {/* Show current value if not in list */}
-            {form.serviceName && !SQUARE_SERVICES.find(s => s.name === form.serviceName) && (
-              <option value={form.serviceName}>{form.serviceName}</option>
-            )}
             {SQUARE_SERVICES.map(s => (
               <option key={s.name} value={s.name}>{s.name}</option>
             ))}
+            <option value="__custom__">その他（カスタム入力）</option>
           </select>
+          {/* Square同期の名前がリストにない場合や「その他」を選んだ場合は自由入力できる */}
+          {!SQUARE_SERVICES.find(s => s.name === form.serviceName) && (
+            <input type="text" value={form.serviceName || ""} placeholder="コース名を入力"
+              onChange={e => set("serviceName", e.target.value)}
+              style={{ ...inputStyle, marginTop: 4 }} />
+          )}
           {form.serviceName && (
             <div style={{ fontSize: 11, color: "#0D4F4F", marginTop: 4, fontWeight: 600 }}>
               ✅ {form.serviceName} ({form.duration}分)
             </div>
           )}
-        </Field>
-        <Field label="セラピスト（ボディ）">
-          <select value={form.therapist} onChange={e => set("therapist", e.target.value)} style={inputStyle}>
-            <option value="">選択</option>
-            {THERAPISTS.map(t => <option key={t} value={t}>{t}</option>)}
-          </select>
-        </Field>
-        <Field label="開始時間">
-          <input type="time" value={form.startTime} onChange={e => set("startTime", e.target.value)} style={inputStyle} />
-        </Field>
 
+          {/* Legacy data: older appointments may still have names-only extra courses saved.
+              Read-only here — use オプション追加 below for anything needing its own therapist/price/payment. */}
+          {(form.extraServiceNames || []).map((name, idx) => (
+            <div key={idx} style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 6 }}>
+              <div style={{ flex: 1, fontSize: 12, fontWeight: 600, color: "#0D4F4F", background: "#EAF6F4", borderRadius: 8, padding: "6px 10px" }}>
+                ✅ {name}
+              </div>
+              <button onClick={() => set("extraServiceNames", form.extraServiceNames.filter((_, i) => i !== idx))}
+                style={{ border: "none", background: "none", cursor: "pointer", fontSize: 16, color: "#AAA" }}>✕</button>
+            </div>
+          ))}
+        </Field>
         {/* Ticket toggle */}
         <div style={{ display: "flex", gap: 4 }}>
-          <button onClick={() => setForm(f => ({...f, isTicket: false, isSameDayTicket: false, isGiftCard: false}))} style={{ flex: 1, padding: "8px 4px", borderRadius: 8, border: `2px solid ${!form.isTicket && !form.isGiftCard ? "#C62828" : "#DDD"}`, background: !form.isTicket && !form.isGiftCard ? "#FFEBEE" : "#fff", cursor: "pointer", fontWeight: 700, color: !form.isTicket && !form.isGiftCard ? "#C62828" : "#888", fontSize: 11 }}>
+          <button onClick={() => setForm(f => ({...f, isTicket: false, isSameDayTicket: false, isGiftCard: false, isPromo: false}))} style={{ flex: 1, padding: "8px 4px", borderRadius: 8, border: `2px solid ${!form.isTicket && !form.isGiftCard && !form.isPromo ? "#C62828" : "#DDD"}`, background: !form.isTicket && !form.isGiftCard && !form.isPromo ? "#FFEBEE" : "#fff", cursor: "pointer", fontWeight: 700, color: !form.isTicket && !form.isGiftCard && !form.isPromo ? "#C62828" : "#888", fontSize: 11 }}>
             🔴 通常施術
           </button>
-          <button onClick={() => { setForm(f => ({...f, isTicket: true, isSameDayTicket: false, isGiftCard: false})); autoDetectAndApplyTicket(); }} style={{ flex: 1, padding: "8px 4px", borderRadius: 8, border: `2px solid ${form.isTicket && !form.isSameDayTicket ? "#1565C0" : "#DDD"}`, background: form.isTicket && !form.isSameDayTicket ? "#E3F2FD" : "#fff", cursor: "pointer", fontWeight: 700, color: form.isTicket && !form.isSameDayTicket ? "#1565C0" : "#888", fontSize: 11 }}>
+          <button onClick={() => { setForm(f => ({...f, isTicket: true, isSameDayTicket: false, isGiftCard: false, isPromo: false})); autoDetectAndApplyTicket(); }} style={{ flex: 1, padding: "8px 4px", borderRadius: 8, border: `2px solid ${form.isTicket && !form.isSameDayTicket ? "#1565C0" : "#DDD"}`, background: form.isTicket && !form.isSameDayTicket ? "#E3F2FD" : "#fff", cursor: "pointer", fontWeight: 700, color: form.isTicket && !form.isSameDayTicket ? "#1565C0" : "#888", fontSize: 11 }}>
             🔵 チケット消化
           </button>
-          <button onClick={() => { setForm(f => ({...f, isTicket: true, isSameDayTicket: true, useToday: true, ticketCurrent: 1, isGiftCard: false})); autoDetectAndApplyTicket(); }} style={{ flex: 1, padding: "8px 4px", borderRadius: 8, border: `2px solid ${form.isSameDayTicket ? "#2E7D32" : "#DDD"}`, background: form.isSameDayTicket ? "#E8F5E9" : "#fff", cursor: "pointer", fontWeight: 700, color: form.isSameDayTicket ? "#2E7D32" : "#888", fontSize: 11 }}>
+          <button onClick={() => { setForm(f => ({...f, isTicket: true, isSameDayTicket: true, useToday: true, ticketCurrent: 1, isGiftCard: false, isPromo: false})); autoDetectAndApplyTicket(); }} style={{ flex: 1, padding: "8px 4px", borderRadius: 8, border: `2px solid ${form.isSameDayTicket ? "#2E7D32" : "#DDD"}`, background: form.isSameDayTicket ? "#E8F5E9" : "#fff", cursor: "pointer", fontWeight: 700, color: form.isSameDayTicket ? "#2E7D32" : "#888", fontSize: 11 }}>
             🟢 当日購入
           </button>
-          <button onClick={() => setForm(f => ({...f, isGiftCard: true, isTicket: false, isSameDayTicket: false}))} style={{ flex: 1, padding: "8px 4px", borderRadius: 8, border: `2px solid ${form.isGiftCard ? "#F59E0B" : "#DDD"}`, background: form.isGiftCard ? "#FFFDE7" : "#fff", cursor: "pointer", fontWeight: 700, color: form.isGiftCard ? "#B45309" : "#888", fontSize: 11 }}>
-            🎁 GC消化
+          <button onClick={() => setForm(f => ({...f, isPromo: true, isGiftCard: false, isTicket: false, isSameDayTicket: false}))} style={{ flex: 1, padding: "8px 4px", borderRadius: 8, border: `2px solid ${form.isPromo ? "#1565C0" : "#DDD"}`, background: form.isPromo ? "#E3F2FD" : "#fff", cursor: "pointer", fontWeight: 700, color: form.isPromo ? "#1565C0" : "#888", fontSize: 11 }}>
+            📸 PR無料
           </button>
         </div>
+        {form.isGiftCard && (
+          <div style={{ background: "#FFFDE7", border: "1.5px solid #F59E0B", borderRadius: 8, padding: "8px 10px", fontSize: 11, color: "#92400E" }}>
+            ⚠️ この予約は過去に「GC消化」として登録されています。ギフトカードの一部だけ使った場合や、チップを現金・カードで受け取った場合は、下の「🔴 通常施術」を押してから「🎁 ギフトカード使用」で金額を入力し直してください。
+          </div>
+        )}
 
         {/* Ticket options */}
         {form.isTicket && (
@@ -1481,7 +2035,7 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                     let prefix = null;
                     if (name.includes("improving posture")) prefix = "IP";
                     else if (name.includes("weight loss")) prefix = "WL";
-                    else if (name.includes("facial") || name.includes("glow") || name.includes("sculpt")) prefix = "FA";
+                    else if (name.includes("facial") || name.includes("glow") || name.includes("sculpt")) prefix = "SF";
                     else if (name.includes("channeling") || name.includes("procell")) prefix = "MC";
                     if (prefix) {
                       const m = form.serviceName.match(/(\d+)\s*min/i);
@@ -1543,7 +2097,7 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
             )}
 
             {/* Treatment menu selector */}
-            <Field label="施術メニュー">
+            <Field label="施術メニュー" error={errors.includes("ticketMenu")}>
               <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 4 }}>
                 {MENU_OPTIONS.map(({ group, prefix }) => {
                   const selected = form.ticketMenu?.startsWith(prefix);
@@ -1554,7 +2108,7 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                       applyTicketPrices(menu, form.ticketTotal || 3, form.priceVersion || "new", form.cavTherapist, form.therapist);
                     }} style={{
                       padding: "7px 10px", borderRadius: 8,
-                      border: `2px solid ${selected ? "#1565C0" : "#DDD"}`,
+                      border: `2px solid ${selected ? "#1565C0" : (errors.includes("ticketMenu") ? "#C62828" : "#DDD")}`,
                       background: selected ? "#1565C0" : "#fff",
                       cursor: "pointer", fontWeight: 700, fontSize: 11,
                       color: selected ? "#fff" : "#888"
@@ -1590,11 +2144,11 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
             })()}
 
             {/* Price version */}
-            <Field label="料金バージョン">
+            <Field label="料金バージョン" error={errors.includes("priceVersionChosen")}>
               <div style={{ display: "flex", gap: 8 }}>
                 {[["new","🆕 新料金（2月以降）"],["old","📋 旧料金（2月以前）"]].map(([v,label]) => (
-                  <button key={v} onClick={() => { set("priceVersion", v); if(form.ticketMenu) applyTicketPrices(form.ticketMenu, form.ticketTotal, v, form.cavTherapist, form.therapist); }}
-                    style={{ flex: 1, padding: "8px 4px", borderRadius: 8, border: `2px solid ${form.priceVersion===v?"#1565C0":"#DDD"}`, background: form.priceVersion===v?"#BBDEFB":"#fff", cursor: "pointer", fontWeight: 700, fontSize: 11, color: form.priceVersion===v?"#1565C0":"#888" }}>
+                  <button key={v} onClick={() => { setForm(f => ({ ...f, priceVersion: v, priceVersionChosen: true })); if(form.ticketMenu) applyTicketPrices(form.ticketMenu, form.ticketTotal, v, form.cavTherapist, form.therapist); }}
+                    style={{ flex: 1, padding: "8px 4px", borderRadius: 8, border: `2px solid ${form.priceVersion===v && form.priceVersionChosen?"#1565C0":(errors.includes("priceVersionChosen")?"#C62828":"#DDD")}`, background: form.priceVersion===v && form.priceVersionChosen?"#BBDEFB":"#fff", cursor: "pointer", fontWeight: 700, fontSize: 11, color: form.priceVersion===v && form.priceVersionChosen?"#1565C0":"#888" }}>
                     {label}
                   </button>
                 ))}
@@ -1602,16 +2156,16 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
             </Field>
 
             {/* Total sessions */}
-            <Field label="コース回数">
+            <Field label="コース回数" error={errors.includes("ticketTotal")}>
               <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
                 {[3,5].map(n => (
                   <button key={n} onClick={() => {
-                    set("ticketTotal", n);
+                    setForm(f => ({ ...f, ticketTotal: n, ticketTotalChosen: true }));
                     if(form.ticketMenu) {
                       const parts = form.ticketMenu.split("-");
                       applyTicketPrices(`${parts[0]}-${parts[1]}-${n}`, n, form.priceVersion||"new", form.cavTherapist, form.therapist);
                     }
-                  }} style={{ flex: 1, padding: "8px", borderRadius: 8, border: `2px solid ${form.ticketTotal===n?"#1565C0":"#DDD"}`, background: form.ticketTotal===n?"#1565C0":"#fff", cursor: "pointer", fontWeight: 700, color: form.ticketTotal===n?"#fff":"#888" }}>
+                  }} style={{ flex: 1, padding: "8px", borderRadius: 8, border: `2px solid ${form.ticketTotal===n && form.ticketTotalChosen?"#1565C0":(errors.includes("ticketTotal")?"#C62828":"#DDD")}`, background: form.ticketTotal===n && form.ticketTotalChosen?"#1565C0":"#fff", cursor: "pointer", fontWeight: 700, color: form.ticketTotal===n && form.ticketTotalChosen?"#fff":"#888" }}>
                     {n}回コース
                   </button>
                 ))}
@@ -1633,11 +2187,11 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                 </div>
               </Field>
             ) : (
-              <Field label="今日は何回目？">
+              <Field label="今日は何回目？" error={errors.includes("ticketCurrent")}>
                 <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 4 }}>
                   {Array.from({ length: form.ticketTotal||3 }, (_,i) => i+1).map(n => (
                     <button key={n} onClick={() => set("ticketCurrent", n)}
-                      style={{ padding: "6px 14px", borderRadius: 8, border: `2px solid ${form.ticketCurrent===n?"#0D4F4F":"#DDD"}`, background: form.ticketCurrent===n?"#0D4F4F":"#fff", cursor: "pointer", fontWeight: 700, color: form.ticketCurrent===n?"#fff":"#888" }}>
+                      style={{ padding: "6px 14px", borderRadius: 8, border: `2px solid ${form.ticketCurrent===n?"#0D4F4F":(errors.includes("ticketCurrent")?"#C62828":"#DDD")}`, background: form.ticketCurrent===n?"#0D4F4F":"#fff", cursor: "pointer", fontWeight: 700, color: form.ticketCurrent===n?"#fff":"#888" }}>
                       {n}/{form.ticketTotal||3}回目
                     </button>
                   ))}
@@ -1656,22 +2210,22 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                 </div>
                 {showSplitPrices ? (
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-                    <Field label={`${form.therapist} 施術 ($)`}><input type="number" value={form.price || ""} onChange={e => set("price", e.target.value)} style={inputStyle} /></Field>
+                    <Field label={`${form.therapist} 施術 ($)`} error={errors.includes("price")}><input type="number" value={form.price || ""} onChange={e => set("price", e.target.value)} style={{ ...inputStyle, ...(errors.includes("price") ? { borderColor: "#C62828", borderWidth: 2 } : {}) }} /></Field>
                     <Field label={`${form.therapist} チップ ($)`}><input type="number" value={form.tip || ""} onChange={e => set("tip", e.target.value)} style={inputStyle} /></Field>
-                    <Field label={`${form.cavTherapist} 施術 ($)`}><input type="number" value={form.cavPrice || ""} onChange={e => set("cavPrice", e.target.value)} style={inputStyle} /></Field>
+                    <Field label={`${form.cavTherapist} 施術 ($)`} error={errors.includes("price")}><input type="number" value={form.cavPrice || ""} onChange={e => set("cavPrice", e.target.value)} style={{ ...inputStyle, ...(errors.includes("price") ? { borderColor: "#C62828", borderWidth: 2 } : {}) }} /></Field>
                     <Field label={`${form.cavTherapist} チップ ($)`}><input type="number" value={form.cavTip || ""} onChange={e => set("cavTip", e.target.value)} style={inputStyle} /></Field>
                   </div>
                 ) : (
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-                    <Field label="施術 合計 ($)"><input type="number" value={form.price || ""} onChange={e => set("price", e.target.value)} style={inputStyle} /></Field>
+                    <Field label="施術 合計 ($)" error={errors.includes("price")}><input type="number" value={form.price || ""} onChange={e => set("price", e.target.value)} style={{ ...inputStyle, ...(errors.includes("price") ? { borderColor: "#C62828", borderWidth: 2 } : {}) }} /></Field>
                     <Field label="チップ 合計 ($)"><input type="number" value={form.tip || ""} onChange={e => set("tip", e.target.value)} style={inputStyle} /></Field>
                   </div>
                 )}
               </div>
             )}
 
-            {/* Extra tip for チケット消化 (not same-day purchase) */}
-            {!form.isSameDayTicket && (
+            {/* Extra tip — available for both チケット消化 and 当日購入 */}
+            {(!form.isSameDayTicket || form.useToday !== false) && (
               <div style={{ marginTop: 10, background: "#FFF8E1", borderRadius: 8, padding: 10, border: "1px solid #FFE082" }}>
                 <div style={{ fontWeight: 700, fontSize: 12, color: "#F57F17", marginBottom: 8 }}>💝 エクストラ（任意）</div>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
@@ -1684,7 +2238,7 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                 </div>
                 {(form.extraTip > 0) && (
                   <div style={{ marginTop: 8 }}>
-                    <Field label="チップ支払方法"><PaymentToggle value={form.extraTipPaymentType || "cash"} onChange={v => set("extraTipPaymentType", v)} /></Field>
+                    <Field label="チップ支払方法" error={errors.includes("extraTipPaymentType")}><PaymentToggle value={form.extraTipPaymentType} onChange={v => set("extraTipPaymentType", v)} /></Field>
                   </div>
                 )}
               </div>
@@ -1692,8 +2246,8 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
 
             {/* Ticket grand total display */}
             {form.ticketMenu && (() => {
-              const svc = Number(form.price||0) + Number(form.cavPrice||0);
-              const tip = Number(form.tip||0) + Number(form.cavTip||0);
+              const svc = r2(Number(form.price||0) + Number(form.cavPrice||0));
+              const tip = r2(Number(form.tip||0) + Number(form.cavTip||0));
               const extra = Number(form.extraTip||0);
               if (svc + tip === 0) return null;
               return (
@@ -1718,25 +2272,110 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                   {form.useToday === false && <span style={{ color: "#888", fontWeight: 400 }}>（次回から使用）</span>}
                 </div>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-                  <Field label="パッケージ代金 ($)">
-                    <input type="number" value={form.packagePrice || ""} onChange={e => set("packagePrice", e.target.value)} style={inputStyle} placeholder="例: 432" />
+                  <Field label="パッケージ代金 ($)" error={errors.includes("packagePrice")}>
+                    <input type="number" value={form.packagePrice || ""} onChange={e => set("packagePrice", e.target.value)} style={{ ...inputStyle, ...(errors.includes("packagePrice") ? { borderColor: "#C62828", borderWidth: 2 } : {}) }} placeholder="例: 432" disabled={form.packageSplitPayment} />
                   </Field>
                   <Field label={form.useToday === false ? "チップ ($)" : "当日チップ ($)"}>
-                    <input type="number" value={form.packageTip ?? ""} onChange={e => set("packageTip", Number(e.target.value))} style={inputStyle} placeholder="例: 91" />
+                    <input type="number" value={form.packageTip || ""} onChange={e => set("packageTip", e.target.value === "" ? "" : Number(e.target.value))} style={inputStyle} placeholder="例: 91" />
                   </Field>
                 </div>
-                <div style={{ marginTop: 8 }}>
-                  <Field label="支払方法（施術代金）"><PaymentToggle value={form.paymentType} onChange={v => set("paymentType", v)} /></Field>
-                </div>
-                <div style={{ marginTop: 8 }}>
-                  <Field label="チップ支払方法"><PaymentToggle value={form.tipPaymentType||"cash"} onChange={v => set("tipPaymentType", v)} /></Field>
-                </div>
-                {form.useToday !== false && (form.price > 0 || form.cavPrice > 0) && (
-                  <div style={{ marginTop: 6, fontSize: 11, color: "#555", background: "#fff", borderRadius: 6, padding: 6 }}>
-                    スタッフ振り分け（1回目）：{form.therapist} 施術${form.price||0} / チップ${form.tip||0}
-                    {form.cavPrice > 0 ? ` ＋ ${form.cavTherapist} 施術$${form.cavPrice} / チップ$${form.cavTip||0}` : ""}
+
+                {/* Deposit note — packagePrice above is typed in by hand already net of any deposit; this only records that a deposit existed and when it was paid (allocation is already fixed by hand, no auto-calc) */}
+                <div style={{ marginTop: 8, background: "#fff", borderRadius: 10, padding: 12, border: "1.5px solid #A5D6A7" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <span style={{ fontWeight: 700, fontSize: 13, color: "#2E7D32" }}>💰 デポジットあり</span>
+                    <button onClick={() => set("packageDepositAmount", Number(form.packageDepositAmount) > 0 ? 0 : 20)}
+                      style={{ padding: "4px 12px", borderRadius: 8, border: "none", background: Number(form.packageDepositAmount) > 0 ? "#2E7D32" : "#C8E6C9", color: "#fff", fontWeight: 700, cursor: "pointer", fontSize: 12 }}>
+                      {Number(form.packageDepositAmount) > 0 ? "ON ✓" : "OFF"}
+                    </button>
                   </div>
-                )}
+                  {Number(form.packageDepositAmount) > 0 && (
+                    <div style={{ marginTop: 8, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                      <div>
+                        <div style={{ fontSize: 10, color: "#2E7D32", marginBottom: 4 }}>デポジット金額 ($)</div>
+                        <input type="number" value={form.packageDepositAmount || ""}
+                          onFocus={e => e.target.select()}
+                          onChange={e => set("packageDepositAmount", Number(e.target.value) || 0)}
+                          style={{ ...inputStyle, borderColor: "#81C784" }} placeholder="例：20" />
+                      </div>
+                      <div>
+                        <div style={{ fontSize: 10, color: "#2E7D32", marginBottom: 4 }}>支払われた日{errors.includes("packageDepositDate") && " ⚠️"}</div>
+                        <input type="date" value={form.packageDepositDate || ""}
+                          onChange={e => set("packageDepositDate", e.target.value)}
+                          style={{ ...inputStyle, borderColor: errors.includes("packageDepositDate") ? "#C62828" : "#81C784", borderWidth: errors.includes("packageDepositDate") ? 2 : 1 }} />
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Gift Card Usage — e.g. a previously-purchased balance covering part of this package */}
+                <div style={{ background: "#E0F2F1", borderRadius: 10, padding: 12, marginTop: 8 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <span style={{ fontWeight: 700, fontSize: 13, color: "#00796B" }}>🎁 ギフトカード使用（既存残高）</span>
+                    <button onClick={() => set("giftCardUsed", form.giftCardUsed === 0 ? (Number(form.packagePrice) || "") : 0)}
+                      style={{ padding: "4px 12px", borderRadius: 8, border: "none", background: form.giftCardUsed !== 0 ? "#00796B" : "#B2DFDB", color: "#fff", fontWeight: 700, cursor: "pointer", fontSize: 12 }}>
+                      {form.giftCardUsed !== 0 ? "ON ✓" : "OFF"}
+                    </button>
+                  </div>
+                  {(Number(form.giftCardUsed) > 0 || form.giftCardUsed === "") && (
+                    <div style={{ marginTop: 8 }}>
+                      <div style={{ fontSize: 10, color: "#00796B", marginBottom: 4 }}>使用金額 ($)</div>
+                      <input type="number" value={form.giftCardUsed === "" ? "" : form.giftCardUsed}
+                        onChange={e => set("giftCardUsed", e.target.value)}
+                        style={{ ...inputStyle, borderColor: "#80CBC4" }} placeholder="例：89" />
+                      {(() => {
+                        const gc = Number(form.giftCardUsed || 0);
+                        const svc = Number(form.packagePrice || 0);
+                        const tip = Number(form.packageTip ?? 0);
+                        const total = svc + tip;
+                        if (!gc || !total) return null;
+                        const remainder = Math.max(0, total - gc);
+                        return (
+                          <div style={{ marginTop: 6, fontSize: 12, color: "#00796B" }}>
+                            <div style={{ color: "#555", marginBottom: 2 }}>
+                              パッケージ${svc}{tip > 0 ? ` ＋ チップ$${tip}` : ""} ＝ <strong>${total}</strong>
+                            </div>
+                            🎁 GC(既存残高) <strong>${Math.min(gc, total)}</strong>(本日の売上には計上されません)
+                            {remainder > 0
+                              ? <> ＋ 残り <strong>${remainder}</strong>を現金・カードで受取</>
+                              : <span style={{ color: "#2E7D32" }}> → 全額ギフトカード</span>}
+                          </div>
+                        );
+                      })()}
+                    </div>
+                  )}
+                </div>
+
+                <div style={{ marginTop: 10, background: "#fff", borderRadius: 8, padding: 10, border: "1.5px solid #A5D6A7" }}>
+                  <div style={{ fontWeight: 700, fontSize: 12, color: "#2E7D32", marginBottom: 8 }}>💰 お会計</div>
+                  <button onClick={() => set("packageSplitPayment", !form.packageSplitPayment)}
+                    style={{ marginBottom: 8, padding: "6px 12px", borderRadius: 8, border: `2px solid ${form.packageSplitPayment ? "#2E7D32" : "#DDD"}`, background: form.packageSplitPayment ? "#E8F5E9" : "#fff", cursor: "pointer", fontWeight: 700, fontSize: 12, color: form.packageSplitPayment ? "#2E7D32" : "#888" }}>
+                    {form.packageSplitPayment ? "☑" : "☐"} 施術代金を現金・カードに分ける
+                  </button>
+                  {form.packageSplitPayment ? (
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 }}>
+                      <div>
+                        <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>施術キャッシュ ($)</div>
+                        <input type="number" value={form.packageCashPortion || ""} onChange={e => {
+                          const cashPortion = Number(e.target.value) || 0;
+                          setForm(f => ({ ...f, packageCashPortion: cashPortion, packagePrice: cashPortion + Number(f.packageCardPortion||0) }));
+                        }} style={inputStyle} placeholder="例：300" />
+                      </div>
+                      <div>
+                        <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>施術クレジット ($)</div>
+                        <input type="number" value={form.packageCardPortion || ""} onChange={e => {
+                          const cardPortion = Number(e.target.value) || 0;
+                          setForm(f => ({ ...f, packageCardPortion: cardPortion, packagePrice: Number(f.packageCashPortion||0) + cardPortion }));
+                        }} style={inputStyle} placeholder="例：132" />
+                      </div>
+                    </div>
+                  ) : (
+                    <div style={{ marginBottom: 8 }}>
+                      <Field label="施術 支払方法" error={errors.includes("packagePaymentType")}><PaymentToggle value={form.paymentType} onChange={v => set("paymentType", v)} /></Field>
+                    </div>
+                  )}
+                  <Field label="チップ 支払方法" error={errors.includes("packageTipPaymentType")}><PaymentToggle value={form.tipPaymentType} onChange={v => set("tipPaymentType", v)} /></Field>
+                </div>
               </div>
             )}
           </div>
@@ -1749,14 +2388,93 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
             {!isCavCapable(form.therapist) && (
               <Field label="機械担当セラピスト（任意）">
                 <select value={form.cavTherapist} onChange={e => {
-                  set("cavTherapist", e.target.value);
-                  // recalc split when cav therapist changes
-                  set("cavTherapist", e.target.value);
+                  const cav = e.target.value;
+                  // Recalculate the split immediately using whatever total was already typed —
+                  // otherwise picking/changing the machine therapist AFTER typing the total leaves
+                  // the machine's price/tip stuck at 0 until the total is retyped.
+                  const svcTotal = Number(form.totalServiceInput || (Number(form.price) + Number(form.cavPrice)) || 0);
+                  const tipTotal = Number(form.totalTipInput || (Number(form.tip) + Number(form.cavTip)) || 0);
+                  if (cav && isRegularWeightLoss && svcTotal > 0) {
+                    const cavPrice = REGULAR_WL_CAV_PRICE;
+                    const price = Math.round((svcTotal - cavPrice) * 100) / 100;
+                    const truePriceTotal = svcTotal + Number(form.depositApplied || 0);
+                    const pct = truePriceTotal > 0 ? tipTotal / truePriceTotal : 0;
+                    const cavTip = Math.round(cavPrice * pct * 100) / 100;
+                    const tip = Math.round((tipTotal - cavTip) * 100) / 100;
+                    setForm(f => ({ ...f, cavTherapist: cav, price, cavPrice, tip, cavTip }));
+                  } else if (cav && !isRegularWeightLoss && svcTotal > 0) {
+                    // Everything else (e.g. Improving Posture) defaults to a fixed 15min machine
+                    // slot, rest to body — same idea as Weight Loss's fixed 40min, just a different
+                    // number. Still editable afterward in the minutes box.
+                    const cavMins = Number(form.cavMins) || 15;
+                    const bodyMins = Math.max(0, Number(form.duration) - cavMins);
+                    const allMins = bodyMins + cavMins;
+                    // Round the cav (machine) side first, then derive body as the exact remainder —
+                    // rounding both sides independently can overshoot the original total by a cent.
+                    const cavPrice = allMins > 0 ? Math.round(svcTotal * cavMins / allMins * 100) / 100 : 0;
+                    const price = allMins > 0 ? Math.round((svcTotal - cavPrice) * 100) / 100 : svcTotal;
+                    const cavTip = allMins > 0 ? Math.round(tipTotal * cavMins / allMins * 100) / 100 : 0;
+                    const tip = allMins > 0 ? Math.round((tipTotal - cavTip) * 100) / 100 : tipTotal;
+                    setForm(f => ({ ...f, cavTherapist: cav, bodyMins, cavMins, price, cavPrice, tip, cavTip }));
+                  } else if (!cav) {
+                    setForm(f => ({ ...f, cavTherapist: "", price: svcTotal, cavPrice: 0, tip: tipTotal, cavTip: 0 }));
+                  } else {
+                    set("cavTherapist", cav);
+                  }
                 }} style={inputStyle}>
                   <option value="">なし（機械なし）</option>
                   {CAV_CAPABLE.filter(t => t !== form.therapist).map(t => <option key={t} value={t}>{t}</option>)}
                 </select>
               </Field>
+            )}
+
+            {/* Gift Card Usage — hidden for GC消化 (entire appointment IS the GC) and PR無料 */}
+            {!form.isGiftCard && !form.isPromo && <div style={{ background: "#E0F2F1", borderRadius: 10, padding: 12 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span style={{ fontWeight: 700, fontSize: 13, color: "#00796B" }}>🎁 ギフトカード使用</span>
+                <button onClick={() => set("giftCardUsed", form.giftCardUsed === 0 ? ((Number(form.price)||0) + (Number(form.cavPrice)||0) || "") : 0)}
+                  style={{ padding: "4px 12px", borderRadius: 8, border: "none", background: form.giftCardUsed !== 0 ? "#00796B" : "#B2DFDB", color: "#fff", fontWeight: 700, cursor: "pointer", fontSize: 12 }}>
+                  {form.giftCardUsed !== 0 ? "ON ✓" : "OFF"}
+                </button>
+              </div>
+              {(Number(form.giftCardUsed) > 0 || form.giftCardUsed === "") && (
+                <div style={{ marginTop: 8 }}>
+                  <div style={{ fontSize: 10, color: "#00796B", marginBottom: 4 }}>使用金額 ($)</div>
+                  <input type="number" value={form.giftCardUsed === "" ? "" : form.giftCardUsed}
+                    onChange={e => set("giftCardUsed", e.target.value)}
+                    style={{ ...inputStyle, borderColor: "#80CBC4" }} placeholder="例：150" />
+                </div>
+              )}
+            </div>}
+
+            {/* デポジット使用 */}
+            {!form.isGiftCard && !form.isPromo && (
+              <div style={{ background: "#E8F5E9", borderRadius: 10, padding: 12, border: "1.5px solid #A5D6A7" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <span style={{ fontWeight: 700, fontSize: 13, color: "#2E7D32" }}>💰 デポジット使用</span>
+                  <button onClick={() => set("depositApplied", Number(form.depositApplied) > 0 ? 0 : 20)}
+                    style={{ padding: "4px 12px", borderRadius: 8, border: "none", background: Number(form.depositApplied) > 0 ? "#2E7D32" : "#C8E6C9", color: "#fff", fontWeight: 700, cursor: "pointer", fontSize: 12 }}>
+                    {Number(form.depositApplied) > 0 ? "ON ✓" : "OFF"}
+                  </button>
+                </div>
+                {Number(form.depositApplied) > 0 && (
+                  <div style={{ marginTop: 8, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                    <div>
+                      <div style={{ fontSize: 10, color: "#2E7D32", marginBottom: 4 }}>デポジット金額 ($)</div>
+                      <input type="number" value={form.depositApplied || ""}
+                        onFocus={e => e.target.select()}
+                        onChange={e => set("depositApplied", Number(e.target.value) || 0)}
+                        style={{ ...inputStyle, borderColor: "#81C784" }} placeholder="例：20" />
+                    </div>
+                    <div>
+                      <div style={{ fontSize: 10, color: "#2E7D32", marginBottom: 4 }}>支払われた日{errors.includes("depositPaidDate") && " ⚠️"}</div>
+                      <input type="date" value={form.depositPaidDate || ""}
+                        onChange={e => set("depositPaidDate", e.target.value)}
+                        style={{ ...inputStyle, borderColor: errors.includes("depositPaidDate") ? "#C62828" : "#81C784", borderWidth: errors.includes("depositPaidDate") ? 2 : 1 }} />
+                    </div>
+                  </div>
+                )}
+              </div>
             )}
 
             {/* Total service + tip input */}
@@ -1766,37 +2484,60 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                 {Number(form.depositApplied) > 0 && <span style={{ fontSize: 11, color: "#2E7D32", fontWeight: 600, marginLeft: 8 }}>← もらった金額を入力</span>}
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-                <Field label="施術合計 ($)">
-                  <input type="number" value={form.totalServiceInput ?? (form.price || "")}
+                <Field label="施術合計 ($)" error={errors.includes("price")}>
+                  <input type="number" value={form.totalServiceInput || form.price || ""}
+                    onFocus={e => e.target.select()}
                     onChange={e => {
                       const total = Number(e.target.value);
-                      const bodyMins = Number(form.bodyMins || form.duration);
-                      const cavMins = Number(form.cavMins || 0);
-                      const allMins = bodyMins + cavMins;
-                      if (form.cavTherapist && cavMins > 0 && allMins > 0) {
-                        set("price", Math.round(total * bodyMins / allMins * 10) / 10);
-                        set("cavPrice", Math.round(total * cavMins / allMins * 10) / 10);
+                      if (form.cavTherapist && isRegularWeightLoss) {
+                        set("cavPrice", REGULAR_WL_CAV_PRICE);
+                        set("price", Math.round((total - REGULAR_WL_CAV_PRICE) * 100) / 100);
                       } else {
-                        set("price", total);
-                        set("cavPrice", 0);
+                        const bodyMins = Number(form.bodyMins || form.duration);
+                        const cavMins = Number(form.cavMins || 0);
+                        const allMins = bodyMins + cavMins;
+                        if (form.cavTherapist && cavMins > 0 && allMins > 0) {
+                          // Round the machine side first, body gets the exact remainder (rounding
+                          // both independently can overshoot the entered total by a cent).
+                          const cavPrice = Math.round(total * cavMins / allMins * 100) / 100;
+                          set("cavPrice", cavPrice);
+                          set("price", Math.round((total - cavPrice) * 100) / 100);
+                        } else {
+                          set("price", total);
+                          set("cavPrice", 0);
+                        }
                       }
                       set("totalServiceInput", total);
                     }}
-                    style={inputStyle} placeholder="例: 158" />
+                    style={{ ...inputStyle, ...(errors.includes("price") ? { borderColor: "#C62828", borderWidth: 2 } : {}) }} placeholder="例: 158" />
                 </Field>
                 <Field label="チップ合計 ($)">
-                  <input type="number" value={form.totalTipInput ?? (form.tip || "")}
+                  <input type="number" value={form.totalTipInput || form.tip || ""}
+                    onFocus={e => e.target.select()}
                     onChange={e => {
                       const total = Number(e.target.value);
-                      const bodyMins = Number(form.bodyMins || form.duration);
-                      const cavMins = Number(form.cavMins || 0);
-                      const allMins = bodyMins + cavMins;
-                      if (form.cavTherapist && cavMins > 0 && allMins > 0) {
-                        set("tip", Math.round(total * bodyMins / allMins * 10) / 10);
-                        set("cavTip", Math.round(total * cavMins / allMins * 10) / 10);
+                      if (form.cavTherapist && isRegularWeightLoss) {
+                        // % is based on the TRUE course price (today's total + any deposit already
+                        // paid), not just what's collected today — e.g. a $267 repeat-guest visit with
+                        // a $20.9 deposit still bases the tip % on $267, not $246.1.
+                        const svcTotal = Number(form.totalServiceInput || (Number(form.price) + Number(form.cavPrice)) || 0);
+                        const truePriceTotal = svcTotal + Number(form.depositApplied || 0);
+                        const pct = truePriceTotal > 0 ? total / truePriceTotal : 0;
+                        const cavTip = Math.round(REGULAR_WL_CAV_PRICE * pct * 100) / 100;
+                        set("cavTip", cavTip);
+                        set("tip", Math.round((total - cavTip) * 100) / 100);
                       } else {
-                        set("tip", total);
-                        set("cavTip", 0);
+                        const bodyMins = Number(form.bodyMins || form.duration);
+                        const cavMins = Number(form.cavMins || 0);
+                        const allMins = bodyMins + cavMins;
+                        if (form.cavTherapist && cavMins > 0 && allMins > 0) {
+                          const cavTip = Math.round(total * cavMins / allMins * 100) / 100;
+                          set("cavTip", cavTip);
+                          set("tip", Math.round((total - cavTip) * 100) / 100);
+                        } else {
+                          set("tip", total);
+                          set("cavTip", 0);
+                        }
                       }
                       set("totalTipInput", total);
                     }}
@@ -1804,8 +2545,279 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                 </Field>
               </div>
 
-              {/* Minutes split — only shown when cav therapist selected */}
-              {form.cavTherapist && (
+              {/* Grand total — shown immediately below the amount/tip inputs so staff see the
+                  combined total right away, without scrolling further down the form. */}
+              {(() => {
+                const svc = r2(Number(form.price||0) + Number(form.cavPrice||0));
+                const tip = r2(Number(form.tip||0) + Number(form.cavTip||0));
+                if (svc + tip === 0) return null;
+                if (form.isGiftCard) {
+                  return (
+                    <div style={{ marginTop: 10, background: "#78350F", borderRadius: 8, padding: "10px 14px", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+                      <div style={{ fontSize: 11, color: "#FDE68A" }}>
+                        🎁 施術 <strong style={{ color: "#fff" }}>${svc}</strong>　チップ <strong style={{ color: "#fff" }}>${tip}</strong>
+                        {form.cavTherapist && !isDualLicense(form.therapist) && (
+                          <span style={{ fontSize: 10, color: "#FDE68A", display: "block" }}>
+                            {form.therapist} ${form.price||0}{Number(form.tip||0) > 0 ? ` +チップ$${form.tip}` : ""} / {form.cavTherapist} ${form.cavPrice||0}{Number(form.cavTip||0) > 0 ? ` +チップ$${form.cavTip}` : ""}
+                          </span>
+                        )}
+                      </div>
+                      <div style={{ textAlign: "right" }}>
+                        <span style={{ color: "#FDE68A", fontSize: 11 }}>GC消化合計　</span>
+                        <span style={{ color: "#fff", fontSize: 22, fontWeight: 800 }}>${svc + tip}</span>
+                      </div>
+                    </div>
+                  );
+                }
+                if (form.isPromo) {
+                  return (
+                    <div style={{ marginTop: 10, background: "#0D47A1", borderRadius: 8, padding: "10px 14px", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+                      <div style={{ fontSize: 11, color: "#BBDEFB" }}>
+                        📸 施術 <strong style={{ color: "#fff" }}>${svc}</strong>　チップ <strong style={{ color: "#fff" }}>${tip}</strong>
+                        {form.cavTherapist && !isDualLicense(form.therapist) && (
+                          <span style={{ fontSize: 10, color: "#BBDEFB", display: "block" }}>
+                            {form.therapist} ${form.price||0}{Number(form.tip||0) > 0 ? ` +チップ$${form.tip}` : ""} / {form.cavTherapist} ${form.cavPrice||0}{Number(form.cavTip||0) > 0 ? ` +チップ$${form.cavTip}` : ""}
+                          </span>
+                        )}
+                      </div>
+                      <div style={{ textAlign: "right" }}>
+                        <span style={{ color: "#BBDEFB", fontSize: 11 }}>PR無料合計　</span>
+                        <span style={{ color: "#fff", fontSize: 22, fontWeight: 800 }}>${svc + tip}</span>
+                      </div>
+                    </div>
+                  );
+                }
+                const gc = Number(form.giftCardUsed || 0);
+                const gcSvc = Math.min(gc, svc);
+                const gcTip = Math.min(Math.max(0, gc - gcSvc), tip);
+                const receivedToday = (svc - gcSvc) + (tip - gcTip);
+                const dep = Number(form.depositApplied || 0);
+                // Payroll (deposit-inclusive) split per therapist — Weight Loss keeps the machine
+                // fixed at $116 and gives the deposit entirely to the body therapist; everything
+                // else splits the deposit-inclusive total by treatment MINUTES (body gets its
+                // minute-share, machine gets the remainder), not by the price ratio, so the split
+                // matches actual time spent regardless of how price/cavPrice happened to be entered.
+                const hasCav = !!form.cavTherapist;
+                const bodyMinsForSplit = Number(form.bodyMins) || Math.max(0, Number(form.duration||0) - (Number(form.cavMins)||15));
+                const cavMinsForSplit = Number(form.cavMins) || 15;
+                const allMinsForSplit = bodyMinsForSplit + cavMinsForSplit;
+                let bodyPayroll, cavPayroll;
+                if (dep > 0 && isRegularWeightLoss) {
+                  bodyPayroll = Math.round((Number(form.price || 0) + dep) * 100) / 100;
+                  cavPayroll = Number(form.cavPrice || 0);
+                } else if (dep > 0 && hasCav && allMinsForSplit > 0) {
+                  bodyPayroll = Math.round((svc + dep) * bodyMinsForSplit / allMinsForSplit * 100) / 100;
+                  cavPayroll = Math.round(((svc + dep) - bodyPayroll) * 100) / 100;
+                } else if (dep > 0 && svc > 0) {
+                  bodyPayroll = Math.round((svc + dep) * Number(form.price || 0) / svc * 100) / 100;
+                  cavPayroll = Math.round((svc + dep) * Number(form.cavPrice || 0) / svc * 100) / 100;
+                } else {
+                  bodyPayroll = Number(form.price || 0);
+                  cavPayroll = Number(form.cavPrice || 0);
+                }
+                const bodySvcShown = dep > 0 ? bodyPayroll : Number(form.price || 0);
+                const cavSvcShown = dep > 0 ? cavPayroll : Number(form.cavPrice || 0);
+                const bodyTipShown = Number(form.tip || 0);
+                const cavTipShown = Number(form.cavTip || 0);
+                return (
+                  <div style={{ marginTop: 10, background: "#0D4F4F", borderRadius: 8, padding: "10px 14px" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+                      <div style={{ fontSize: 12, color: "#B2EBF2" }}>
+                        施術 <strong style={{ color: "#fff" }}>${svc}{gcSvc >= svc && svc > 0 ? "🎁" : form.paymentType==="card"?"💳":"💵"}</strong>　チップ <strong style={{ color: "#fff" }}>${tip}{gcTip >= tip && tip > 0 ? "🎁" : form.tipPaymentType==="card"?"💳":"💵"}</strong>
+                        {gc > 0 && (
+                          <span style={{ fontSize: 10, color: "#80CBC4", display: "block" }}>
+                            🎁 ギフトカードで${gcSvc + gcTip}消化済み（本日の売上には含まれません）
+                          </span>
+                        )}
+                      </div>
+                      <div style={{ textAlign: "right" }}>
+                        <span style={{ color: "#B2EBF2", fontSize: 11 }}>{gc > 0 ? "本日の受取　" : "もらった金額　"}</span>
+                        <span style={{ color: "#fff", fontSize: 22, fontWeight: 800 }}>${gc > 0 ? receivedToday : svc + tip}</span>
+                      </div>
+                    </div>
+                    {form.cavTherapist && !isDualLicense(form.therapist) && (
+                      <div style={{ marginTop: 10, display: "flex", gap: 8, flexWrap: "wrap" }}>
+                        <div style={{ flex: 1, minWidth: 130, background: "rgba(255,255,255,0.14)", borderRadius: 6, padding: "6px 10px" }}>
+                          <div style={{ fontSize: 13, fontWeight: 800, color: "#fff" }}>{form.therapist}</div>
+                          <div style={{ fontSize: 13, color: "#E0F7FA" }}>施術 ${bodySvcShown}　チップ ${bodyTipShown}</div>
+                          <div style={{ fontSize: 13, color: "#fff", fontWeight: 700 }}>合計 ${r2(bodySvcShown + bodyTipShown)}</div>
+                        </div>
+                        <div style={{ flex: 1, minWidth: 130, background: "rgba(255,255,255,0.14)", borderRadius: 6, padding: "6px 10px" }}>
+                          <div style={{ fontSize: 13, fontWeight: 800, color: "#fff" }}>{form.cavTherapist}（機械）</div>
+                          <div style={{ fontSize: 13, color: "#E0F7FA" }}>施術 ${cavSvcShown}　チップ ${cavTipShown}</div>
+                          <div style={{ fontSize: 13, color: "#fff", fontWeight: 700 }}>合計 ${r2(cavSvcShown + cavTipShown)}</div>
+                        </div>
+                      </div>
+                    )}
+                    {/* Single therapist (no machine helper) with a deposit — the deposit-inclusive
+                        payroll figure otherwise has nowhere to show, since the two-card layout
+                        above only renders when there's a machine therapist to split against. */}
+                    {!form.cavTherapist && dep > 0 && (
+                      <div style={{ marginTop: 10, background: "rgba(255,255,255,0.14)", borderRadius: 6, padding: "6px 10px" }}>
+                        <div style={{ fontSize: 13, fontWeight: 800, color: "#fff" }}>{form.therapist}</div>
+                        <div style={{ fontSize: 13, color: "#E0F7FA" }}>施術 ${bodyPayroll}　チップ ${bodyTipShown}</div>
+                        <div style={{ fontSize: 13, color: "#fff", fontWeight: 700 }}>合計 ${r2(bodyPayroll + bodyTipShown)}</div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+
+              {/* Service payment method — right next to the total, before tip payment method */}
+              {!form.isGiftCard && !form.isPromo && (() => {
+                const gc = Number(form.giftCardUsed || 0);
+                const svc = Number(form.price || 0);
+                const gcSvc = Math.min(gc, svc);
+                const svcCovered = gc > 0 && svc > 0 && gcSvc >= svc;
+                if (svc === 0) return null;
+                return (
+                  <div style={{ marginTop: 10, background: "#F0F4FF", borderRadius: 10, padding: "10px 12px" }}>
+                    <Field label={gc > 0 && !svcCovered ? "施術（差額）支払方法" : "施術 支払方法"} error={!svcCovered && errors.includes("paymentType")}>
+                      {svcCovered ? (
+                        <div style={{ fontSize: 12, color: "#00796B", fontWeight: 700, padding: "10px 0" }}>🎁 ギフトカード払い済み</div>
+                      ) : (
+                        <>
+                          <button onClick={() => set("svcSplitPayment", !form.svcSplitPayment)}
+                            style={{ marginBottom: 8, padding: "6px 12px", borderRadius: 8, border: `2px solid ${form.svcSplitPayment ? "#2E7D32" : "#DDD"}`, background: form.svcSplitPayment ? "#E8F5E9" : "#fff", cursor: "pointer", fontWeight: 700, fontSize: 12, color: form.svcSplitPayment ? "#2E7D32" : "#888" }}>
+                            {form.svcSplitPayment ? "☑" : "☐"} 現金・カードに分けて支払い
+                          </button>
+                          {form.svcSplitPayment ? (
+                            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                              <div>
+                                <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>💵 現金 ($)</div>
+                                <input type="number" value={form.svcCashPortion || ""} onChange={e => {
+                                  const cash = Number(e.target.value) || 0;
+                                  setForm(f => ({ ...f, svcCashPortion: cash, svcCardPortion: Math.max(0, Number(f.price || 0) - cash) }));
+                                }} style={inputStyle} placeholder="例：50" />
+                              </div>
+                              <div>
+                                <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>💳 カード ($)</div>
+                                <input type="number" value={form.svcCardPortion || ""} onChange={e => {
+                                  const card = Number(e.target.value) || 0;
+                                  setForm(f => ({ ...f, svcCardPortion: card, svcCashPortion: Math.max(0, Number(f.price || 0) - card) }));
+                                }} style={inputStyle} placeholder="例：50" />
+                              </div>
+                            </div>
+                          ) : (
+                            <PaymentToggle value={form.paymentType} onChange={v => set("paymentType", v)} />
+                          )}
+                        </>
+                      )}
+                    </Field>
+                  </div>
+                );
+              })()}
+
+              {/* Tip payment method — right next to the tip amount so it's one unit, not two separate steps */}
+              {Number(form.tip || 0) > 0 && (() => {
+                const gc = Number(form.giftCardUsed || 0);
+                const svc = Number(form.price || 0);
+                const tip = Number(form.tip || 0);
+                const gcSvc = Math.min(gc, svc);
+                const gcTip = Math.min(Math.max(0, gc - gcSvc), tip);
+                const tipCovered = gc > 0 && tip > 0 && gcTip >= tip;
+                return (
+                  <div style={{ marginTop: 8 }}>
+                    <Field label="チップ 支払方法" error={!tipCovered && errors.includes("tipPaymentType")}>
+                      {tipCovered ? (
+                        <div style={{ fontSize: 12, color: "#00796B", fontWeight: 700, padding: "6px 0" }}>🎁 ギフトカード払い済み</div>
+                      ) : (
+                        <>
+                          <button onClick={() => set("tipSplitPayment", !form.tipSplitPayment)}
+                            style={{ marginBottom: 8, padding: "6px 12px", borderRadius: 8, border: `2px solid ${form.tipSplitPayment ? "#2E7D32" : "#DDD"}`, background: form.tipSplitPayment ? "#E8F5E9" : "#fff", cursor: "pointer", fontWeight: 700, fontSize: 12, color: form.tipSplitPayment ? "#2E7D32" : "#888" }}>
+                            {form.tipSplitPayment ? "☑" : "☐"} 現金・カードに分けて支払い
+                          </button>
+                          {form.tipSplitPayment ? (
+                            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                              <div>
+                                <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>💵 現金 ($)</div>
+                                <input type="number" value={form.tipCashPortion || ""} onChange={e => {
+                                  const cash = Number(e.target.value) || 0;
+                                  setForm(f => ({ ...f, tipCashPortion: cash, tipCardPortion: Math.max(0, Number(f.tip || 0) - cash) }));
+                                }} style={inputStyle} placeholder="例：10" />
+                              </div>
+                              <div>
+                                <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>💳 カード ($)</div>
+                                <input type="number" value={form.tipCardPortion || ""} onChange={e => {
+                                  const card = Number(e.target.value) || 0;
+                                  setForm(f => ({ ...f, tipCardPortion: card, tipCashPortion: Math.max(0, Number(f.tip || 0) - card) }));
+                                }} style={inputStyle} placeholder="例：20" />
+                              </div>
+                            </div>
+                          ) : (
+                            <PaymentToggle value={form.tipPaymentType} onChange={v => set("tipPaymentType", v)} />
+                          )}
+                        </>
+                      )}
+                    </Field>
+                  </div>
+                );
+              })()}
+
+              {/* Weight Loss — fixed cav allocation, no minutes needed */}
+              {form.cavTherapist && isRegularWeightLoss && (Number(form.price) > 0 || Number(form.cavPrice) > 0) && (() => {
+                const svcTotal = Number(form.totalServiceInput || (Number(form.price) + Number(form.cavPrice)) || 0);
+                const truePriceTotal = svcTotal + Number(form.depositApplied || 0);
+                const tipTotal = Number(form.totalTipInput || (Number(form.tip) + Number(form.cavTip)) || 0);
+                const expectedCavPrice = REGULAR_WL_CAV_PRICE;
+                const expectedCavTip = truePriceTotal > 0 ? Math.round(expectedCavPrice * tipTotal / truePriceTotal * 100) / 100 : 0;
+                const priceStale = Math.abs(Number(form.cavPrice || 0) - expectedCavPrice) > 0.05;
+                // Tip goes stale too when the deposit amount is toggled/changed AFTER the tip was
+                // typed in — the % split isn't re-derived automatically, so cavTip can drift from
+                // what it should be against the (now different) true course total.
+                const tipStale = tipTotal > 0 && Math.abs(Number(form.cavTip || 0) - expectedCavTip) > 0.05;
+                const isStale = priceStale || tipStale;
+                if (!isStale) return null;
+                return (
+                  <div style={{ marginTop: 10, background: "#FFF3E0", borderRadius: 8, padding: 10, fontSize: 12, color: "#E65100" }}>
+                    <button onClick={() => {
+                      const cavPrice = expectedCavPrice;
+                      const price = Math.round((svcTotal - cavPrice) * 100) / 100;
+                      const pct = truePriceTotal > 0 ? tipTotal / truePriceTotal : 0;
+                      const cavTip = Math.round(cavPrice * pct * 100) / 100;
+                      const tip = Math.round((tipTotal - cavTip) * 100) / 100;
+                      setForm(f => ({ ...f, price, cavPrice, tip, cavTip }));
+                    }} style={{ padding: "5px 10px", borderRadius: 6, border: "none", background: "#E65100", color: "#fff", fontWeight: 700, fontSize: 11, cursor: "pointer" }}>
+                      🔄 Weight Lossのルールで再計算する（{priceStale ? "現在$116になっていません" : "デポジット変更後にチップ％がずれています"}）
+                    </button>
+                  </div>
+                );
+              })()}
+
+              {/* Regular (non-Weight-Loss) split — detect drift from the minutes ratio (e.g. a tip
+                  typed directly into the machine therapist's field instead of via チップ合計) and
+                  offer a one-click fix, mirroring the Weight Loss stale-check above. */}
+              {form.cavTherapist && !isRegularWeightLoss && (Number(form.price) > 0 || Number(form.cavPrice) > 0 || Number(form.tip) > 0 || Number(form.cavTip) > 0) && (() => {
+                const bodyMins = Number(form.bodyMins) || Math.max(0, Number(form.duration||0) - (Number(form.cavMins)||15));
+                const cavMins = Number(form.cavMins) || 15;
+                const allMins = bodyMins + cavMins;
+                if (allMins <= 0) return null;
+                const svcTotal = Number(form.totalServiceInput ?? (Number(form.price) + Number(form.cavPrice || 0)));
+                const tipTotal = Number(form.totalTipInput ?? (Number(form.tip) + Number(form.cavTip || 0)));
+                const expectedCavPrice = svcTotal > 0 ? Math.round(svcTotal * cavMins / allMins * 100) / 100 : 0;
+                const expectedCavTip = tipTotal > 0 ? Math.round(tipTotal * cavMins / allMins * 100) / 100 : 0;
+                const priceStale = svcTotal > 0 && Math.abs(Number(form.cavPrice || 0) - expectedCavPrice) > 0.05;
+                const tipStale = tipTotal > 0 && Math.abs(Number(form.cavTip || 0) - expectedCavTip) > 0.05;
+                if (!priceStale && !tipStale) return null;
+                return (
+                  <div style={{ marginTop: 10, background: "#FFF3E0", borderRadius: 8, padding: 10, fontSize: 12, color: "#E65100" }}>
+                    <button onClick={() => {
+                      const cavPrice = expectedCavPrice;
+                      const price = Math.round((svcTotal - cavPrice) * 100) / 100;
+                      const cavTip = expectedCavTip;
+                      const tip = Math.round((tipTotal - cavTip) * 100) / 100;
+                      setForm(f => ({ ...f, price, cavPrice, tip, cavTip }));
+                    }} style={{ padding: "5px 10px", borderRadius: 6, border: "none", background: "#E65100", color: "#fff", fontWeight: 700, fontSize: 11, cursor: "pointer" }}>
+                      🔄 分数比率（{bodyMins}分／{cavMins}分）で再計算する（{priceStale ? "施術料金" : "チップ"}がずれています）
+                    </button>
+                  </div>
+                );
+              })()}
+
+              {/* Minutes split. Weight Loss always uses a fixed 40min machine / rest-to-body split
+                  (auto-filled elsewhere, no manual entry needed) — this UI is only for everything
+                  else, where minutes actually drive the $ split. */}
+              {form.cavTherapist && !isRegularWeightLoss && (
                 <div style={{ marginTop: 10, background: "#EEF4FF", borderRadius: 8, padding: 10 }}>
                   <div style={{ fontSize: 12, fontWeight: 700, color: "#1565C0", marginBottom: 8 }}>⏱️ 担当分数を入力 → 自動振り分け</div>
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
@@ -1815,19 +2827,26 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                           const bodyMins = Number(e.target.value);
                           const cavMins = Number(form.duration) - bodyMins;
                           const allMins = Number(form.duration);
+                          if (isRegularWeightLoss) { setForm(f => ({ ...f, bodyMins, cavMins })); return; }
                           const svcTotal = Number(form.totalServiceInput ?? (Number(form.price) + Number(form.cavPrice || 0)));
                           const tipTotal = Number(form.totalTipInput ?? (Number(form.tip) + Number(form.cavTip || 0)));
+                          // Round the machine side first, body gets the exact remainder — rounding
+                          // both sides independently can overshoot the entered total by a cent.
+                          const cavPrice = allMins > 0 ? Math.round(svcTotal * cavMins / allMins * 100) / 100 : form.cavPrice;
+                          const price = allMins > 0 ? Math.round((svcTotal - cavPrice) * 100) / 100 : form.price;
+                          const cavTip = allMins > 0 ? Math.round(tipTotal * cavMins / allMins * 100) / 100 : form.cavTip;
+                          const tip = allMins > 0 ? Math.round((tipTotal - cavTip) * 100) / 100 : form.tip;
                           setForm(f => ({
                             ...f,
                             bodyMins,
                             cavMins,
-                            price: allMins > 0 ? Math.round(svcTotal * bodyMins / allMins * 10) / 10 : f.price,
-                            cavPrice: allMins > 0 ? Math.round(svcTotal * cavMins / allMins * 10) / 10 : f.cavPrice,
-                            tip: allMins > 0 ? Math.round(tipTotal * bodyMins / allMins * 10) / 10 : f.tip,
-                            cavTip: allMins > 0 ? Math.round(tipTotal * cavMins / allMins * 10) / 10 : f.cavTip,
+                            price,
+                            cavPrice,
+                            tip,
+                            cavTip,
                           }));
                         }}
-                        style={inputStyle} placeholder={`例: ${form.duration - 15}`} />
+                        style={inputStyle} placeholder={`例: ${form.duration - (isRegularWeightLoss ? 40 : 15)}`} />
                     </Field>
                     <Field label={`${form.cavTherapist} 担当（分）`}>
                       <input type="number" value={form.cavMins || ""}
@@ -1835,144 +2854,33 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                           const cavMins = Number(e.target.value);
                           const bodyMins = Number(form.duration) - cavMins;
                           const allMins = Number(form.duration);
+                          if (isRegularWeightLoss) { setForm(f => ({ ...f, bodyMins, cavMins })); return; }
                           const svcTotal = Number(form.totalServiceInput ?? (Number(form.price) + Number(form.cavPrice || 0)));
                           const tipTotal = Number(form.totalTipInput ?? (Number(form.tip) + Number(form.cavTip || 0)));
+                          // Round the machine side first, body gets the exact remainder — rounding
+                          // both sides independently can overshoot the entered total by a cent.
+                          const cavPrice = allMins > 0 ? Math.round(svcTotal * cavMins / allMins * 100) / 100 : form.cavPrice;
+                          const price = allMins > 0 ? Math.round((svcTotal - cavPrice) * 100) / 100 : form.price;
+                          const cavTip = allMins > 0 ? Math.round(tipTotal * cavMins / allMins * 100) / 100 : form.cavTip;
+                          const tip = allMins > 0 ? Math.round((tipTotal - cavTip) * 100) / 100 : form.tip;
                           setForm(f => ({
                             ...f,
                             bodyMins,
                             cavMins,
-                            price: allMins > 0 ? Math.round(svcTotal * bodyMins / allMins * 10) / 10 : f.price,
-                            cavPrice: allMins > 0 ? Math.round(svcTotal * cavMins / allMins * 10) / 10 : f.cavPrice,
-                            tip: allMins > 0 ? Math.round(tipTotal * bodyMins / allMins * 10) / 10 : f.tip,
-                            cavTip: allMins > 0 ? Math.round(tipTotal * cavMins / allMins * 10) / 10 : f.cavTip,
+                            price,
+                            cavPrice,
+                            tip,
+                            cavTip,
                           }));
                         }}
-                        style={inputStyle} placeholder="例: 15" />
+                        style={inputStyle} placeholder={isRegularWeightLoss ? "例: 40" : "例: 15"} />
                     </Field>
                   </div>
 
-                  {/* Show calculated split */}
-                  {(form.bodyMins > 0 || form.cavMins > 0) && (() => {
-                    const dep = Number(form.depositApplied || 0);
-                    const bodyRcv = Number(form.price || 0);
-                    const cavRcv = Number(form.cavPrice || 0);
-                    const tipBody = Number(form.tip || 0);
-                    const tipCav = Number(form.cavTip || 0);
-                    const totalRcv = bodyRcv + cavRcv;
-                    const fullPayroll = totalRcv + dep;
-                    const bodyPayroll = dep > 0 && totalRcv > 0
-                      ? Math.round(fullPayroll * bodyRcv / totalRcv * 10) / 10
-                      : bodyRcv;
-                    const cavPayroll = dep > 0 && totalRcv > 0
-                      ? Math.round(fullPayroll * cavRcv / totalRcv * 10) / 10
-                      : cavRcv;
-                    return (
-                      <div style={{ marginTop: 8, background: "#fff", borderRadius: 8, padding: 8, fontSize: 12 }}>
-                        <div style={{ color: "#2E7D32", marginBottom: 6 }}>
-                          💚 <strong>{form.therapist}</strong>（{form.bodyMins}分）：
-                          {dep > 0
-                            ? <><span style={{ background: "#C62828", color: "#fff", borderRadius: 4, padding: "2px 8px", fontWeight: 800 }}>payroll ${bodyPayroll}</span><span style={{ fontSize: 10, color: "#888", marginLeft: 6 }}>チップ ${tipBody}</span></>
-                            : <> 施術 <strong>${bodyRcv}</strong> / チップ <strong>${tipBody}</strong></>
-                          }
-                        </div>
-                        <div style={{ color: "#6A1B9A" }}>
-                          ⚡ <strong>{form.cavTherapist}</strong>（{form.cavMins}分 機械）：
-                          {dep > 0
-                            ? <><span style={{ background: "#6A1B9A", color: "#fff", borderRadius: 4, padding: "2px 8px", fontWeight: 800 }}>payroll ${cavPayroll}</span><span style={{ fontSize: 10, color: "#888", marginLeft: 6 }}>チップ ${tipCav}</span></>
-                            : <> 施術 <strong>${cavRcv}</strong> / チップ <strong>${tipCav}</strong></>
-                          }
-                        </div>
-                        {dep > 0 && (
-                          <div style={{ marginTop: 6, borderTop: "1px solid #EEE", paddingTop: 6, fontSize: 11, color: "#888" }}>
-                            受取 ${totalRcv} ＋ デポジット ${dep} ＝ payroll合計 <strong style={{ color: "#C62828" }}>${fullPayroll}</strong>
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })()}
                 </div>
               )}
 
-              {!form.isGiftCard && (
-              <div style={{ marginTop: 10, background: "#F0F4FF", borderRadius: 10, padding: "10px 12px" }}>
-                <div style={{ fontWeight: 700, fontSize: 12, color: "#1565C0", marginBottom: 8 }}>💳 支払い方法（施術・チップ別々に設定可）</div>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                  <Field label={Number(form.giftCardUsed) > 0 ? "施術（差額）支払方法" : "施術 支払方法"}>
-                    <PaymentToggle value={form.paymentType} onChange={v => set("paymentType", v)} />
-                  </Field>
-                  <Field label="チップ 支払方法">
-                    <PaymentToggle value={form.tipPaymentType||"cash"} onChange={v => set("tipPaymentType", v)} />
-                  </Field>
-                </div>
-              </div>
-              )}
-
-              {/* Gift Card Usage — hidden for GC消化 (entire appointment IS the GC) */}
-              {!form.isGiftCard && <div style={{ background: "#E0F2F1", borderRadius: 10, padding: 12, marginTop: 10 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <span style={{ fontWeight: 700, fontSize: 13, color: "#00796B" }}>🎁 ギフトカード使用</span>
-                  <button onClick={() => set("giftCardUsed", Number(form.giftCardUsed) > 0 ? 0 : "")}
-                    style={{ padding: "4px 12px", borderRadius: 8, border: "none", background: Number(form.giftCardUsed) > 0 ? "#00796B" : "#B2DFDB", color: "#fff", fontWeight: 700, cursor: "pointer", fontSize: 12 }}>
-                    {Number(form.giftCardUsed) > 0 ? "ON ✓" : "OFF"}
-                  </button>
-                </div>
-                {(Number(form.giftCardUsed) > 0 || form.giftCardUsed === "") && (
-                  <div style={{ marginTop: 8 }}>
-                    <div style={{ fontSize: 10, color: "#00796B", marginBottom: 4 }}>使用金額 ($)</div>
-                    <input type="number" value={form.giftCardUsed === "" ? "" : form.giftCardUsed}
-                      onChange={e => set("giftCardUsed", e.target.value)}
-                      style={{ ...inputStyle, borderColor: "#80CBC4" }} placeholder="例：150" />
-                    {(() => {
-                      const gc = Number(form.giftCardUsed || 0);
-                      const svc = Number(form.price || 0);
-                      const tip = Number(form.tip || 0);
-                      const retail = (form.purchaseTags||[]).includes("retail") ? Number(form.retailPurchaseAmount || 0) : 0;
-                      const total = svc + tip + retail;
-                      if (!gc || !total) return null;
-                      const remainder = Math.max(0, total - gc);
-                      return (
-                        <div style={{ marginTop: 6, fontSize: 12, color: "#00796B" }}>
-                          <div style={{ color: "#555", marginBottom: 2 }}>
-                            施術${svc}{tip > 0 ? ` ＋ チップ$${tip}` : ""}{retail > 0 ? ` ＋ 物販$${retail}` : ""} ＝ <strong>${total}</strong>
-                          </div>
-                          🎁 GC <strong>${Math.min(gc, total)}</strong>
-                          {remainder > 0
-                            ? <> ＋ {form.paymentType === "card" ? "💳 カード" : "💵 現金"} <strong>${remainder}</strong></>
-                            : <span style={{ color: "#2E7D32" }}> → 全額ギフトカード</span>}
-                        </div>
-                      );
-                    })()}
-                  </div>
-                )}
-              </div>}
             </div>
-
-            {/* デポジット使用 */}
-            {!form.isGiftCard && (
-              <div style={{ background: "#E8F5E9", borderRadius: 10, padding: 12, border: "1.5px solid #A5D6A7" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <span style={{ fontWeight: 700, fontSize: 13, color: "#2E7D32" }}>💰 デポジット使用</span>
-                  <button onClick={() => set("depositApplied", Number(form.depositApplied) > 0 ? 0 : 20)}
-                    style={{ padding: "4px 12px", borderRadius: 8, border: "none", background: Number(form.depositApplied) > 0 ? "#2E7D32" : "#C8E6C9", color: "#fff", fontWeight: 700, cursor: "pointer", fontSize: 12 }}>
-                    {Number(form.depositApplied) > 0 ? "ON ✓" : "OFF"}
-                  </button>
-                </div>
-                {Number(form.depositApplied) > 0 && (() => {
-                  const receivedSvc = Number(form.price || 0) + Number(form.cavPrice || 0);
-                  const dep = Number(form.depositApplied);
-                  const payrollSvc = receivedSvc + dep;
-                  const tip = Number(form.tip||0) + Number(form.cavTip||0);
-                  return (
-                    <div style={{ marginTop: 8 }}>
-                      <div style={{ fontSize: 10, color: "#2E7D32", marginBottom: 4 }}>デポジット金額 ($)</div>
-                      <input type="number" value={form.depositApplied}
-                        onChange={e => set("depositApplied", Number(e.target.value) || 0)}
-                        style={{ ...inputStyle, borderColor: "#81C784" }} placeholder="例：20" />
-                    </div>
-                  );
-                })()}
-              </div>
-            )}
 
             {/* GC消化 banner — replaces payment type selectors */}
             {form.isGiftCard && (
@@ -1982,48 +2890,171 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
               </div>
             )}
 
+            {/* PR無料 banner — replaces payment type selectors */}
+            {form.isPromo && (
+              <div style={{ background: "#E3F2FD", borderRadius: 10, padding: 12, border: "2px solid #1565C0", marginTop: 0 }}>
+                <div style={{ fontWeight: 800, fontSize: 13, color: "#1565C0" }}>📸 PR無料 — インスタグラマーなど無料施術</div>
+                <div style={{ fontSize: 11, color: "#0D47A1", marginTop: 4 }}>お客様からは料金をいただいていません。本日の売上には計上されませんが、スタッフの施術実績（給料計算用）には入力した金額が反映されます。</div>
+              </div>
+            )}
 
-            {/* Regular service grand total display */}
-            {(() => {
-              const svc = Number(form.price||0) + Number(form.cavPrice||0);
-              const tip = Number(form.tip||0) + Number(form.cavTip||0);
-              if (svc + tip === 0) return null;
-              if (form.isGiftCard) {
+
+          </>
+        )}
+
+        {/* ── オプション追加（別担当者の追加施術・前回の未消化分キャビなど） ── */}
+        {!showAddonSection && (
+          <button onClick={() => setShowAddonSection(true)}
+            style={{ background: "none", border: "none", color: "#888", fontSize: 15, textAlign: "left", padding: "4px 0", cursor: "pointer", textDecoration: "underline" }}>
+            ＋ 別の担当者の施術や前回未消化分などを追加する（通常は不要）
+          </button>
+        )}
+        {showAddonSection && (
+        <div style={{ marginTop: 10, background: "#F9F9F9", borderRadius: 10, padding: "10px 12px", border: "1.5px solid #E0E0E0" }}>
+          <div style={{ fontWeight: 700, fontSize: 12, color: "#555", marginBottom: 8 }}>➕ オプション追加（任意・別担当者の施術や前回未消化分など）</div>
+
+          {/* Service picker */}
+          <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
+            <select value={addonPick} onChange={e => setAddonPick(e.target.value)}
+              style={{ ...inputStyle, flex: 1, fontSize: 12 }}>
+              <option value="">— メニューを選択 —</option>
+              {ADDON_PRESETS.map(p => <option key={p} value={p}>{p}</option>)}
+              {SQUARE_SERVICES.map(s => <option key={s.name} value={s.name}>{s.name}</option>)}
+              <option value="__custom__">その他（カスタム入力）</option>
+            </select>
+            <button onClick={() => {
+              if (!addonPick) return;
+              set("addons", [...(form.addons||[]), {
+                id: `${Date.now()}`,
+                serviceName: addonPick === "__custom__" ? "" : addonPick,
+                therapist: "",
+                price: 0,
+                tip: 0,
+                paymentType: "",
+                tipPaymentType: "",
+                countsAsRevenue: null,
+                ticketCurrent: null,
+              }]);
+              setAddonPick("");
+            }} style={{
+              padding: "8px 14px", borderRadius: 8, border: "none",
+              background: addonPick ? "#0D4F4F" : "#CCC",
+              color: "#fff", cursor: addonPick ? "pointer" : "default", fontWeight: 700, fontSize: 13, whiteSpace: "nowrap"
+            }}>＋ 追加</button>
+          </div>
+
+          {/* Added addons */}
+          {(form.addons||[]).length > 0 && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {(form.addons||[]).map((addon, idx) => {
+                const upd = (patch) => set("addons", form.addons.map((a,i) => i===idx ? {...a, ...patch} : a));
+                const svcAmt = Number(addon.price||0);
+                const tipAmt = Number(addon.tip||0);
                 return (
-                  <div style={{ background: "#78350F", borderRadius: 8, padding: "10px 14px", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
-                    <div style={{ fontSize: 11, color: "#FDE68A" }}>
-                      🎁 施術 <strong style={{ color: "#fff" }}>${svc}</strong>　チップ <strong style={{ color: "#fff" }}>${tip}</strong>
-                      {form.cavTherapist && !isDualLicense(form.therapist) && (
-                        <span style={{ fontSize: 10, color: "#FDE68A", display: "block" }}>
-                          {form.therapist} ${form.price||0} / {form.cavTherapist} ${form.cavPrice||0}
-                        </span>
-                      )}
+                  <div key={addon.id} style={{ background: "#fff", borderRadius: 8, padding: "10px 10px", border: "1.5px solid #D0E8E4" }}>
+                    {/* Name row */}
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                      <input value={addon.serviceName||""} onChange={e => upd({ serviceName: e.target.value })}
+                        style={{ ...inputStyle, flex: 1, fontSize: 12, fontWeight: 700, color: "#0D4F4F" }}
+                        placeholder="サービス名を入力（例：前回キャビ未消化分 2/3回目）" />
+                      <button onClick={() => set("addons", form.addons.filter((_,i) => i !== idx))}
+                        style={{ border: "none", background: "none", cursor: "pointer", fontSize: 16, color: "#AAA", marginLeft: 6, flexShrink: 0 }}>✕</button>
                     </div>
-                    <div style={{ textAlign: "right" }}>
-                      <span style={{ color: "#FDE68A", fontSize: 11 }}>GC消化合計　</span>
-                      <span style={{ color: "#fff", fontSize: 22, fontWeight: 800 }}>${svc + tip}</span>
+
+                    {/* Revenue vs. ticket-consumption toggle */}
+                    <div style={{ marginBottom: 6 }}>
+                      <div style={{ fontSize: 10, color: addon.countsAsRevenue === null ? "#C62828" : "#888", marginBottom: 3, fontWeight: addon.countsAsRevenue === null ? 700 : 400 }}>
+                        この分の扱い{addon.countsAsRevenue === null && " ⚠️ 未選択"}
+                      </div>
+                      <div style={{ display: "flex", gap: 6 }}>
+                        <button onClick={() => upd({ countsAsRevenue: true, ticketCurrent: null })}
+                          style={{ flex: 1, padding: "6px 4px", borderRadius: 8, border: `2px solid ${addon.countsAsRevenue === true ? REVENUE_COLOR : "#DDD"}`, background: addon.countsAsRevenue === true ? "#FFEBEE" : "#fff", cursor: "pointer", fontWeight: 700, fontSize: 11, color: addon.countsAsRevenue === true ? REVENUE_COLOR : "#888" }}>
+                          💰 都度払い（新規支払い）
+                        </button>
+                        <button onClick={() => upd({ countsAsRevenue: false })}
+                          style={{ flex: 1, padding: "6px 4px", borderRadius: 8, border: `2px solid ${addon.countsAsRevenue === false ? NON_REVENUE_COLOR : "#DDD"}`, background: addon.countsAsRevenue === false ? "#E3F2FD" : "#fff", cursor: "pointer", fontWeight: 700, fontSize: 11, color: addon.countsAsRevenue === false ? NON_REVENUE_COLOR : "#888" }}>
+                          🎫 チケット消化（前回未消化分など）
+                        </button>
+                      </div>
                     </div>
-                  </div>
-                );
-              }
-              return (
-                <div style={{ background: "#0D4F4F", borderRadius: 8, padding: "10px 14px", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
-                  <div style={{ fontSize: 11, color: "#B2EBF2" }}>
-                    施術 <strong style={{ color: "#fff" }}>${svc}{form.paymentType==="card"?"💳":"💵"}</strong>　チップ <strong style={{ color: "#fff" }}>${tip}{form.tipPaymentType==="card"?"💳":"💵"}</strong>
-                    {form.cavTherapist && !isDualLicense(form.therapist) && (
-                      <span style={{ fontSize: 10, color: "#80CBC4", display: "block" }}>
-                        {form.therapist} ${form.price||0} / {form.cavTherapist} ${form.cavPrice||0}
-                      </span>
+
+                    {/* Session number — only when this addon is itself a ticket redemption */}
+                    {addon.countsAsRevenue === false && form.isTicket && (
+                      <div style={{ marginBottom: 6 }}>
+                        <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>何回目の消化？</div>
+                        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                          {Array.from({ length: form.ticketTotal||3 }, (_,i) => i+1).map(n => (
+                            <button key={n} onClick={() => upd({ ticketCurrent: n })}
+                              style={{ padding: "5px 10px", borderRadius: 8, border: `2px solid ${addon.ticketCurrent===n?"#0D4F4F":"#DDD"}`, background: addon.ticketCurrent===n?"#0D4F4F":"#fff", cursor: "pointer", fontWeight: 700, fontSize: 11, color: addon.ticketCurrent===n?"#fff":"#888" }}>
+                              {n}/{form.ticketTotal||3}回目
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Therapist */}
+                    <div style={{ marginBottom: 6 }}>
+                      <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>担当セラピスト</div>
+                      <select value={addon.therapist||""} onChange={e => upd({ therapist: e.target.value })}
+                        style={{ ...inputStyle, fontSize: 12 }}>
+                        <option value="">— 選択 —</option>
+                        {THERAPISTS.map(t => <option key={t} value={t}>{t}</option>)}
+                      </select>
+                    </div>
+
+                    {/* Price + Tip inputs */}
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 6 }}>
+                      <div>
+                        <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>施術料 ($)</div>
+                        <input type="number" value={addon.price||""} onChange={e => upd({ price: Number(e.target.value)||0 })}
+                          style={{ ...inputStyle, fontSize: 12 }} placeholder="0" />
+                      </div>
+                      <div>
+                        <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>チップ ($)</div>
+                        <input type="number" value={addon.tip||""} onChange={e => upd({ tip: Number(e.target.value)||0 })}
+                          style={{ ...inputStyle, fontSize: 12 }} placeholder="0" />
+                      </div>
+                    </div>
+
+                    {/* Payment type — real money only when this is a new (revenue) payment, not a ticket redemption */}
+                    {addon.countsAsRevenue !== false && (
+                      <div style={{ marginBottom: tipAmt > 0 ? 6 : 0 }}>
+                        <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>支払方法（施術）</div>
+                        <PaymentToggle value={addon.paymentType} onChange={v => upd({ paymentType: v })} small />
+                      </div>
+                    )}
+
+                    {/* Tip payment type */}
+                    {tipAmt > 0 && addon.countsAsRevenue !== false && (
+                      <div>
+                        <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>支払方法（チップ）</div>
+                        <PaymentToggle value={addon.tipPaymentType} onChange={v => upd({ tipPaymentType: v })} small />
+                      </div>
+                    )}
+
+                    {/* Sub-total */}
+                    {(svcAmt + tipAmt) > 0 && (
+                      <div style={{ marginTop: 6, textAlign: "right", fontSize: 11, color: "#0D4F4F", fontWeight: 700 }}>
+                        施術 ${svcAmt}{tipAmt > 0 ? ` ＋ チップ $${tipAmt}` : ""} ＝ <strong>${svcAmt + tipAmt}</strong>
+                      </div>
                     )}
                   </div>
-                  <div style={{ textAlign: "right" }}>
-                    <span style={{ color: "#B2EBF2", fontSize: 11 }}>合計　</span>
-                    <span style={{ color: "#fff", fontSize: 22, fontWeight: 800 }}>${svc + tip}</span>
-                  </div>
+                );
+              })}
+
+              {/* Grand addon total */}
+              {(form.addons||[]).some(a => Number(a.price||0) + Number(a.tip||0) > 0) && (
+                <div style={{ background: "#E0F2F1", borderRadius: 8, padding: "8px 12px", textAlign: "right" }}>
+                  <span style={{ fontSize: 12, color: "#00695C" }}>オプション合計　</span>
+                  <strong style={{ fontSize: 14, color: "#004D40" }}>
+                    ${(form.addons||[]).reduce((s,a) => s + Number(a.price||0) + Number(a.tip||0), 0)}
+                  </strong>
                 </div>
-              );
-            })()}
-          </>
+              )}
+            </div>
+          )}
+        </div>
         )}
 
         {/* ── 当日の追加購入 ── */}
@@ -2033,7 +3064,7 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
           const toggleTag = id => set("purchaseTags", hasTag(id) ? tags.filter(t => t !== id) : [...tags, id]);
           const payBtns = (field, active, activeColor) => (
             <div style={{ display: "flex", gap: 5 }}>
-              {[["cash","💵 Cash"],["card","💳 Card"],["check","🗒️ Check"]].map(([v,l]) => (
+              {[["cash","💵 Cash"],["card","💳 Card"]].map(([v,l]) => (
                 <button key={v} onClick={() => set(field, v)}
                   style={{ flex:1, padding:"7px 4px", borderRadius:8, border:`2px solid ${form[field]===v?activeColor:"#DDD"}`, background:form[field]===v?"#FFF":"#fff", cursor:"pointer", fontWeight:form[field]===v?700:400, fontSize:11, color:form[field]===v?activeColor:"#AAA" }}>
                   {l}
@@ -2065,11 +3096,73 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
               {hasTag("newTicket") && (
                 <div style={{ background: "#FFEBEE", padding: "10px 12px", borderTop: "1px solid #FFCDD2", display: "flex", flexDirection: "column", gap: 8 }}>
                   <div style={{ fontSize: 11, fontWeight: 700, color: "#B71C1C" }}>🎟️ チケット新規購入 — 詳細</div>
+
+                  <div>
+                    <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>コース</div>
+                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                      {MENU_OPTIONS.map(({ group, prefix }) => {
+                        const selected = form.newTicketMenu?.startsWith(prefix);
+                        return (
+                          <button key={prefix} onClick={() => {
+                            const dur = MENU_OPTIONS.find(m => m.prefix === prefix).durations[0];
+                            applyNewTicketMenuPrice(`${prefix}-${dur}-${form.newTicketTotal || 3}`, form.newTicketTotal || 3);
+                          }} style={{
+                            padding: "6px 10px", borderRadius: 8,
+                            border: `2px solid ${selected ? "#B71C1C" : "#DDD"}`,
+                            background: selected ? "#B71C1C" : "#fff",
+                            cursor: "pointer", fontWeight: 700, fontSize: 11,
+                            color: selected ? "#fff" : "#888"
+                          }}>{group}</button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {form.newTicketMenu && (() => {
+                    const prefix = form.newTicketMenu.split("-")[0];
+                    const group = MENU_OPTIONS.find(m => m.prefix === prefix);
+                    const currentDur = Number(form.newTicketMenu.split("-")[1]);
+                    return group ? (
+                      <div>
+                        <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>時間</div>
+                        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                          {group.durations.map(dur => (
+                            <button key={dur} onClick={() => applyNewTicketMenuPrice(`${prefix}-${dur}-${form.newTicketTotal || 3}`, form.newTicketTotal || 3)}
+                              style={{
+                                padding: "6px 12px", borderRadius: 8,
+                                border: `2px solid ${currentDur === dur ? "#B71C1C" : "#DDD"}`,
+                                background: currentDur === dur ? "#B71C1C" : "#fff",
+                                cursor: "pointer", fontWeight: 700, fontSize: 11,
+                                color: currentDur === dur ? "#fff" : "#888"
+                              }}>{dur}分</button>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null;
+                  })()}
+
+                  <div>
+                    <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>コース回数</div>
+                    <div style={{ display: "flex", gap: 8 }}>
+                      {[3,5].map(n => (
+                        <button key={n} onClick={() => {
+                          set("newTicketTotal", n);
+                          if (form.newTicketMenu) {
+                            const parts = form.newTicketMenu.split("-");
+                            applyNewTicketMenuPrice(`${parts[0]}-${parts[1]}-${n}`, n);
+                          }
+                        }} style={{ flex: 1, padding: "7px", borderRadius: 8, border: `2px solid ${form.newTicketTotal===n?"#B71C1C":"#DDD"}`, background: form.newTicketTotal===n?"#B71C1C":"#fff", cursor: "pointer", fontWeight: 700, fontSize: 12, color: form.newTicketTotal===n?"#fff":"#888" }}>
+                          {n}回コース
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
                   <div style={{ display: "flex", gap: 8 }}>
                     <div style={{ flex: 1 }}>
-                      <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>施術料 ($)</div>
+                      <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>施術料 ($)（自動入力・修正可）</div>
                       <input type="number" value={form.newTicketAmount || ""} onChange={e => set("newTicketAmount", e.target.value)}
-                        style={{ ...inputStyle, borderColor: "#EF9A9A" }} placeholder="例：719" />
+                        style={{ ...inputStyle, borderColor: "#EF9A9A" }} placeholder="例：719" disabled={form.newTicketSplitPayment} />
                     </div>
                     <div style={{ flex: 1 }}>
                       <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>チップ ($)</div>
@@ -2078,9 +3171,37 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                     </div>
                   </div>
                   <div>
-                    <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>施術料の支払方法</div>
-                    {payBtns("newTicketPaymentType", true, "#B71C1C")}
+                    <button onClick={() => set("newTicketSplitPayment", !form.newTicketSplitPayment)}
+                      style={{ padding: "6px 12px", borderRadius: 8, border: `2px solid ${form.newTicketSplitPayment ? "#B71C1C" : "#DDD"}`, background: form.newTicketSplitPayment ? "#FFEBEE" : "#fff", cursor: "pointer", fontWeight: 700, fontSize: 12, color: form.newTicketSplitPayment ? "#B71C1C" : "#888" }}>
+                      {form.newTicketSplitPayment ? "☑" : "☐"} 現金・カードに分けて支払い
+                    </button>
                   </div>
+                  {form.newTicketSplitPayment ? (
+                    <div>
+                      <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>施術料の内訳（現金＋カード＝施術料の合計になるように）</div>
+                      <div style={{ display: "flex", gap: 8 }}>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>💵 現金 ($)</div>
+                          <input type="number" value={form.newTicketCashPortion || ""} onChange={e => {
+                            const cashPortion = Number(e.target.value) || 0;
+                            setForm(f => ({ ...f, newTicketCashPortion: cashPortion, newTicketAmount: cashPortion + Number(f.newTicketCardPortion||0) }));
+                          }} style={{ ...inputStyle, borderColor: "#EF9A9A" }} placeholder="例：500" />
+                        </div>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>💳 カード ($)</div>
+                          <input type="number" value={form.newTicketCardPortion || ""} onChange={e => {
+                            const cardPortion = Number(e.target.value) || 0;
+                            setForm(f => ({ ...f, newTicketCardPortion: cardPortion, newTicketAmount: Number(f.newTicketCashPortion||0) + cardPortion }));
+                          }} style={{ ...inputStyle, borderColor: "#EF9A9A" }} placeholder="例：211" />
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div>
+                      <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>施術料の支払方法</div>
+                      {payBtns("newTicketPaymentType", true, "#B71C1C")}
+                    </div>
+                  )}
                   {Number(form.newTicketTip) > 0 && (
                     <div>
                       <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>チップの支払方法</div>
@@ -2095,39 +3216,133 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                 </div>
               )}
 
-              {/* 🛍️ 物販購入 fields */}
-              {hasTag("retail") && (
-                <div style={{ background: "#F3E5F5", padding: "10px 12px", borderTop: "1px solid #E1BEE7", display: "flex", flexDirection: "column", gap: 8 }}>
-                  <div style={{ fontSize: 11, fontWeight: 700, color: "#6A1B9A" }}>🛍️ 物販購入 — 詳細</div>
-                  <div>
-                    <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>商品名</div>
-                    <select value={form.retailProductName || ""} onChange={e => {
-                      const prod = RETAIL_PRODUCTS.find(p => p.name === e.target.value);
-                      setForm(f => ({ ...f, retailProductName: e.target.value, retailPurchaseAmount: prod?.price > 0 ? prod.price : f.retailPurchaseAmount }));
-                    }} style={{ ...inputStyle, borderColor: "#CE93D8" }}>
-                      <option value="">— 商品を選択 —</option>
-                      {RETAIL_PRODUCTS.map(p => (
-                        <option key={p.name} value={p.name}>{p.name}{p.price > 0 ? ` ($${p.price})` : ""}</option>
-                      ))}
-                      <option value="__other__">その他</option>
-                    </select>
-                    {form.retailProductName === "__other__" && (
-                      <input type="text" placeholder="商品名を入力" style={{ ...inputStyle, borderColor: "#CE93D8", marginTop: 4 }}
-                        onChange={e => set("retailProductName", e.target.value === "__other__" ? "" : e.target.value)} />
-                    )}
+              {/* 🛍️ 物販購入 fields — supports multiple products in one visit (2nd/3rd item stored in extraRetailItems[]) */}
+              {hasTag("retail") && (() => {
+                const items = [
+                  { productName: form.retailProductName, amount: form.retailPurchaseAmount, paymentType: form.retailPurchasePaymentType, sellers: form.retailSellers },
+                  ...(form.extraRetailItems || [])
+                ];
+                const updateItem = (idx, patch) => {
+                  if (idx === 0) {
+                    if ("productName" in patch) set("retailProductName", patch.productName);
+                    if ("amount" in patch) set("retailPurchaseAmount", patch.amount);
+                    if ("paymentType" in patch) set("retailPurchasePaymentType", patch.paymentType);
+                    if ("sellers" in patch) set("retailSellers", patch.sellers);
+                  } else {
+                    const extras = form.extraRetailItems || [];
+                    set("extraRetailItems", extras.map((it, i) => i === idx - 1 ? { ...it, ...patch } : it));
+                  }
+                };
+                const removeItem = (idx) => {
+                  if (idx === 0) return;
+                  const extras = form.extraRetailItems || [];
+                  set("extraRetailItems", extras.filter((_, i) => i !== idx - 1));
+                };
+                return (
+                  <div style={{ background: "#F3E5F5", padding: "10px 12px", borderTop: "1px solid #E1BEE7", display: "flex", flexDirection: "column", gap: 10 }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: "#6A1B9A" }}>🛍️ 物販購入 — 詳細</div>
+                    {items.map((item, idx) => (
+                      <div key={idx} style={{ display: "flex", flexDirection: "column", gap: 8, ...(idx > 0 ? { borderTop: "1px dashed #CE93D8", paddingTop: 8 } : {}) }}>
+                        {idx > 0 && (
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                            <span style={{ fontSize: 10, fontWeight: 700, color: "#6A1B9A" }}>商品 {idx + 1}</span>
+                            <button onClick={() => removeItem(idx)} style={{ border: "none", background: "none", cursor: "pointer", fontSize: 11, color: "#AAA" }}>✕ 削除</button>
+                          </div>
+                        )}
+                        <div>
+                          <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>商品名</div>
+                          <select value={RETAIL_PRODUCTS.find(p => p.name === item.productName) ? item.productName : (item.productName ? "__other__" : "")} onChange={e => {
+                            const val = e.target.value;
+                            const prod = RETAIL_PRODUCTS.find(p => p.name === val);
+                            updateItem(idx, { productName: val === "__other__" ? "" : val, amount: prod?.price > 0 ? prod.price : item.amount });
+                          }} style={{ ...inputStyle, borderColor: "#CE93D8" }}>
+                            <option value="">— 商品を選択 —</option>
+                            {RETAIL_PRODUCTS.map(p => (
+                              <option key={p.name} value={p.name}>{p.name}{p.price > 0 ? ` ($${p.price})` : ""}</option>
+                            ))}
+                            <option value="__other__">その他</option>
+                          </select>
+                          {(!RETAIL_PRODUCTS.find(p => p.name === item.productName)) && (
+                            <input type="text" value={item.productName || ""} placeholder="商品名を入力" style={{ ...inputStyle, borderColor: "#CE93D8", marginTop: 4 }}
+                              onChange={e => updateItem(idx, { productName: e.target.value })} />
+                          )}
+                        </div>
+                        <div>
+                          <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>金額 ($)</div>
+                          <input type="number" value={item.amount || ""} onChange={e => updateItem(idx, { amount: e.target.value })}
+                            style={{ ...inputStyle, borderColor: "#CE93D8" }} placeholder="例：30" />
+                        </div>
+                        <div>
+                          <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>支払方法</div>
+                          <div style={{ display: "flex", gap: 5 }}>
+                            {[["cash","💵 Cash"],["card","💳 Card"]].map(([v,l]) => (
+                              <button key={v} onClick={() => updateItem(idx, { paymentType: v })}
+                                style={{ flex:1, padding:"7px 4px", borderRadius:8, border:`2px solid ${item.paymentType===v?"#6A1B9A":"#DDD"}`, background:"#fff", cursor:"pointer", fontWeight:item.paymentType===v?700:400, fontSize:11, color:item.paymentType===v?"#6A1B9A":"#AAA" }}>
+                                {l}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                        {(() => {
+                          // Seller amounts represent each person's share of the *tax-excluded* commission
+                          // base (same convention as the standalone 物販 modal) — staff still work out
+                          // their own 10%/4% commission from that base and type the dollar figure in.
+                          const afterTaxTotal = Math.round(Number(item.amount || 0) * (1 - RETAIL_TAX_RATE) * 100) / 100;
+                          // Defaults to just the body therapist getting the full (tax-excluded) amount —
+                          // most retail sales are one person. Add rows (up to 3) for the rare cases where
+                          // the machine therapist, or a third therapist from a multi-service visit, shares it.
+                          const sellers = item.sellers && item.sellers.length > 0
+                            ? item.sellers
+                            : [{ therapist: form.therapist, amount: afterTaxTotal }];
+                          const sellersTotal = Math.round(sellers.reduce((s, sel) => s + Number(sel.amount || 0), 0) * 100) / 100;
+                          const updSeller = (sidx, patch) => updateItem(idx, { sellers: sellers.map((sel, i) => i === sidx ? { ...sel, ...patch } : sel) });
+                          return (
+                            <div>
+                              <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>
+                                誰と分けるか（最大3名まで・税抜金額${afterTaxTotal}を分けます）{afterTaxTotal > 0 && Math.abs(sellersTotal - afterTaxTotal) > 0.15 ? " ⚠️ 合計が税抜金額と大きくずれています" : ""}
+                              </div>
+                              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                                {afterTaxTotal > 0 && (
+                                  <button onClick={() => {
+                                    const each = Math.round((afterTaxTotal / sellers.length) * 100) / 100;
+                                    updateItem(idx, { sellers: sellers.map(sel => ({ ...sel, amount: each })) });
+                                  }} style={{ padding: "5px 10px", borderRadius: 8, border: "2px solid #6A1B9A", background: "#fff", color: "#6A1B9A", fontWeight: 700, cursor: "pointer", fontSize: 11, alignSelf: "flex-start" }}>
+                                    ⚖️ 税抜金額を{sellers.length > 1 ? `${sellers.length}人で均等に分ける` : "自動入力"}
+                                  </button>
+                                )}
+                                {sellers.map((sel, sidx) => (
+                                  <div key={sidx} style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                                    <select value={sel.therapist} onChange={e => updSeller(sidx, { therapist: e.target.value })} style={{ ...inputStyle, flex: 2, borderColor: "#CE93D8" }}>
+                                      <option value="">— 選択 —</option>
+                                      {THERAPISTS.map(t => <option key={t} value={t}>{t}</option>)}
+                                    </select>
+                                    <input type="number" value={sel.amount || ""} onChange={e => updSeller(sidx, { amount: Number(e.target.value) || 0 })}
+                                      style={{ ...inputStyle, flex: 1, borderColor: "#CE93D8" }} placeholder="金額" />
+                                    {sellers.length > 1 && (
+                                      <button onClick={() => updateItem(idx, { sellers: sellers.filter((_, i) => i !== sidx) })}
+                                        style={{ border: "none", background: "none", cursor: "pointer", fontSize: 16, color: "#AAA" }}>✕</button>
+                                    )}
+                                  </div>
+                                ))}
+                                {sellers.length < 3 && (
+                                  <button onClick={() => updateItem(idx, { sellers: [...sellers, { therapist: "", amount: 0 }] })}
+                                    style={{ padding: "5px 10px", borderRadius: 8, border: "2px solid #6A1B9A", background: "#F3E5F5", color: "#6A1B9A", fontWeight: 700, cursor: "pointer", fontSize: 11, alignSelf: "flex-start" }}>
+                                    ＋ 販売者を追加
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })()}
+                      </div>
+                    ))}
+                    <button onClick={() => set("extraRetailItems", [...(form.extraRetailItems || []), { productName: "", amount: 0, paymentType: "", sellers: [] }])}
+                      style={{ padding: "7px 12px", borderRadius: 8, border: "2px dashed #6A1B9A", background: "#fff", color: "#6A1B9A", fontWeight: 700, cursor: "pointer", fontSize: 12 }}>
+                      ＋ 商品を追加（2つ目・3つ目...）
+                    </button>
                   </div>
-                  <div>
-                    <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>金額 ($)</div>
-                    <input type="number" value={form.retailPurchaseAmount || ""} onChange={e => set("retailPurchaseAmount", e.target.value)}
-                      style={{ ...inputStyle, borderColor: "#CE93D8" }} placeholder="例：30" />
-                  </div>
-                  <div>
-                    <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>支払方法</div>
-                    {payBtns("retailPurchasePaymentType", true, "#6A1B9A")}
-                  </div>
-                  <div style={{ fontSize: 10, color: "#888" }}>担当：{form.therapist}{form.cavTherapist ? ` / ${form.cavTherapist}` : ""}</div>
-                </div>
-              )}
+                );
+              })()}
 
               {/* 🎁 ギフトカード購入 fields */}
               {hasTag("giftCard") && (
@@ -2148,160 +3363,15 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
           );
         })()}
 
-        <Field label="顧客タイプ">
-          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-            {CUSTOMER_TYPES.map(ct => {
-              const colors = { RL:"#4CAF50", RT:"#2196F3", NL:"#FF9800", NT:"#9C27B0" };
-              const labels = { RL:"リピ・ローカル", RT:"リピ・トラベラー", NL:"ニュー・ローカル", NT:"ニュー・トラベラー" };
-              return (
-                <button key={ct} onClick={() => set("customerType", ct)}
-                  style={{ flex: 1, minWidth: 90, padding: "7px 4px", borderRadius: 8, border: `2px solid ${form.customerType===ct?colors[ct]:"#DDD"}`, background: form.customerType===ct?colors[ct]:"#fff", cursor: "pointer", fontWeight: 700, fontSize: 11, color: form.customerType===ct?"#fff":"#888" }}>
-                  {ct}<br /><span style={{ fontWeight: 400, fontSize: 9 }}>{labels[ct]}</span>
-                </button>
-              );
-            })}
-          </div>
-        </Field>
-
-        {/* How they found us — shown for NT and NL */}
-        {(form.customerType === "NT" || form.customerType === "NL") && (
-          <Field label={form.customerType === "NT" ? "📍 どこで知りましたか？（NT）" : "📍 どこで知りましたか？（NL）"}>
-            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-              {["Google / Website", "Google Map", "Instagram", "Yelp", "紹介"].map(src => (
-                <button key={src} onClick={() => set("referralSource", form.referralSource === src ? "" : src)}
-                  style={{
-                    padding: "6px 12px", borderRadius: 20, border: `2px solid ${form.referralSource === src ? "#9C27B0" : "#DDD"}`,
-                    background: form.referralSource === src ? "#9C27B0" : "#fff",
-                    cursor: "pointer", fontWeight: 600, fontSize: 12,
-                    color: form.referralSource === src ? "#fff" : "#666"
-                  }}>
-                  {src}
-                </button>
-              ))}
-            </div>
-          </Field>
-        )}
-
-        {/* ── オプション追加 ── */}
-        <div style={{ background: "#F9F9F9", borderRadius: 10, padding: "10px 12px", border: "1.5px solid #E0E0E0" }}>
-          <div style={{ fontWeight: 700, fontSize: 12, color: "#555", marginBottom: 8 }}>➕ オプション追加（任意）</div>
-
-          {/* Service picker */}
-          <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
-            <select value={addonPick} onChange={e => setAddonPick(e.target.value)}
-              style={{ ...inputStyle, flex: 1, fontSize: 12 }}>
-              <option value="">— メニューを選択 —</option>
-              {SQUARE_SERVICES.map(s => <option key={s.name} value={s.name}>{s.name}</option>)}
-              <option value="__custom__">その他（カスタム入力）</option>
-            </select>
-            <button onClick={() => {
-              if (!addonPick) return;
-              set("addons", [...(form.addons||[]), {
-                id: `${Date.now()}`,
-                serviceName: addonPick === "__custom__" ? "" : addonPick,
-                therapist: "",
-                price: 0,
-                tip: 0,
-                paymentType: "cash",
-                tipPaymentType: "cash",
-              }]);
-              setAddonPick("");
-            }} style={{
-              padding: "8px 14px", borderRadius: 8, border: "none",
-              background: addonPick ? "#0D4F4F" : "#CCC",
-              color: "#fff", cursor: addonPick ? "pointer" : "default", fontWeight: 700, fontSize: 13, whiteSpace: "nowrap"
-            }}>＋ 追加</button>
-          </div>
-
-          {/* Added addons */}
-          {(form.addons||[]).length > 0 && (
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              {(form.addons||[]).map((addon, idx) => {
-                const upd = (patch) => set("addons", form.addons.map((a,i) => i===idx ? {...a, ...patch} : a));
-                const svcAmt = Number(addon.price||0);
-                const tipAmt = Number(addon.tip||0);
-                return (
-                  <div key={addon.id} style={{ background: "#fff", borderRadius: 8, padding: "10px 10px", border: "1.5px solid #D0E8E4" }}>
-                    {/* Name row */}
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-                      {!addon.serviceName ? (
-                        <input value={addon.serviceName||""} onChange={e => upd({ serviceName: e.target.value })}
-                          style={{ ...inputStyle, flex: 1, fontSize: 12 }} placeholder="サービス名を入力" />
-                      ) : (
-                        <div style={{ fontWeight: 700, fontSize: 12, color: "#0D4F4F", flex: 1 }}>➕ {addon.serviceName}</div>
-                      )}
-                      <button onClick={() => set("addons", form.addons.filter((_,i) => i !== idx))}
-                        style={{ border: "none", background: "none", cursor: "pointer", fontSize: 16, color: "#AAA", marginLeft: 6, flexShrink: 0 }}>✕</button>
-                    </div>
-
-                    {/* Therapist */}
-                    <div style={{ marginBottom: 6 }}>
-                      <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>担当セラピスト</div>
-                      <select value={addon.therapist||""} onChange={e => upd({ therapist: e.target.value })}
-                        style={{ ...inputStyle, fontSize: 12 }}>
-                        <option value="">— 選択 —</option>
-                        {THERAPISTS.map(t => <option key={t} value={t}>{t}</option>)}
-                      </select>
-                    </div>
-
-                    {/* Price + Tip inputs */}
-                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 6 }}>
-                      <div>
-                        <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>施術料 ($)</div>
-                        <input type="number" value={addon.price||""} onChange={e => upd({ price: Number(e.target.value)||0 })}
-                          style={{ ...inputStyle, fontSize: 12 }} placeholder="0" />
-                      </div>
-                      <div>
-                        <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>チップ ($)</div>
-                        <input type="number" value={addon.tip||""} onChange={e => upd({ tip: Number(e.target.value)||0 })}
-                          style={{ ...inputStyle, fontSize: 12 }} placeholder="0" />
-                      </div>
-                    </div>
-
-                    {/* Payment type */}
-                    <div style={{ marginBottom: tipAmt > 0 ? 6 : 0 }}>
-                      <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>支払方法（施術）</div>
-                      <PaymentToggle value={addon.paymentType||"cash"} onChange={v => upd({ paymentType: v })} small />
-                    </div>
-
-                    {/* Tip payment type */}
-                    {tipAmt > 0 && (
-                      <div>
-                        <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>支払方法（チップ）</div>
-                        <PaymentToggle value={addon.tipPaymentType||"cash"} onChange={v => upd({ tipPaymentType: v })} small />
-                      </div>
-                    )}
-
-                    {/* Sub-total */}
-                    {(svcAmt + tipAmt) > 0 && (
-                      <div style={{ marginTop: 6, textAlign: "right", fontSize: 11, color: "#0D4F4F", fontWeight: 700 }}>
-                        施術 ${svcAmt}{tipAmt > 0 ? ` ＋ チップ $${tipAmt}` : ""} ＝ <strong>${svcAmt + tipAmt}</strong>
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-
-              {/* Grand addon total */}
-              {(form.addons||[]).some(a => Number(a.price||0) + Number(a.tip||0) > 0) && (
-                <div style={{ background: "#E0F2F1", borderRadius: 8, padding: "8px 12px", textAlign: "right" }}>
-                  <span style={{ fontSize: 12, color: "#00695C" }}>オプション合計　</span>
-                  <strong style={{ fontSize: 14, color: "#004D40" }}>
-                    ${(form.addons||[]).reduce((s,a) => s + Number(a.price||0) + Number(a.tip||0), 0)}
-                  </strong>
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-
         <Field label="メモ">
           <input value={form.notes} onChange={e => set("notes", e.target.value)} style={inputStyle} placeholder="備考など" />
         </Field>
       </div>
 
+      <ErrorBanner />
+
       <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
-        <button onClick={() => onSave(form)} style={{ flex: 1, padding: "12px", borderRadius: 10, border: "none", background: "#0D4F4F", color: "#fff", fontWeight: 700, fontSize: 15, cursor: "pointer" }}>💾 保存</button>
+        <button onClick={handleSave} style={{ flex: 1, padding: "12px", borderRadius: 10, border: "none", background: "#0D4F4F", color: "#fff", fontWeight: 700, fontSize: 15, cursor: "pointer" }}>💾 保存</button>
         {appt.id && <button onClick={onDelete} style={{ padding: "12px 16px", borderRadius: 10, border: "none", background: "#FFEBEE", color: "#C62828", fontWeight: 700, cursor: "pointer" }}>🗑️</button>}
       </div>
     </Modal>
@@ -2309,8 +3379,22 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
 }
 
 function RetailModal({ retail, onSave, onClose }) {
-  const [form, setForm] = useState({ ...retail });
+  const [form, setForm] = useState({
+    ...retail,
+    sellers: retail.sellers || (retail.soldBy ? [{ therapist: retail.soldBy, amount: retail.price || 0 }] : [{ therapist: "", amount: 0 }]),
+  });
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+  const [paymentError, setPaymentError] = useState(false);
+  const handleSave = () => {
+    if (!form.paymentType) { setPaymentError(true); return; }
+    onSave(form);
+  };
+  const sellers = form.sellers || [];
+  const sellersTotal = Math.round(sellers.reduce((s, sel) => s + Number(sel.amount || 0), 0) * 100) / 100;
+  // Seller amounts represent each person's share of the *tax-adjusted* commission-eligible base
+  // (10% of this goes to staff as commission, 4% for Maki), not the raw sale price.
+  const afterTaxTotal = Math.round(Number(form.price || 0) * (1 - RETAIL_TAX_RATE) * 100) / 100;
+  const updSeller = (idx, patch) => set("sellers", sellers.map((sel, i) => i === idx ? { ...sel, ...patch } : sel));
   return (
     <Modal onClose={onClose}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
@@ -2318,12 +3402,61 @@ function RetailModal({ retail, onSave, onClose }) {
         <button onClick={onClose} style={{ border: "none", background: "none", fontSize: 22, cursor: "pointer" }}>✕</button>
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-        <Field label="商品名"><input value={form.item} onChange={e => set("item", e.target.value)} style={inputStyle} placeholder="Muscle Rub など" /></Field>
+        <Field label="商品名">
+          <select value={RETAIL_PRODUCTS.find(p => p.name === form.item) ? form.item : (form.item ? "__other__" : "")}
+            onChange={e => {
+              const val = e.target.value;
+              const prod = RETAIL_PRODUCTS.find(p => p.name === val);
+              setForm(f => ({ ...f, item: val === "__other__" ? "" : val, price: prod?.price > 0 ? prod.price : f.price }));
+            }} style={inputStyle}>
+            <option value="">— 商品を選択 —</option>
+            {RETAIL_PRODUCTS.map(p => (
+              <option key={p.name} value={p.name}>{p.name}{p.price > 0 ? ` ($${p.price})` : ""}</option>
+            ))}
+            <option value="__other__">その他（カスタム入力）</option>
+          </select>
+          {(!RETAIL_PRODUCTS.find(p => p.name === form.item)) && (
+            <input type="text" value={form.item || ""} placeholder="商品名を入力" style={{ ...inputStyle, marginTop: 4 }}
+              onChange={e => set("item", e.target.value)} />
+          )}
+        </Field>
         <Field label="金額 ($)"><input type="number" value={form.price || ""} onChange={e => set("price", e.target.value)} style={inputStyle} /></Field>
-        <Field label="販売者"><select value={form.soldBy} onChange={e => set("soldBy", e.target.value)} style={inputStyle}><option value="">選択</option>{THERAPISTS.map(t => <option key={t} value={t}>{t}</option>)}</select></Field>
-        <Field label="支払方法"><PaymentToggle value={form.paymentType} onChange={v => set("paymentType", v)} /></Field>
+        <Field label={`販売者（最大3名まで・税抜金額$${afterTaxTotal}を分けます）${Number(form.price) > 0 && Math.abs(sellersTotal - afterTaxTotal) > 0.15 ? " ⚠️ 合計が税抜金額と大きくずれています" : ""}`}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {Number(form.price) > 0 && (
+              <button onClick={() => {
+                // Rounded to the nearest $0.10 — penny-level precision isn't needed for this split.
+                const each = Math.round((afterTaxTotal / sellers.length) * 100) / 100;
+                set("sellers", sellers.map(sel => ({ ...sel, amount: each })));
+              }} style={{ padding: "6px 12px", borderRadius: 8, border: "2px solid #6A1B9A", background: "#fff", color: "#6A1B9A", fontWeight: 700, cursor: "pointer", fontSize: 12, alignSelf: "flex-start" }}>
+                ⚖️ 税抜金額を{sellers.length > 1 ? `${sellers.length}人で均等に分ける` : "自動入力"}
+              </button>
+            )}
+            {sellers.map((sel, idx) => (
+              <div key={idx} style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                <select value={sel.therapist} onChange={e => updSeller(idx, { therapist: e.target.value })} style={{ ...inputStyle, flex: 2 }}>
+                  <option value="">— 選択 —</option>
+                  {THERAPISTS.map(t => <option key={t} value={t}>{t}</option>)}
+                </select>
+                <input type="number" value={sel.amount || ""} onChange={e => updSeller(idx, { amount: Number(e.target.value) || 0 })}
+                  style={{ ...inputStyle, flex: 1 }} placeholder="金額" />
+                {sellers.length > 1 && (
+                  <button onClick={() => set("sellers", sellers.filter((_, i) => i !== idx))}
+                    style={{ border: "none", background: "none", cursor: "pointer", fontSize: 16, color: "#AAA" }}>✕</button>
+                )}
+              </div>
+            ))}
+            {sellers.length < 3 && (
+              <button onClick={() => set("sellers", [...sellers, { therapist: "", amount: 0 }])}
+                style={{ padding: "6px 12px", borderRadius: 8, border: "2px solid #6A1B9A", background: "#F3E5F5", color: "#6A1B9A", fontWeight: 700, cursor: "pointer", fontSize: 12, alignSelf: "flex-start" }}>
+                ＋ 販売者を追加
+              </button>
+            )}
+          </div>
+        </Field>
+        <Field label="支払方法" error={paymentError && !form.paymentType}><PaymentToggle value={form.paymentType} onChange={v => { set("paymentType", v); setPaymentError(false); }} /></Field>
       </div>
-      <button onClick={() => onSave(form)} style={{ width: "100%", marginTop: 16, padding: "12px", borderRadius: 10, border: "none", background: "#6A1B9A", color: "#fff", fontWeight: 700, fontSize: 15, cursor: "pointer" }}>💾 保存</button>
+      <button onClick={handleSave} style={{ width: "100%", marginTop: 16, padding: "12px", borderRadius: 10, border: "none", background: "#6A1B9A", color: "#fff", fontWeight: 700, fontSize: 15, cursor: "pointer" }}>💾 保存</button>
     </Modal>
   );
 }
@@ -2333,24 +3466,33 @@ function DepositModal({ deposit, onSave, onDelete, onClose }) {
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
   const isDeposit = form.type === "deposit";
   const isGiftCard = form.type === "giftcard";
-  const payTypes = [["cash","💵 現金"],["card","💳 カード"],["check","🗒️ Check"]];
+  const isCancellation = form.type === "cancellation";
+  const payTypes = [["cash","💵 現金"],["card","💳 カード"]];
+  const [errors, setErrors] = useState([]);
+  const handleSave = () => {
+    const errs = [];
+    if (!form.paymentType) errs.push("paymentType");
+    if (Number(form.tip) > 0 && !form.tipPaymentType) errs.push("tipPaymentType");
+    if (errs.length > 0) { setErrors(errs); return; }
+    onSave(form);
+  };
   return (
     <Modal onClose={onClose}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-        <h2 style={{ margin: 0, fontSize: 18, color: "#1565C0" }}>{isGiftCard ? "🎁 ギフトカード" : "💰 デポジット"}</h2>
+        <h2 style={{ margin: 0, fontSize: 18, color: "#1565C0" }}>{isCancellation ? "❌ キャンセル料" : isGiftCard ? "🎁 ギフトカード" : "💰 デポジット"}</h2>
         <button onClick={onClose} style={{ border: "none", background: "none", fontSize: 22, cursor: "pointer" }}>✕</button>
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
         <Field label="種類">
           <div style={{ display: "flex", gap: 8 }}>
-            {[["deposit","💰 デポジット"],["giftcard","🎁 ギフトカード"]].map(([val,label]) => (
+            {[["deposit","💰 デポジット"],["giftcard","🎁 ギフトカード"],["cancellation","❌ キャンセル料"]].map(([val,label]) => (
               <button key={val} onClick={() => set("type", val)} style={{ flex: 1, padding: "10px", borderRadius: 8, border: `2px solid ${form.type===val?"#1565C0":"#DDD"}`, background: form.type===val?"#E3F2FD":"#fff", cursor: "pointer", fontWeight: 700, color: form.type===val?"#1565C0":"#888" }}>{label}</button>
             ))}
           </div>
         </Field>
         <Field label="お客様名"><input value={form.clientName} onChange={e => set("clientName", e.target.value)} style={inputStyle} placeholder="例：田中様" /></Field>
-        {isDeposit && (
-          <Field label="予約日時">
+        {!isCancellation && (
+          <Field label={`来店予定日時（任意${isGiftCard ? "・全額ギフトで先払いの場合など" : ""}）`}>
             <div style={{ display: "flex", gap: 8 }}>
               <input type="date" value={form.appointmentDate || ""} onChange={e => set("appointmentDate", e.target.value)} style={{ ...inputStyle, flex: 1 }} />
               <input type="time" value={form.appointmentTime || ""} onChange={e => set("appointmentTime", e.target.value)} style={{ ...inputStyle, width: 100 }} />
@@ -2358,18 +3500,19 @@ function DepositModal({ deposit, onSave, onDelete, onClose }) {
             {form.appointmentDate && form.clientName && (
               <div style={{ fontSize: 11, color: "#1565C0", marginTop: 4 }}>
                 {new Date(form.appointmentDate + "T00:00").toLocaleDateString("ja-JP", { month: "long", day: "numeric" })}
-                {form.appointmentTime && ` ${form.appointmentTime}`}の{form.clientName}様のデポジット
+                {form.appointmentTime && ` ${form.appointmentTime}`}の{form.clientName}様の{isGiftCard ? "ギフト先払い" : "デポジット"}
+                　※日付は後から変更できます（予定が変わったらここを編集）
               </div>
             )}
           </Field>
         )}
-        <Field label="金額 ($)"><input type="number" value={form.amount || ""} onChange={e => set("amount", e.target.value)} style={inputStyle} /></Field>
+        <Field label={isCancellation ? "キャンセル料 ($)" : "金額 ($)"}><input type="number" value={form.amount || ""} onChange={e => set("amount", e.target.value)} style={inputStyle} /></Field>
         <div style={{ background: "#F0F4FF", borderRadius: 10, padding: "10px 12px" }}>
           <div style={{ fontWeight: 700, fontSize: 12, color: "#1565C0", marginBottom: 8 }}>💳 支払い方法（施術・チップ別々に設定可）</div>
-          <Field label={isDeposit ? "デポジット 支払方法" : "金額 支払方法"}>
+          <Field label={isCancellation ? "キャンセル料 支払方法" : isDeposit ? "デポジット 支払方法" : "金額 支払方法"} error={errors.includes("paymentType")}>
             <div style={{ display: "flex", gap: 6 }}>
               {payTypes.map(([val, label]) => (
-                <button key={val} onClick={() => set("paymentType", val)}
+                <button key={val} onClick={() => { set("paymentType", val); setErrors(errors.filter(e => e !== "paymentType")); }}
                   style={{ flex: 1, padding: "9px 4px", borderRadius: 8, border: `2px solid ${form.paymentType===val?"#1565C0":"#DDD"}`, background: form.paymentType===val?"#E3F2FD":"#fff", cursor: "pointer", fontWeight: 700, fontSize: 12, color: form.paymentType===val?"#1565C0":"#888" }}>
                   {label}
                 </button>
@@ -2383,10 +3526,10 @@ function DepositModal({ deposit, onSave, onDelete, onClose }) {
           </div>
           {Number(form.tip) > 0 && (
             <div style={{ marginTop: 8 }}>
-              <Field label="チップ 支払方法">
+              <Field label="チップ 支払方法" error={errors.includes("tipPaymentType")}>
                 <div style={{ display: "flex", gap: 6 }}>
                   {payTypes.map(([val, label]) => (
-                    <button key={val} onClick={() => set("tipPaymentType", val)}
+                    <button key={val} onClick={() => { set("tipPaymentType", val); setErrors(errors.filter(e => e !== "tipPaymentType")); }}
                       style={{ flex: 1, padding: "9px 4px", borderRadius: 8, border: `2px solid ${form.tipPaymentType===val?"#E65100":"#DDD"}`, background: form.tipPaymentType===val?"#FFF3E0":"#fff", cursor: "pointer", fontWeight: 700, fontSize: 12, color: form.tipPaymentType===val?"#E65100":"#888" }}>
                       {label}
                     </button>
@@ -2399,7 +3542,7 @@ function DepositModal({ deposit, onSave, onDelete, onClose }) {
         <Field label="メモ"><input value={form.notes} onChange={e => set("notes", e.target.value)} style={inputStyle} /></Field>
       </div>
       <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
-        <button onClick={() => onSave(form)} style={{ flex: 1, padding: "12px", borderRadius: 10, border: "none", background: "#1565C0", color: "#fff", fontWeight: 700, fontSize: 15, cursor: "pointer" }}>💾 保存</button>
+        <button onClick={handleSave} style={{ flex: 1, padding: "12px", borderRadius: 10, border: "none", background: "#1565C0", color: "#fff", fontWeight: 700, fontSize: 15, cursor: "pointer" }}>💾 保存</button>
         <button onClick={onDelete} style={{ padding: "12px 16px", borderRadius: 10, border: "none", background: "#FFEBEE", color: "#C62828", fontWeight: 700, cursor: "pointer" }}>🗑️</button>
       </div>
     </Modal>
@@ -2409,7 +3552,33 @@ function DepositModal({ deposit, onSave, onDelete, onClose }) {
 function TicketPurchaseModal({ tp, onSave, onDelete, onClose }) {
   const [form, setForm] = useState({ ...tp });
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
-  const payTypes = [["cash","💵 Cash"],["card","💳 Card"],["check","🗒️ Check"]];
+  const payTypes = [["cash","💵 Cash"],["card","💳 Card"]];
+  const [errors, setErrors] = useState([]);
+  const handleSave = () => {
+    const errs = [];
+    if (!form.splitPayment && !form.paymentType) errs.push("paymentType");
+    if (Number(form.tip) > 0 && !form.tipPaymentType) errs.push("tipPaymentType");
+    if (errs.length > 0) { setErrors(errs); return; }
+    onSave(form);
+  };
+
+  // Auto-fills the package service/tip from TICKET_PACKAGE_PRICES (still editable afterward,
+  // e.g. for occasional discounts).
+  const applyMenuPrice = (menu, total) => {
+    const group = MENU_OPTIONS.find(m => menu.startsWith(m.prefix));
+    const durLabel = menu.split("-")[1];
+    const packageName = group ? `${group.group} ${durLabel}分 ×${total}回` : form.packageName;
+    const pkg = TICKET_PACKAGE_PRICES[menu];
+    setForm(f => ({
+      ...f,
+      ticketMenu: menu,
+      priceVersion: "new",
+      ticketTotal: total,
+      packageName,
+      ...(pkg ? { amount: pkg.service, tip: pkg.tip } : {}),
+    }));
+  };
+
   return (
     <Modal onClose={onClose}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
@@ -2420,30 +3589,123 @@ function TicketPurchaseModal({ tp, onSave, onDelete, onClose }) {
         <Field label="お客様名">
           <input value={form.clientName} onChange={e => set("clientName", e.target.value)} style={inputStyle} placeholder="例：Mio" />
         </Field>
-        <Field label="パッケージ名（任意）">
-          <input value={form.packageName} onChange={e => set("packageName", e.target.value)} style={inputStyle} placeholder="例：IP-90 5回コース" />
+
+        <div style={{ background: "#FFF5F5", borderRadius: 10, padding: 12 }}>
+          <div style={{ fontWeight: 700, fontSize: 12, color: "#B71C1C", marginBottom: 8 }}>🎟️ コース選択</div>
+
+          <Field label="コース">
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+              {MENU_OPTIONS.map(({ group, prefix }) => {
+                const selected = form.ticketMenu?.startsWith(prefix);
+                return (
+                  <button key={prefix} onClick={() => {
+                    const dur = MENU_OPTIONS.find(m => m.prefix === prefix).durations[0];
+                    applyMenuPrice(`${prefix}-${dur}-${form.ticketTotal || 3}`, form.ticketTotal || 3);
+                  }} style={{
+                    padding: "7px 10px", borderRadius: 8,
+                    border: `2px solid ${selected ? "#B71C1C" : "#DDD"}`,
+                    background: selected ? "#B71C1C" : "#fff",
+                    cursor: "pointer", fontWeight: 700, fontSize: 11,
+                    color: selected ? "#fff" : "#888"
+                  }}>{group}</button>
+                );
+              })}
+            </div>
+          </Field>
+
+          {form.ticketMenu && (() => {
+            const prefix = form.ticketMenu.split("-")[0];
+            const group = MENU_OPTIONS.find(m => m.prefix === prefix);
+            const currentDur = Number(form.ticketMenu.split("-")[1]);
+            return group ? (
+              <Field label="時間">
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 4 }}>
+                  {group.durations.map(dur => (
+                    <button key={dur} onClick={() => applyMenuPrice(`${prefix}-${dur}-${form.ticketTotal || 3}`, form.ticketTotal || 3)}
+                      style={{
+                        padding: "7px 12px", borderRadius: 8,
+                        border: `2px solid ${currentDur === dur ? "#B71C1C" : "#DDD"}`,
+                        background: currentDur === dur ? "#B71C1C" : "#fff",
+                        cursor: "pointer", fontWeight: 700, fontSize: 12,
+                        color: currentDur === dur ? "#fff" : "#888"
+                      }}>{dur}分</button>
+                  ))}
+                </div>
+              </Field>
+            ) : null;
+          })()}
+
+          <Field label="コース回数">
+            <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
+              {[3,5].map(n => (
+                <button key={n} onClick={() => {
+                  set("ticketTotal", n);
+                  if (form.ticketMenu) {
+                    const parts = form.ticketMenu.split("-");
+                    applyMenuPrice(`${parts[0]}-${parts[1]}-${n}`, n);
+                  }
+                }} style={{ flex: 1, padding: "8px", borderRadius: 8, border: `2px solid ${form.ticketTotal===n?"#B71C1C":"#DDD"}`, background: form.ticketTotal===n?"#B71C1C":"#fff", cursor: "pointer", fontWeight: 700, color: form.ticketTotal===n?"#fff":"#888" }}>
+                  {n}回コース
+                </button>
+              ))}
+            </div>
+          </Field>
+        </div>
+
+        <Field label="パッケージ名（自動入力・修正可）">
+          <input value={form.packageName} onChange={e => set("packageName", e.target.value)} style={inputStyle} placeholder="例：Improving Posture 90分 ×3回" />
         </Field>
         <Field label="施術料 ($)">
-          <input type="number" value={form.amount || ""} onChange={e => set("amount", e.target.value)} style={inputStyle} placeholder="例：719" />
+          <input type="number" value={form.amount || ""} onChange={e => set("amount", e.target.value)} style={inputStyle} placeholder="例：719" disabled={form.splitPayment} />
         </Field>
-        <Field label="支払方法">
-          <div style={{ display: "flex", gap: 6 }}>
-            {payTypes.map(([val, label]) => (
-              <button key={val} onClick={() => set("paymentType", val)}
-                style={{ flex: 1, padding: "9px 4px", borderRadius: 8, border: `2px solid ${form.paymentType===val?"#B71C1C":"#DDD"}`, background: form.paymentType===val?"#FFEBEE":"#fff", cursor: "pointer", fontWeight: 700, fontSize: 12, color: form.paymentType===val?"#B71C1C":"#888" }}>
-                {label}
-              </button>
-            ))}
-          </div>
-        </Field>
+        <div>
+          <button onClick={() => set("splitPayment", !form.splitPayment)}
+            style={{ padding: "6px 12px", borderRadius: 8, border: `2px solid ${form.splitPayment ? "#B71C1C" : "#DDD"}`, background: form.splitPayment ? "#FFEBEE" : "#fff", cursor: "pointer", fontWeight: 700, fontSize: 12, color: form.splitPayment ? "#B71C1C" : "#888" }}>
+            {form.splitPayment ? "☑" : "☐"} 現金・カードに分けて支払い
+          </button>
+        </div>
+        {form.splitPayment ? (
+          <Field label="内訳（現金＋カード＝施術料の合計になるように）">
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+              <div>
+                <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>💵 現金 ($)</div>
+                <input type="number" value={form.cashPortion || ""} onChange={e => {
+                  const cashPortion = Number(e.target.value) || 0;
+                  setForm(f => ({ ...f, cashPortion, amount: cashPortion + Number(f.cardPortion||0) }));
+                }} style={inputStyle} placeholder="例：500" />
+              </div>
+              <div>
+                <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>💳 カード ($)</div>
+                <input type="number" value={form.cardPortion || ""} onChange={e => {
+                  const cardPortion = Number(e.target.value) || 0;
+                  setForm(f => ({ ...f, cardPortion, amount: Number(f.cashPortion||0) + cardPortion }));
+                }} style={inputStyle} placeholder="例：211" />
+              </div>
+            </div>
+            <div style={{ marginTop: 6, fontSize: 12, color: "#B71C1C", fontWeight: 700 }}>
+              合計 ${Number(form.cashPortion||0) + Number(form.cardPortion||0)}
+            </div>
+          </Field>
+        ) : (
+          <Field label="支払方法" error={errors.includes("paymentType")}>
+            <div style={{ display: "flex", gap: 6 }}>
+              {payTypes.map(([val, label]) => (
+                <button key={val} onClick={() => { set("paymentType", val); setErrors(errors.filter(e => e !== "paymentType")); }}
+                  style={{ flex: 1, padding: "9px 4px", borderRadius: 8, border: `2px solid ${form.paymentType===val?"#B71C1C":"#DDD"}`, background: form.paymentType===val?"#FFEBEE":"#fff", cursor: "pointer", fontWeight: 700, fontSize: 12, color: form.paymentType===val?"#B71C1C":"#888" }}>
+                  {label}
+                </button>
+              ))}
+            </div>
+          </Field>
+        )}
         <Field label="チップ ($)">
           <input type="number" value={form.tip || ""} onChange={e => set("tip", e.target.value)} style={inputStyle} placeholder="例：46" />
         </Field>
         {Number(form.tip) > 0 && (
-          <Field label="チップ支払方法">
+          <Field label="チップ支払方法" error={errors.includes("tipPaymentType")}>
             <div style={{ display: "flex", gap: 6 }}>
               {payTypes.map(([val, label]) => (
-                <button key={val} onClick={() => set("tipPaymentType", val)}
+                <button key={val} onClick={() => { set("tipPaymentType", val); setErrors(errors.filter(e => e !== "tipPaymentType")); }}
                   style={{ flex: 1, padding: "9px 4px", borderRadius: 8, border: `2px solid ${form.tipPaymentType===val?"#E65100":"#DDD"}`, background: form.tipPaymentType===val?"#FFF3E0":"#fff", cursor: "pointer", fontWeight: 700, fontSize: 12, color: form.tipPaymentType===val?"#E65100":"#888" }}>
                   {label}
                 </button>
@@ -2469,7 +3731,7 @@ function TicketPurchaseModal({ tp, onSave, onDelete, onClose }) {
         )}
       </div>
       <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
-        <button onClick={() => onSave(form)} style={{ flex: 1, padding: "12px", borderRadius: 10, border: "none", background: "#B71C1C", color: "#fff", fontWeight: 700, fontSize: 15, cursor: "pointer" }}>💾 保存</button>
+        <button onClick={handleSave} style={{ flex: 1, padding: "12px", borderRadius: 10, border: "none", background: "#B71C1C", color: "#fff", fontWeight: 700, fontSize: 15, cursor: "pointer" }}>💾 保存</button>
         <button onClick={onDelete} style={{ padding: "12px 16px", borderRadius: 10, border: "none", background: "#FFEBEE", color: "#C62828", fontWeight: 700, cursor: "pointer" }}>🗑️</button>
       </div>
     </Modal>
@@ -2477,8 +3739,38 @@ function TicketPurchaseModal({ tp, onSave, onDelete, onClose }) {
 }
 
 function StaffPurchaseModal({ sp, onSave, onDelete, onClose }) {
-  const [form, setForm] = useState({ ...sp });
+  const [form, setForm] = useState({ ...sp, extraItems: sp.extraItems || [] });
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+  const [paymentError, setPaymentError] = useState(false);
+
+  const items = [
+    { productName: form.productName, amount: form.amount, paymentType: form.paymentType },
+    ...(form.extraItems || []),
+  ];
+  const updateItem = (idx, patch) => {
+    if (idx === 0) {
+      if ("productName" in patch) set("productName", patch.productName);
+      if ("amount" in patch) set("amount", patch.amount);
+      if ("paymentType" in patch) set("paymentType", patch.paymentType);
+    } else {
+      const extras = form.extraItems || [];
+      set("extraItems", extras.map((it, i) => i === idx - 1 ? { ...it, ...patch } : it));
+    }
+  };
+  const addItem = () => set("extraItems", [...(form.extraItems || []), { productName: "", amount: 0, paymentType: "" }]);
+  const removeItem = (idx) => {
+    if (idx === 0) return;
+    const extras = form.extraItems || [];
+    set("extraItems", extras.filter((_, i) => i !== idx - 1));
+  };
+  const total = items.reduce((s, it) => s + Number(it.amount || 0), 0);
+
+  const handleSave = () => {
+    const missingPayment = items.some(it => Number(it.amount || 0) > 0 && !it.paymentType);
+    if (missingPayment) { setPaymentError(true); return; }
+    onSave(form);
+  };
+
   return (
     <Modal onClose={onClose}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
@@ -2494,49 +3786,128 @@ function StaffPurchaseModal({ sp, onSave, onDelete, onClose }) {
             ))}
           </select>
         </Field>
-        <Field label="商品名">
-          <select value={form.productName || ""} onChange={e => {
-            const prod = RETAIL_PRODUCTS.find(p => p.name === e.target.value);
-            setForm(f => ({ ...f, productName: e.target.value, amount: prod?.price > 0 ? prod.price : f.amount }));
-          }} style={inputStyle}>
-            <option value="">— 商品を選択 —</option>
-            {RETAIL_PRODUCTS.map(p => (
-              <option key={p.name} value={p.name}>{p.name}{p.price > 0 ? ` ($${p.price})` : ""}</option>
-            ))}
-            <option value="__other__">その他</option>
-          </select>
-          {form.productName === "__other__" && (
-            <input type="text" placeholder="商品名を入力" style={{ ...inputStyle, marginTop: 4 }}
-              onChange={e => set("productName", e.target.value)} />
-          )}
-        </Field>
-        <Field label="金額 ($)"><input type="number" value={form.amount || ""} onChange={e => set("amount", e.target.value)} style={inputStyle} /></Field>
-        <Field label="支払方法">
-          <div style={{ display: "flex", gap: 6 }}>
-            {[["cash","💵 現金"],["card","💳 カード"]].map(([val, label]) => (
-              <button key={val} onClick={() => set("paymentType", val)}
-                style={{ flex: 1, padding: "9px 4px", borderRadius: 8, border: `2px solid ${form.paymentType===val?"#37474F":"#DDD"}`, background: form.paymentType===val?"#ECEFF1":"#fff", cursor: "pointer", fontWeight: 700, fontSize: 12, color: form.paymentType===val?"#37474F":"#888" }}>
-                {label}
-              </button>
-            ))}
-          </div>
-        </Field>
+        {items.map((item, idx) => {
+          const isOtherProduct = !!item.productName && !RETAIL_PRODUCTS.find(p => p.name === item.productName);
+          return (
+            <div key={idx} style={{ display: "flex", flexDirection: "column", gap: 8, ...(idx > 0 ? { background: "#F5F5F5", borderRadius: 8, padding: 10, border: "1px dashed #CCC" } : {}) }}>
+              {idx > 0 && (
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: "#37474F" }}>商品 {idx + 1}</span>
+                  <button onClick={() => removeItem(idx)} style={{ border: "none", background: "none", cursor: "pointer", fontSize: 11, color: "#AAA" }}>✕ 削除</button>
+                </div>
+              )}
+              <Field label="商品名 / 施術名">
+                <select value={isOtherProduct ? "__other__" : (item.productName || "")} onChange={e => {
+                  const val = e.target.value;
+                  if (val === "__other__") { updateItem(idx, { productName: "" }); return; }
+                  const prod = RETAIL_PRODUCTS.find(p => p.name === val);
+                  updateItem(idx, { productName: val, amount: prod?.price > 0 ? prod.price : item.amount });
+                }} style={inputStyle}>
+                  <option value="">— 商品/施術を選択 —</option>
+                  {RETAIL_PRODUCTS.map(p => (
+                    <option key={p.name} value={p.name}>{p.name}{p.price > 0 ? ` ($${p.price})` : ""}</option>
+                  ))}
+                  <option value="__other__">その他（施術名など直接入力）</option>
+                </select>
+                {isOtherProduct && (
+                  <input type="text" value={item.productName || ""} placeholder="例：ProCell" style={{ ...inputStyle, marginTop: 4 }}
+                    onChange={e => updateItem(idx, { productName: e.target.value })} />
+                )}
+              </Field>
+              <Field label="金額 ($)"><input type="number" value={item.amount || ""} onChange={e => updateItem(idx, { amount: Number(e.target.value) || 0 })} style={inputStyle} /></Field>
+              <Field label="支払方法" error={paymentError && Number(item.amount || 0) > 0 && !item.paymentType}>
+                <div style={{ display: "flex", gap: 6 }}>
+                  {[["cash","💵 現金"],["card","💳 カード"]].map(([val, label]) => (
+                    <button key={val} onClick={() => { updateItem(idx, { paymentType: val }); setPaymentError(false); }}
+                      style={{ flex: 1, padding: "9px 4px", borderRadius: 8, border: `2px solid ${item.paymentType===val?"#37474F":"#DDD"}`, background: item.paymentType===val?"#ECEFF1":"#fff", cursor: "pointer", fontWeight: 700, fontSize: 12, color: item.paymentType===val?"#37474F":"#888" }}>
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </Field>
+            </div>
+          );
+        })}
+        <button onClick={addItem} style={{ background: "none", border: "none", color: "#37474F", fontSize: 13, textAlign: "left", padding: "4px 0", cursor: "pointer", textDecoration: "underline" }}>
+          ＋ 商品を追加（2つ目・3つ目...）
+        </button>
+        {total > 0 && (
+          <div style={{ textAlign: "right", fontSize: 13, fontWeight: 700, color: "#37474F" }}>合計 ${total}</div>
+        )}
         <Field label="メモ"><input value={form.notes} onChange={e => set("notes", e.target.value)} style={inputStyle} placeholder="任意" /></Field>
       </div>
       <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
-        <button onClick={() => onSave(form)} style={{ flex: 1, padding: "12px", borderRadius: 10, border: "none", background: "#37474F", color: "#fff", fontWeight: 700, fontSize: 15, cursor: "pointer" }}>💾 保存</button>
+        <button onClick={handleSave} style={{ flex: 1, padding: "12px", borderRadius: 10, border: "none", background: "#37474F", color: "#fff", fontWeight: 700, fontSize: 15, cursor: "pointer" }}>💾 保存</button>
         <button onClick={onDelete} style={{ padding: "12px 16px", borderRadius: 10, border: "none", background: "#FFEBEE", color: "#C62828", fontWeight: 700, cursor: "pointer" }}>🗑️</button>
       </div>
     </Modal>
   );
 }
 
-function SectionBox({ title, color, onAdd, children }) {
+function RefundModal({ rf, onSave, onDelete, onClose }) {
+  const [form, setForm] = useState({ ...rf });
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+  const [paymentError, setPaymentError] = useState(false);
+  const handleSave = () => {
+    if ((Number(form.serviceAmount) > 0 || Number(form.tipAmount) > 0) && !form.paymentType) { setPaymentError(true); return; }
+    onSave(form);
+  };
+  return (
+    <Modal onClose={onClose}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+        <h2 style={{ margin: 0, fontSize: 18, color: "#5D4037" }}>🔙 返金（リファンド）</h2>
+        <button onClick={onClose} style={{ border: "none", background: "none", fontSize: 22, cursor: "pointer" }}>✕</button>
+      </div>
+      <div style={{ fontSize: 11, color: "#888", marginBottom: 12, background: "#EFEBE9", borderRadius: 8, padding: "8px 10px" }}>
+        過去の来店分の返金を、日をまたいだ「本日」の売上からマイナスするための記録です。担当セラピストの給料振り分けはここでは変更されません（必要な場合は元の日をロック解除して直接修正してください）。
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        <Field label="お客様名">
+          <input value={form.clientName} onChange={e => set("clientName", e.target.value)} style={inputStyle} placeholder="例：田中様" />
+        </Field>
+        <Field label="来店日（任意）">
+          <input type="date" value={form.originalDate || ""} onChange={e => set("originalDate", e.target.value)} style={inputStyle} />
+        </Field>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+          <Field label="施術返金額 ($)">
+            <input type="number" value={form.serviceAmount || ""} onChange={e => set("serviceAmount", e.target.value)} style={inputStyle} placeholder="例：150" />
+          </Field>
+          <Field label="チップ返金額 ($)">
+            <input type="number" value={form.tipAmount || ""} onChange={e => set("tipAmount", e.target.value)} style={inputStyle} placeholder="例：0" />
+          </Field>
+        </div>
+        <Field label="返金方法" error={paymentError && !form.paymentType}>
+          <div style={{ display: "flex", gap: 6 }}>
+            {[["cash","💵 現金"],["card","💳 カード"]].map(([val, label]) => (
+              <button key={val} onClick={() => { set("paymentType", val); setPaymentError(false); }}
+                style={{ flex: 1, padding: "9px 4px", borderRadius: 8, border: `2px solid ${form.paymentType===val?"#5D4037":"#DDD"}`, background: form.paymentType===val?"#EFEBE9":"#fff", cursor: "pointer", fontWeight: 700, fontSize: 12, color: form.paymentType===val?"#5D4037":"#888" }}>
+                {label}
+              </button>
+            ))}
+          </div>
+        </Field>
+        {(Number(form.serviceAmount) > 0 || Number(form.tipAmount) > 0) && (
+          <div style={{ background: "#5D4037", borderRadius: 8, padding: "10px 14px", textAlign: "right" }}>
+            <span style={{ color: "#D7CCC8", fontSize: 11 }}>返金合計　</span>
+            <span style={{ color: "#fff", fontSize: 22, fontWeight: 800 }}>-${Number(form.serviceAmount||0) + Number(form.tipAmount||0)}</span>
+          </div>
+        )}
+        <Field label="メモ"><input value={form.notes} onChange={e => set("notes", e.target.value)} style={inputStyle} placeholder="返金理由など" /></Field>
+      </div>
+      <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
+        <button onClick={handleSave} style={{ flex: 1, padding: "12px", borderRadius: 10, border: "none", background: "#5D4037", color: "#fff", fontWeight: 700, fontSize: 15, cursor: "pointer" }}>💾 保存</button>
+        {rf.id && <button onClick={onDelete} style={{ padding: "12px 16px", borderRadius: 10, border: "none", background: "#FFEBEE", color: "#C62828", fontWeight: 700, cursor: "pointer" }}>🗑️</button>}
+      </div>
+    </Modal>
+  );
+}
+
+function SectionBox({ title, color, onAdd, disabled, children }) {
   return (
     <div style={{ marginTop: 20, background: "#fff", borderRadius: 12, padding: 16, boxShadow: "0 1px 4px rgba(0,0,0,0.08)" }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
         <span style={{ fontWeight: 700, color, fontSize: 15 }}>{title}</span>
-        <button onClick={onAdd} style={{ padding: "6px 14px", borderRadius: 8, background: color, color: "#fff", border: "none", cursor: "pointer", fontSize: 13, fontWeight: 600 }}>+ 追加</button>
+        <button onClick={onAdd} disabled={disabled} style={{ padding: "6px 14px", borderRadius: 8, background: disabled ? "#CCC" : color, color: "#fff", border: "none", cursor: disabled ? "not-allowed" : "pointer", fontSize: 13, fontWeight: 600 }}>+ 追加</button>
       </div>
       {children}
     </div>
@@ -2551,10 +3922,12 @@ function Modal({ onClose, children }) {
   );
 }
 
-function Field({ label, children }) {
+function Field({ label, children, error }) {
   return (
     <div>
-      <label style={{ fontSize: 12, fontWeight: 600, color: "#555", display: "block", marginBottom: 5 }}>{label}</label>
+      <label style={{ fontSize: 12, fontWeight: 600, color: error ? "#C62828" : "#555", display: "block", marginBottom: 5 }}>
+        {label}{error && <span style={{ marginLeft: 6, fontWeight: 800 }}>⚠️ 未入力・未選択</span>}
+      </label>
       {children}
     </div>
   );
@@ -2574,6 +3947,13 @@ function exportSalesReportXlsx(monthStr) {
 
   // Collect all daily data for the month
   const dailyData = [];
+  // New-ticket sales events for the month — both a same-day package purchase and an inline
+  // "🎟️チケット新規購入" add-on during a different-type visit count as one ticket sale. When two
+  // therapists worked the visit (body + cav), the amount is split 50/50 between them for attribution.
+  const ticketSaleEvents = [];
+  // Local-customer visits (RL+NL — ticket buyers are mostly local) per staff member, and whether
+  // that same visit converted into a ticket sale — lets the owner see "saw N locals, only sold M".
+  const localVisitEvents = [];
   for (let d = 1; d <= lastDay; d++) {
     const dateStr = `${monthStr}-${String(d).padStart(2,"0")}`;
     const saved = localStorage.getItem(`spa-sheet-${dateStr}`);
@@ -2581,24 +3961,94 @@ function exportSalesReportXlsx(monthStr) {
       const data = JSON.parse(saved);
       const appts = (data.appointments || []).filter(a => !a.isCavSlot);
       const retails = data.retails || [];
+      const refunds = data.refunds || [];
+      appts.forEach(a => {
+        const therapists = a.cavTherapist ? [{ name: a.therapist, share: 0.5 }, { name: a.cavTherapist, share: 0.5 }] : [{ name: a.therapist, share: 1 }];
+        const hasTicketSale = (a.isSameDayTicket && Number(a.packagePrice || 0) > 0) || ((a.purchaseTags || []).includes("newTicket") && Number(a.newTicketAmount || 0) > 0);
+        if (a.isSameDayTicket && Number(a.packagePrice || 0) > 0) {
+          ticketSaleEvents.push({ amount: Number(a.packagePrice), customerType: a.customerType, referralSource: a.referralSource, therapists });
+        }
+        if ((a.purchaseTags || []).includes("newTicket") && Number(a.newTicketAmount || 0) > 0) {
+          ticketSaleEvents.push({ amount: Number(a.newTicketAmount), customerType: a.customerType, referralSource: a.referralSource, therapists });
+        }
+        if (a.customerType === "RL" || a.customerType === "NL") {
+          localVisitEvents.push({ therapists: therapists.map(th => th.name), hasTicketSale });
+        }
+      });
+      const deposits = data.deposits || [];
+      const refundServiceCash = refunds.filter(rf => rf.paymentType === "cash").reduce((s,rf) => s + Number(rf.serviceAmount||0), 0);
+      const refundServiceCard = refunds.filter(rf => rf.paymentType === "card").reduce((s,rf) => s + Number(rf.serviceAmount||0), 0);
+      const refundTipCash = refunds.filter(rf => rf.paymentType === "cash").reduce((s,rf) => s + Number(rf.tipAmount||0), 0);
+      const refundTipCard = refunds.filter(rf => rf.paymentType === "card").reduce((s,rf) => s + Number(rf.tipAmount||0), 0);
 
-      const cashTreatment = appts.filter(a => a.paymentType === "cash").reduce((s,a) => s + Number(a.isSameDayTicket ? (a.packagePrice||0) : (a.price||0)), 0);
+      // Only count money actually received today: regular visits and same-day ticket purchases.
+      // Excludes GC消化/PR無料 (no money received today) and pure ticket redemptions (already paid
+      // for when the ticket bundle was originally purchased) — same rule as the 📊集計 tab.
+      const revenueAppts = appts.filter(a => !a.isTicket && !a.isGiftCard && !a.isPromo);
+      const sameDayTicketAppts = appts.filter(a => a.isTicket && a.isSameDayTicket && !a.isGiftCard && !a.isPromo);
+      const pureTicketAppts = appts.filter(a => a.isTicket && !a.isSameDayTicket);
+      // Addons explicitly marked "本日のお支払い" count as revenue; "前回の未消化分" don't (paid earlier).
+      const revenueAddons = appts.flatMap(a => (a.addons || []).filter(ad => ad.countsAsRevenue === true));
+      // A giftCardUsed amount was already collected as revenue on the (possibly earlier) day the gift
+      // card was purchased/loaded, so it's excluded here too — same rule as the 📊集計 tab.
+      const gcAlloc = (a) => {
+        const gc = Number(a.giftCardUsed || 0);
+        const svc = Number(a.price || 0);
+        const tip = Number(a.tip || 0);
+        const gcSvc = Math.min(gc, svc);
+        const gcTip = Math.min(gc - gcSvc, tip);
+        return { gcSvc, gcTip };
+      };
+      const gcAllocPackage = (a) => {
+        const gc = Number(a.giftCardUsed || 0);
+        const svc = Number(a.packagePrice || 0);
+        const tip = Number(a.packageTip ?? a.tip ?? 0);
+        const gcSvc = Math.min(gc, svc);
+        const gcTip = Math.min(gc - gcSvc, tip);
+        return { gcSvc, gcTip };
+      };
+
+      // Deposits, gift cards, and cancellation fees are money received today but not tied to a
+      // service line item — the user wants them folded into the "Treatment" column, not "Product".
+      const depositCash = deposits.filter(dep => dep.paymentType === "cash").reduce((s,dep) => s + Number(dep.amount||0), 0);
+      const depositCard = deposits.filter(dep => dep.paymentType === "card").reduce((s,dep) => s + Number(dep.amount||0), 0);
+
+      const cashTreatment = revenueAppts.filter(a => !a.svcSplitPayment && a.paymentType === "cash").reduce((s,a) => s + Number(a.price||0) - gcAlloc(a).gcSvc, 0)
+        + revenueAppts.filter(a => a.svcSplitPayment).reduce((s,a) => s + Number(a.svcCashPortion||0), 0)
+        + sameDayTicketAppts.filter(a => !a.packageSplitPayment && a.paymentType === "cash").reduce((s,a) => s + Number(a.packagePrice||0) - gcAllocPackage(a).gcSvc, 0)
+        + sameDayTicketAppts.filter(a => a.packageSplitPayment).reduce((s,a) => s + Number(a.packageCashPortion||0), 0)
+        + revenueAddons.filter(ad => ad.paymentType === "cash").reduce((s,ad) => s + Number(ad.price||0), 0)
+        + depositCash
+        - refundServiceCash;
       const cashProduct = retails.filter(r => r.paymentType === "cash").reduce((s,r) => s + Number(r.price||0), 0);
-      const cashTip = appts.filter(a => a.tipPaymentType === "cash" || a.extraTipPaymentType === "cash").reduce((s,a) => {
-        let t = 0;
-        if (a.tipPaymentType === "cash") t += Number(a.isSameDayTicket ? (a.packageTip ?? a.tip ?? 0) : (a.tip||0));
-        if (a.extraTipPaymentType === "cash") t += Number(a.extraTip||0);
-        return s + t;
-      }, 0);
-      const cardTreatment = appts.filter(a => a.paymentType === "card").reduce((s,a) => s + Number(a.isSameDayTicket ? (a.packagePrice||0) : (a.price||0)), 0);
+      const cashTip = revenueAppts.filter(a => !a.tipSplitPayment && a.tipPaymentType === "cash").reduce((s,a) => s + Number(a.tip||0) - gcAlloc(a).gcTip, 0)
+        + revenueAppts.filter(a => a.tipSplitPayment).reduce((s,a) => s + Number(a.tipCashPortion||0), 0)
+        + sameDayTicketAppts.filter(a => a.tipPaymentType === "cash").reduce((s,a) => s + Number(a.packageTip ?? a.tip ?? 0) - gcAllocPackage(a).gcTip, 0)
+        + pureTicketAppts.filter(a => a.extraTipPaymentType === "cash").reduce((s,a) => s + Number(a.extraTip||0), 0)
+        + sameDayTicketAppts.filter(a => a.extraTipPaymentType === "cash").reduce((s,a) => s + Number(a.extraTip||0), 0)
+        + revenueAddons.filter(ad => ad.tipPaymentType === "cash").reduce((s,ad) => s + Number(ad.tip||0), 0)
+        - refundTipCash;
+      const cardTreatment = revenueAppts.filter(a => !a.svcSplitPayment && a.paymentType === "card").reduce((s,a) => s + Number(a.price||0) - gcAlloc(a).gcSvc, 0)
+        + revenueAppts.filter(a => a.svcSplitPayment).reduce((s,a) => s + Number(a.svcCardPortion||0), 0)
+        + sameDayTicketAppts.filter(a => !a.packageSplitPayment && a.paymentType === "card").reduce((s,a) => s + Number(a.packagePrice||0) - gcAllocPackage(a).gcSvc, 0)
+        + sameDayTicketAppts.filter(a => a.packageSplitPayment).reduce((s,a) => s + Number(a.packageCardPortion||0), 0)
+        + revenueAddons.filter(ad => ad.paymentType !== "cash").reduce((s,ad) => s + Number(ad.price||0), 0)
+        + depositCard
+        - refundServiceCard;
       const cardProduct = retails.filter(r => r.paymentType === "card").reduce((s,r) => s + Number(r.price||0), 0);
-      const cardTip = appts.filter(a => a.tipPaymentType === "card" || a.extraTipPaymentType === "card").reduce((s,a) => {
-        let t = 0;
-        if (a.tipPaymentType === "card") t += Number(a.isSameDayTicket ? (a.packageTip ?? a.tip ?? 0) : (a.tip||0));
-        if (a.extraTipPaymentType === "card") t += Number(a.extraTip||0);
-        return s + t;
-      }, 0);
-      const totalTip = appts.reduce((s,a) => s + Number(a.isSameDayTicket ? (a.packageTip ?? a.tip ?? 0) : (a.tip||0)) + Number(a.extraTip||0), 0);
+      const cardTip = revenueAppts.filter(a => !a.tipSplitPayment && a.tipPaymentType === "card").reduce((s,a) => s + Number(a.tip||0) - gcAlloc(a).gcTip, 0)
+        + revenueAppts.filter(a => a.tipSplitPayment).reduce((s,a) => s + Number(a.tipCardPortion||0), 0)
+        + sameDayTicketAppts.filter(a => a.tipPaymentType === "card").reduce((s,a) => s + Number(a.packageTip ?? a.tip ?? 0) - gcAllocPackage(a).gcTip, 0)
+        + pureTicketAppts.filter(a => a.extraTipPaymentType === "card").reduce((s,a) => s + Number(a.extraTip||0), 0)
+        + sameDayTicketAppts.filter(a => a.extraTipPaymentType === "card").reduce((s,a) => s + Number(a.extraTip||0), 0)
+        + revenueAddons.filter(ad => ad.tipPaymentType !== "cash").reduce((s,ad) => s + Number(ad.tip||0), 0)
+        - refundTipCard;
+      const totalTip = revenueAppts.reduce((s,a) => s + Number(a.tip||0) - gcAlloc(a).gcTip, 0)
+        + sameDayTicketAppts.reduce((s,a) => s + Number(a.packageTip ?? a.tip ?? 0) - gcAllocPackage(a).gcTip, 0)
+        + pureTicketAppts.reduce((s,a) => s + Number(a.extraTip||0), 0)
+        + sameDayTicketAppts.reduce((s,a) => s + Number(a.extraTip||0), 0)
+        + revenueAddons.reduce((s,ad) => s + Number(ad.tip||0), 0)
+        - refundTipCash - refundTipCard;
       const totalSales = cashTreatment + cashProduct + cardTreatment + cardProduct;
       const totalCash = cashTreatment + cashProduct;
       const totalCard = cardTreatment + cardProduct;
@@ -2618,9 +4068,14 @@ function exportSalesReportXlsx(monthStr) {
         cardTip: cardTip || "",
         totalTip: totalTip || "",
         grandTotal: totalSales + totalTip,
+        rl: appts.filter(a => a.customerType === "RL").length,
+        rt: appts.filter(a => a.customerType === "RT").length,
+        nl: appts.filter(a => a.customerType === "NL").length,
+        nt: appts.filter(a => a.customerType === "NT").length,
+        referrals: REFERRAL_SOURCES.map(src => appts.filter(a => a.referralSource === src).length),
       });
     } else {
-      dailyData.push({ date: d, totalSales: 0, clients: "", cashTreatment:"", cashProduct:"", totalCash:"", cashTip:"", cardTreatment:"", cardProduct:"", totalCard:"", cardTip:"", totalTip:"", grandTotal: 0 });
+      dailyData.push({ date: d, totalSales: 0, clients: "", cashTreatment:"", cashProduct:"", totalCash:"", cashTip:"", cardTreatment:"", cardProduct:"", totalCard:"", cardTip:"", totalTip:"", grandTotal: 0, rl: 0, rt: 0, nl: 0, nt: 0, referrals: REFERRAL_SOURCES.map(() => 0) });
     }
   }
 
@@ -2684,6 +4139,64 @@ function exportSalesReportXlsx(monthStr) {
   ];
 
   XLSX.utils.book_append_sheet(wb, ws, `${monthName} ${y}`);
+
+  // Customer type (RL/RT/NL/NT) + new-customer referral source monthly tally
+  const ctData = [
+    [`Customer Type Summary — ${monthName} ${y}`],
+    [],
+    ["Date", "RL", "RT", "NL", "NT", "Total", ...REFERRAL_SOURCES],
+  ];
+  dailyData.forEach(row => {
+    ctData.push([row.date, row.rl, row.rt, row.nl, row.nt, row.rl + row.rt + row.nl + row.nt, ...row.referrals]);
+  });
+  const ctDataStart = 4;
+  const ctDataEnd = 4 + lastDay - 1;
+  const ctCols = ["B","C","D","E","F","G","H","I","J","K"];
+  ctData.push([
+    "Total",
+    ...ctCols.slice(0, 5 + REFERRAL_SOURCES.length).map(col => ({ f: `SUM(${col}${ctDataStart}:${col}${ctDataEnd})` })),
+  ]);
+  const ctWs = XLSX.utils.aoa_to_sheet(ctData);
+  ctWs["!cols"] = [{wch:6},{wch:8},{wch:8},{wch:8},{wch:8},{wch:8}, ...REFERRAL_SOURCES.map(() => ({wch:14}))];
+  XLSX.utils.book_append_sheet(wb, ctWs, "Customer Type");
+
+  // Ticket sales summary — overall, new vs repeat, new-customer referral source, and per-staff
+  const isNewCustomer = ct => ct === "NL" || ct === "NT";
+  const countAmt = (list) => [list.length, Math.round(list.reduce((s, r) => s + r.amount, 0) * 100) / 100];
+  const newSales = ticketSaleEvents.filter(r => isNewCustomer(r.customerType));
+  const repeatSales = ticketSaleEvents.filter(r => !isNewCustomer(r.customerType));
+
+  const tsData = [
+    [`Ticket Sales Summary — ${monthName} ${y}`],
+    [],
+    ["", "件数 Count", "金額 Amount"],
+    ["Total", ...countAmt(ticketSaleEvents)],
+    ["New customers (NL+NT)", ...countAmt(newSales)],
+    ["Repeat customers (RL+RT)", ...countAmt(repeatSales)],
+    [],
+    ["New customers by referral source", "件数 Count", "金額 Amount"],
+  ];
+  REFERRAL_SOURCES.forEach(src => {
+    tsData.push([src, ...countAmt(newSales.filter(r => r.referralSource === src))]);
+  });
+  tsData.push([]);
+  tsData.push(["By staff (ranked by New customers $ — who's converting new clients into ticket sales)", "件数 Count", "金額 Amount", "New customers $", "Repeat customers $", "Local visits (RL+NL)", "→ Converted to ticket", "Conversion %"]);
+  // A visit worked by two therapists counts as 1 "件" for each, but the $ amount is split by share.
+  const shareAmtFor = (t, list) => Math.round(list.reduce((s, r) => s + r.amount * r.therapists.find(th => th.name === t).share, 0) * 100) / 100;
+  const byStaffRows = THERAPISTS.map(t => {
+    const involved = ticketSaleEvents.filter(r => r.therapists.some(th => th.name === t));
+    const newAmt = shareAmtFor(t, involved.filter(r => isNewCustomer(r.customerType)));
+    const repeatAmt = shareAmtFor(t, involved.filter(r => !isNewCustomer(r.customerType)));
+    const localVisits = localVisitEvents.filter(v => v.therapists.includes(t));
+    const localConverted = localVisits.filter(v => v.hasTicketSale).length;
+    const conversionPct = localVisits.length > 0 ? `${Math.round(localConverted / localVisits.length * 1000) / 10}%` : "";
+    return [t, involved.length, shareAmtFor(t, involved), newAmt, repeatAmt, localVisits.length, localConverted, conversionPct];
+  }).sort((a, b) => b[3] - a[3]);
+  byStaffRows.forEach(row => tsData.push(row));
+  const tsWs = XLSX.utils.aoa_to_sheet(tsData);
+  tsWs["!cols"] = [{wch:26},{wch:12},{wch:14},{wch:14},{wch:16},{wch:14},{wch:16},{wch:12}];
+  XLSX.utils.book_append_sheet(wb, tsWs, "Ticket Sales");
+
   XLSX.writeFile(wb, `SalesReport_${monthStr}.xlsx`);
 }
 
@@ -2720,6 +4233,7 @@ function PayrollTab() {
     const startD = new Date(start);
     const endD = new Date(end);
     const allAppts = [];
+    const allRetails = [];
 
     for (let d = new Date(startD); d <= endD; d.setDate(d.getDate() + 1)) {
       const dateStr = d.toISOString().slice(0, 10);
@@ -2728,6 +4242,9 @@ function PayrollTab() {
         const data = JSON.parse(saved);
         (data.appointments || []).forEach(a => {
           allAppts.push({ ...a, date: dateStr });
+        });
+        (data.retails || []).forEach(r => {
+          allRetails.push({ ...r, date: dateStr });
         });
       }
     }
@@ -2748,19 +4265,29 @@ function PayrollTab() {
       const depositAdd = Number(a.depositApplied || 0);
       const bodyReceived = Number(a.price || 0);
       let svc;
-      if (depositAdd > 0) {
-        // Find cav slot (if any) to get cav's received portion for proportional split
+      if (depositAdd > 0 && isWeightLossService(a.serviceName) && a.cavTherapist) {
+        // Weight Loss: machine payroll is a fixed $116 no matter what — any deposit on top
+        // of what's collected today goes entirely to the body therapist, not split proportionally.
+        svc = bodyReceived + depositAdd;
+      } else if (depositAdd > 0 && a.cavTherapist) {
+        // Split the deposit-inclusive total by treatment MINUTES (not the price ratio), so the
+        // machine therapist's share reflects actual time spent, not how price/cavPrice were entered.
         const cavSlot = allAppts.find(s => s.isCavSlot && s.parentId === a.id);
         const cavReceived = cavSlot ? Number(cavSlot.price || 0) : 0;
         const totalReceived = bodyReceived + cavReceived;
-        // Body therapist gets their proportion of full payroll (received + deposit)
-        svc = totalReceived > 0
-          ? Math.round((totalReceived + depositAdd) * bodyReceived / totalReceived * 10) / 10
-          : bodyReceived + depositAdd;
+        const bodyMins = Number(a.duration || 0);
+        const cavMins = (cavSlot && Number(cavSlot.duration || 0)) || 15;
+        const allMins = bodyMins + cavMins;
+        svc = allMins > 0
+          ? Math.round((totalReceived + depositAdd) * bodyMins / allMins * 100) / 100
+          : totalReceived + depositAdd;
+      } else if (depositAdd > 0) {
+        svc = bodyReceived + depositAdd;
       } else {
         svc = bodyReceived;
       }
-      const tip = Number(a.tip || 0);
+      // Extra tip (💝 given on top of a ticket redemption) always counts toward the therapist's payroll too.
+      const tip = Number(a.tip || 0) + Number(a.extraTip || 0);
       const isCard = a.paymentType === "card";
       const isTipCard = a.tipPaymentType === "card";
       byTherapist[t].rows.push({
@@ -2768,13 +4295,14 @@ function PayrollTab() {
         client: a.clientName,
         isTicket: a.isTicket,
         isGiftCard: a.isGiftCard,
+        isPromo: a.isPromo,
         ticketInfo: a.isTicket ? `${a.ticketMenu} ${a.ticketCurrent}/${a.ticketTotal}` : "",
         duration: a.duration,
         service: svc,
         tip,
-        paymentType: a.isGiftCard ? "gc" : a.paymentType,
-        tipPaymentType: a.isGiftCard ? "gc" : a.tipPaymentType,
-        notes: depositAdd > 0 ? `${a.notes || ""}　💰deposit込`.trim() : (a.notes || ""),
+        paymentType: a.isGiftCard || a.isPromo ? "gc" : a.paymentType,
+        tipPaymentType: a.isGiftCard || a.isPromo ? "gc" : a.tipPaymentType,
+        notes: depositAdd > 0 ? `${a.notes || ""}　💰deposit込`.trim() : (a.isPromo ? `${a.notes || ""}　📸PR無料`.trim() : (a.notes || "")),
       });
       byTherapist[t].totalService += svc;
       byTherapist[t].totalTip += tip;
@@ -2782,28 +4310,65 @@ function PayrollTab() {
       if (isTipCard) byTherapist[t].totalTipCard += tip;
     });
 
-    // Retail from appointments → body therapist
-    allAppts.filter(a => !a.isCavSlot && a.purchaseTags?.includes("retail") && Number(a.retailPurchaseAmount || 0) > 0).forEach(a => {
-      const t = a.therapist;
-      if (!t || !byTherapist[t]) return;
-      const retail = Number(a.retailPurchaseAmount);
-      const isCard = a.retailPurchasePaymentType === "card";
-      byTherapist[t].rows.push({
-        date: a.date,
-        client: a.clientName,
-        isTicket: false,
-        ticketInfo: "",
-        duration: 0,
-        service: 0,
-        tip: 0,
-        paymentType: a.retailPurchasePaymentType,
-        tipPaymentType: "",
-        retail,
-        retailProduct: a.retailProductName || "",
-        notes: `🛍️ 物販${a.retailProductName ? ` (${a.retailProductName})` : ""}`,
+    // Retail from appointments → split among up to 3 sellers (defaults to just the body
+    // therapist getting the full amount when no split was entered).
+    allAppts.filter(a => !a.isCavSlot && a.purchaseTags?.includes("retail")).forEach(a => {
+      getRetailItems(a).forEach(item => {
+        const isCard = item.paymentType === "card";
+        const sellers = (item.sellers && item.sellers.length > 0)
+          ? item.sellers
+          : [{ therapist: a.therapist, amount: Number(item.amount) }];
+        sellers.filter(sel => sel.therapist && Number(sel.amount || 0) > 0).forEach(sel => {
+          const t = sel.therapist;
+          if (!t || !byTherapist[t]) return;
+          const retail = Number(sel.amount);
+          byTherapist[t].rows.push({
+            date: a.date,
+            client: a.clientName,
+            isTicket: false,
+            ticketInfo: "",
+            duration: 0,
+            service: 0,
+            tip: 0,
+            paymentType: item.paymentType,
+            tipPaymentType: "",
+            retail,
+            retailProduct: item.productName || "",
+            notes: `🛍️ 物販${item.productName ? ` (${item.productName})` : ""}`,
+          });
+          byTherapist[t].totalRetail += retail;
+          if (isCard) byTherapist[t].totalRetailCard += retail;
+        });
       });
-      byTherapist[t].totalRetail += retail;
-      if (isCard) byTherapist[t].totalRetailCard += retail;
+    });
+
+    // Retail — standalone (phone/walk-in, not tied to any appointment) → attributed via sellers,
+    // each getting their own dollar share (commission rates differ per staff member, e.g. Maki's is
+    // lower than everyone else's, so an even split isn't assumed — each amount is entered manually).
+    allRetails.forEach(r => {
+      const sellers = r.sellers || (r.soldBy ? [{ therapist: r.soldBy, amount: r.price }] : []);
+      const isCard = r.paymentType === "card";
+      sellers.filter(sel => sel.therapist && Number(sel.amount || 0) > 0).forEach(sel => {
+        const t = sel.therapist;
+        if (!byTherapist[t]) return;
+        const retail = Number(sel.amount);
+        byTherapist[t].rows.push({
+          date: r.date,
+          client: "",
+          isTicket: false,
+          ticketInfo: "",
+          duration: 0,
+          service: 0,
+          tip: 0,
+          paymentType: r.paymentType,
+          tipPaymentType: "",
+          retail,
+          retailProduct: r.item || "",
+          notes: `🛍️ 物販(電話・ウォークイン)${r.item ? ` (${r.item})` : ""}`,
+        });
+        byTherapist[t].totalRetail += retail;
+        if (isCard) byTherapist[t].totalRetailCard += retail;
+      });
     });
 
     // Add-on services → attributed therapist (or fall back to main therapist)
@@ -2829,7 +4394,7 @@ function PayrollTab() {
           tip,
           paymentType: a.isGiftCard ? "gc" : (addon.paymentType || "cash"),
           tipPaymentType: a.isGiftCard ? "gc" : (addon.tipPaymentType || "cash"),
-          notes: `➕ ${addon.serviceName || addon.name || "オプション"}`,
+          notes: `➕ ${addon.serviceName || addon.name || "オプション"}${addon.ticketCurrent ? ` ${addon.ticketCurrent}/${a.ticketTotal||3}` : ""}`,
         });
         byTherapist[t].totalService += svc;
         byTherapist[t].totalTip += tip;
@@ -2847,13 +4412,24 @@ function PayrollTab() {
       const parent = a.parentId ? apptById[a.parentId] : null;
       const depositAdd = Number(parent?.depositApplied || 0);
       let svc;
-      if (depositAdd > 0 && parent) {
+      if (depositAdd > 0 && parent && isWeightLossService(parent.serviceName) && parent.cavTherapist) {
+        // Weight Loss: machine payroll always stays at the fixed $116 — the deposit goes to the
+        // body therapist instead (see the matching branch above for the non-cav-slot rows).
+        svc = cavReceived;
+      } else if (depositAdd > 0 && parent) {
+        // Split by treatment MINUTES (not price ratio) — machine gets the remainder after the
+        // body therapist's minute-share, so the two always sum exactly to the deposit-inclusive total.
         const bodyReceived = Number(parent.price || 0);
         const totalReceived = bodyReceived + cavReceived;
-        // Cav therapist gets their proportion of full payroll (received + deposit)
-        svc = totalReceived > 0
-          ? Math.round((totalReceived + depositAdd) * cavReceived / totalReceived * 10) / 10
-          : cavReceived;
+        const bodyMins = Number(parent.duration || 0);
+        const cavMins = Number(a.duration || 0) || 15;
+        const allMins = bodyMins + cavMins;
+        if (allMins > 0) {
+          const bodyShare = Math.round((totalReceived + depositAdd) * bodyMins / allMins * 100) / 100;
+          svc = Math.round(((totalReceived + depositAdd) - bodyShare) * 100) / 100;
+        } else {
+          svc = cavReceived;
+        }
       } else {
         svc = cavReceived;
       }
@@ -2889,7 +4465,7 @@ function PayrollTab() {
         r.tip || "",
         r.tipPaymentType === "card" ? "カード" : (r.tipPaymentType === "cash" ? "現金" : ""),
         r.retail || "",
-        r.isTicket ? r.ticketInfo : (r.retail ? "物販" : "通常"),
+        r.isGiftCard ? "GC消化" : r.isPromo ? "PR無料" : r.isTicket ? r.ticketInfo : (r.retail ? "物販" : "通常"),
         r.notes
       ]),
       [],
@@ -2918,7 +4494,7 @@ function PayrollTab() {
           r.tip || "",
           r.tipPaymentType === "card" ? "カード" : (r.tipPaymentType === "cash" ? "現金" : ""),
           r.retail || "",
-          r.isGiftCard ? "GC消化" : r.isTicket ? r.ticketInfo : (r.retail ? "物販" : "通常"),
+          r.isGiftCard ? "GC消化" : r.isPromo ? "PR無料" : r.isTicket ? r.ticketInfo : (r.retail ? "物販" : "通常"),
           r.notes
         ]);
       });
@@ -3019,7 +4595,7 @@ function PayrollTab() {
                 </thead>
                 <tbody>
                   {data.rows.sort((a, b) => a.date.localeCompare(b.date)).map((r, i) => (
-                    <tr key={i} style={{ borderBottom: "1px solid #F5F5F5", background: r.isGiftCard ? "#FFFDE7" : r.isTicket ? "#F0F7FF" : "white" }}>
+                    <tr key={i} style={{ borderBottom: "1px solid #F5F5F5", background: r.isGiftCard ? "#FFFDE7" : r.isPromo ? "#E3F2FD" : r.isTicket ? "#F0F7FF" : "white" }}>
                       <td style={{ padding: "6px 8px", whiteSpace: "nowrap", color: "#888" }}>{r.date.slice(5)}</td>
                       <td style={{ padding: "6px 8px", fontWeight: 600 }}>{r.client}</td>
                       <td style={{ padding: "6px 8px", textAlign: "center" }}>{r.duration}分</td>
@@ -3027,6 +4603,8 @@ function PayrollTab() {
                       <td style={{ padding: "6px 8px" }}>
                         {r.isGiftCard
                           ? <span style={{ fontSize: 10, background: "#FFFDE7", color: "#B45309", padding: "2px 6px", borderRadius: 8 }}>🎁GC</span>
+                          : r.isPromo
+                          ? <span style={{ fontSize: 10, background: "#E3F2FD", color: "#1565C0", padding: "2px 6px", borderRadius: 8 }}>📸PR</span>
                           : <span style={{ fontSize: 10, background: r.paymentType === "cash" ? "#E8F5E9" : "#E3F2FD", color: r.paymentType === "cash" ? "#2E7D32" : "#1565C0", padding: "2px 6px", borderRadius: 8 }}>
                               {r.paymentType === "cash" ? "現金" : "カード"}
                             </span>}
@@ -3035,13 +4613,15 @@ function PayrollTab() {
                       <td style={{ padding: "6px 8px" }}>
                         {r.tip > 0 && (r.isGiftCard
                           ? <span style={{ fontSize: 10, background: "#FFFDE7", color: "#B45309", padding: "2px 6px", borderRadius: 8 }}>🎁GC</span>
+                          : r.isPromo
+                          ? <span style={{ fontSize: 10, background: "#E3F2FD", color: "#1565C0", padding: "2px 6px", borderRadius: 8 }}>📸PR</span>
                           : <span style={{ fontSize: 10, background: r.tipPaymentType === "cash" ? "#E8F5E9" : "#E3F2FD", color: r.tipPaymentType === "cash" ? "#2E7D32" : "#1565C0", padding: "2px 6px", borderRadius: 8 }}>
                               {r.tipPaymentType === "cash" ? "現金" : "カード"}
                             </span>)}
                       </td>
                       <td style={{ padding: "6px 8px", color: "#6A1B9A", fontWeight: r.retail ? 700 : 400 }}>{r.retail ? formatCurrency(r.retail) : "—"}</td>
-                      <td style={{ padding: "6px 8px", fontSize: 11, color: r.isGiftCard ? "#B45309" : r.isTicket ? "#1565C0" : (r.retail ? "#6A1B9A" : "#888") }}>
-                        {r.isGiftCard ? "🎁 GC消化" : r.isTicket ? `🎟️ ${r.ticketInfo}` : r.notes || "通常"}
+                      <td style={{ padding: "6px 8px", fontSize: 11, color: r.isGiftCard ? "#B45309" : r.isPromo ? "#1565C0" : r.isTicket ? "#1565C0" : (r.retail ? "#6A1B9A" : "#888") }}>
+                        {r.isGiftCard ? "🎁 GC消化" : r.isPromo ? "📸 PR無料" : r.isTicket ? `🎟️ ${r.ticketInfo}` : r.notes || "通常"}
                       </td>
                     </tr>
                   ))}
