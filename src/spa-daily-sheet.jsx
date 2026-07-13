@@ -653,6 +653,27 @@ export default function SpaDailySheet() {
     }
   };
 
+  // One-time helper for migrating data between environments (e.g. localhost -> production) —
+  // this app has no backend, so each origin's localStorage is otherwise completely isolated
+  // and there's no other way to carry data across them.
+  const handleImportBackup = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const data = JSON.parse(reader.result);
+        Object.entries(data).forEach(([d, v]) => localStorage.setItem(`spa-sheet-${d}`, v));
+        showToast(`✅ ${Object.keys(data).length}日分のデータを復元しました`);
+        window.location.reload();
+      } catch (err) {
+        showToast("読み込みに失敗しました: " + err.message, "error");
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = "";
+  };
+
   const calcCavStartTime = (startTime, duration, cavDuration = 15) => {
     if (!startTime) return "";
     const [h, m] = startTime.split(":").map(Number);
@@ -1038,6 +1059,10 @@ export default function SpaDailySheet() {
             style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: locked ? "#C62828" : "rgba(255,255,255,0.15)", color: "#fff", fontWeight: 700, cursor: "pointer", fontSize: 13 }}>
             {locked ? "🔒 確定済み（解除）" : "🔓 この日を確定する"}
           </button>
+          <label style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: "rgba(255,255,255,0.15)", color: "#fff", fontWeight: 700, cursor: "pointer", fontSize: 13 }}>
+            📥 データ復元
+            <input type="file" accept="application/json" onChange={handleImportBackup} style={{ display: "none" }} />
+          </label>
         </div>
       </div>
       {locked && (
