@@ -93,6 +93,232 @@ function squareGiftCardApi(env) {
   }
 }
 
+// Dev-only middleware that finds same-day deposit payments so the Daily Sheet can auto-fill
+// the deposit section. Deposits are collected via a Square Payment Link with a custom line
+// item named "Deposit" (historically mistyped as "Desit") — there's no dedicated Square API
+// for this the way gift cards have one, so it has to be found by scanning the day's completed
+// payments and checking each one's order for a matching line item. Payment-Link orders stay in
+// state "OPEN" even after being paid, so this can't filter by order state the way a normal
+// search might.
+function squareDepositsApi(env) {
+  const DEPOSIT_NAMES = ['deposit', 'desit']
+  return {
+    name: 'square-deposits-api',
+    configureServer(server) {
+      server.middlewares.use('/api/square-deposits', async (req, res) => {
+        const token = env.SQUARE_ACCESS_TOKEN
+        const locationId = env.SQUARE_LOCATION_ID
+        if (!token || !locationId) {
+          res.statusCode = 500
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify({ error: 'SQUARE_ACCESS_TOKEN / SQUARE_LOCATION_ID not set in .env' }))
+          return
+        }
+        try {
+          const url = new URL(req.url, 'http://localhost')
+          const date = url.searchParams.get('date')
+          if (!date) {
+            res.statusCode = 400
+            res.setHeader('Content-Type', 'application/json')
+            res.end(JSON.stringify({ error: 'date query param required (YYYY-MM-DD)' }))
+            return
+          }
+          // Hawaii is UTC-10, no DST
+          const beginTime = `${date}T00:00:00-10:00`
+          const next = new Date(`${date}T00:00:00Z`)
+          next.setUTCDate(next.getUTCDate() + 1)
+          const endTime = `${next.toISOString().slice(0, 10)}T00:00:00-10:00`
+          const headers = { Authorization: `Bearer ${token}`, 'Square-Version': '2024-01-18' }
+
+          const customerCache = {}
+          const getCustomerName = async (id) => {
+            if (!id) return ''
+            if (customerCache[id] !== undefined) return customerCache[id]
+            try {
+              const r = await fetch(`https://connect.squareup.com/v2/customers/${id}`, { headers })
+              const d = await r.json()
+              const name = r.ok ? [d.customer?.given_name, d.customer?.family_name].filter(Boolean).join(' ') : ''
+              customerCache[id] = name
+              return name
+            } catch {
+              customerCache[id] = ''
+              return ''
+            }
+          }
+
+          const deposits = []
+          let cursor
+          do {
+            const params = new URLSearchParams({
+              location_id: locationId,
+              begin_time: beginTime,
+              end_time: endTime,
+              sort_order: 'ASC',
+              limit: '100',
+            })
+            if (cursor) params.set('cursor', cursor)
+
+            const payRes = await fetch(`https://connect.squareup.com/v2/payments?${params}`, { headers })
+            const payData = await payRes.json()
+            if (!payRes.ok) {
+              res.statusCode = payRes.status
+              res.setHeader('Content-Type', 'application/json')
+              res.end(JSON.stringify({ error: 'Square API error (payments)', details: payData }))
+              return
+            }
+
+            for (const p of payData.payments || []) {
+              if (p.status !== 'COMPLETED' || !p.order_id) continue
+              const orderRes = await fetch(`https://connect.squareup.com/v2/orders/${p.order_id}`, { headers })
+              const orderData = await orderRes.json()
+              if (!orderRes.ok) continue
+              const lineItems = orderData.order?.line_items || []
+              const depositItem = lineItems.find(li => DEPOSIT_NAMES.includes((li.name || '').trim().toLowerCase()))
+              if (!depositItem) continue
+
+              const amount = (Number(depositItem.gross_sales_money?.amount || 0)) / 100
+              const name = p.customer_id
+                ? await getCustomerName(p.customer_id)
+                : [p.billing_address?.first_name, p.billing_address?.last_name].filter(Boolean).join(' ')
+
+              deposits.push({
+                id: p.id,
+                amount,
+                clientName: name || 'デポジット（お客様名不明）',
+                paymentType: p.source_type === 'CASH' ? 'cash' : 'card',
+                createdAt: p.created_at,
+              })
+            }
+            cursor = payData.cursor
+          } while (cursor)
+
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify({ deposits }))
+        } catch (e) {
+          res.statusCode = 500
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify({ error: String(e) }))
+        }
+      })
+    },
+  }
+}
+
+// Dev-only middleware that proxies Square's Payments API so the Daily Sheet can compare
+// its own manually-entered cash/card/tip totals against what Square actually recorded for
+// the day — catching entry typos same-day instead of at month-end.
+function squarePaymentsApi(env) {
+  return {
+    name: 'square-payments-api',
+    configureServer(server) {
+      server.middlewares.use('/api/square-payments', async (req, res) => {
+        const token = env.SQUARE_ACCESS_TOKEN
+        const locationId = env.SQUARE_LOCATION_ID
+        if (!token || !locationId) {
+          res.statusCode = 500
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify({ error: 'SQUARE_ACCESS_TOKEN / SQUARE_LOCATION_ID not set in .env' }))
+          return
+        }
+        try {
+          const url = new URL(req.url, 'http://localhost')
+          const date = url.searchParams.get('date')
+          if (!date) {
+            res.statusCode = 400
+            res.setHeader('Content-Type', 'application/json')
+            res.end(JSON.stringify({ error: 'date query param required (YYYY-MM-DD)' }))
+            return
+          }
+          // Hawaii is UTC-10, no DST
+          const beginTime = `${date}T00:00:00-10:00`
+          const next = new Date(`${date}T00:00:00Z`)
+          next.setUTCDate(next.getUTCDate() + 1)
+          const endTime = `${next.toISOString().slice(0, 10)}T00:00:00-10:00`
+          const headers = { Authorization: `Bearer ${token}`, 'Square-Version': '2024-01-18' }
+
+          // Package/ticket sales are sometimes rung up with the tip added as a manual line
+          // item named "Tip" inside the order, instead of going through Square's tip-prompt
+          // flow — in that case tip_money stays 0 even though real tip money is bundled into
+          // the total, so it has to be recovered from the order's line items instead. Only
+          // checked for card payments (the only tip breakdown compared on the frontend).
+          //
+          // Use gross_sales_money (the line item's price as entered), not total_money — an
+          // order-level discount gets auto-prorated across every line item including "Tip" by
+          // Square, but a discount off the service price shouldn't silently shrink the tip
+          // figure staff actually typed in.
+          const orderTipCache = {}
+          const getOrderTipLineItems = async (orderId) => {
+            if (orderTipCache[orderId] !== undefined) return orderTipCache[orderId]
+            try {
+              const r = await fetch(`https://connect.squareup.com/v2/orders/${orderId}`, { headers })
+              const d = await r.json()
+              if (!r.ok) { orderTipCache[orderId] = 0; return 0 }
+              const lineItems = d.order?.line_items || []
+              const tip = lineItems
+                .filter(li => (li.name || '').trim().toLowerCase() === 'tip')
+                .reduce((s, li) => s + (Number(li.gross_sales_money?.amount || 0)) / 100, 0)
+              orderTipCache[orderId] = tip
+              return tip
+            } catch {
+              orderTipCache[orderId] = 0
+              return 0
+            }
+          }
+
+          let cashTotal = 0, cardTotal = 0, cashTip = 0, cardTip = 0
+          let cursor
+          do {
+            const params = new URLSearchParams({
+              location_id: locationId,
+              begin_time: beginTime,
+              end_time: endTime,
+              sort_order: 'ASC',
+              limit: '100',
+            })
+            if (cursor) params.set('cursor', cursor)
+
+            const squareRes = await fetch(`https://connect.squareup.com/v2/payments?${params}`, { headers })
+            const data = await squareRes.json()
+            if (!squareRes.ok) {
+              res.statusCode = squareRes.status
+              res.setHeader('Content-Type', 'application/json')
+              res.end(JSON.stringify({ error: 'Square API error', details: data }))
+              return
+            }
+
+            for (const p of data.payments || []) {
+              if (p.status !== 'COMPLETED') continue
+              const total = (p.total_money?.amount || 0) / 100
+              let tip = (p.tip_money?.amount || 0) / 100
+              if (p.source_type === 'CASH') {
+                cashTotal += total
+                cashTip += tip
+              } else {
+                if (tip === 0 && p.order_id) tip = await getOrderTipLineItems(p.order_id)
+                cardTotal += total
+                cardTip += tip
+              }
+            }
+            cursor = data.cursor
+          } while (cursor)
+
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify({
+            cashTotal: Math.round(cashTotal * 100) / 100,
+            cardTotal: Math.round(cardTotal * 100) / 100,
+            cashTip: Math.round(cashTip * 100) / 100,
+            cardTip: Math.round(cardTip * 100) / 100,
+          }))
+        } catch (e) {
+          res.statusCode = 500
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify({ error: String(e) }))
+        }
+      })
+    },
+  }
+}
+
 // Dev-only middleware that proxies Square's Bookings/Customers/Catalog APIs so the Daily
 // Sheet can sync a day's appointments (name, therapist, time, course) without exposing
 // SQUARE_ACCESS_TOKEN to the browser.
@@ -152,8 +378,10 @@ function squareBookingsApi(env) {
             res.end(JSON.stringify({ error: 'Square API error (bookings)', details: bookingsData }))
             return
           }
+          // DECLINED = a booking request the seller rejected — never actually happened, so it
+          // must be excluded the same as a cancellation, not synced in as a real appointment.
           const bookings = (bookingsData.bookings || []).filter(
-            b => b.status !== 'CANCELLED_BY_SELLER' && b.status !== 'CANCELLED_BY_CUSTOMER'
+            b => b.status !== 'CANCELLED_BY_SELLER' && b.status !== 'CANCELLED_BY_CUSTOMER' && b.status !== 'DECLINED'
           )
 
           const customerCache = {}
@@ -183,7 +411,10 @@ function squareBookingsApi(env) {
               )
               const d = await r.json()
               if (!r.ok) { serviceCache[variationId] = ''; return '' }
-              const variationName = d.object?.item_variation_data?.name || ''
+              const rawVariationName = d.object?.item_variation_data?.name || ''
+              // "Regular" is Square's default variation name for single-variation items — it
+              // carries no real info, so drop it rather than appending it to every course name.
+              const variationName = rawVariationName.trim().toLowerCase() === 'regular' ? '' : rawVariationName
               const itemId = d.object?.item_variation_data?.item_id
               const itemObj = (d.related_objects || []).find(o => o.id === itemId)
               const itemName = itemObj?.item_data?.name || ''
@@ -233,6 +464,6 @@ function squareBookingsApi(env) {
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
   return {
-    plugins: [react(), squareGiftCardApi(env), squareBookingsApi(env)],
+    plugins: [react(), squareGiftCardApi(env), squareBookingsApi(env), squarePaymentsApi(env), squareDepositsApi(env)],
   }
 })

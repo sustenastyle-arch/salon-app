@@ -45,8 +45,10 @@ export default async function handler(req, res) {
       res.status(bookingsRes.status).json({ error: 'Square API error (bookings)', details: bookingsData });
       return;
     }
+    // DECLINED = a booking request the seller rejected — never actually happened, so it
+    // must be excluded the same as a cancellation, not synced in as a real appointment.
     const bookings = (bookingsData.bookings || []).filter(
-      b => b.status !== 'CANCELLED_BY_SELLER' && b.status !== 'CANCELLED_BY_CUSTOMER'
+      b => b.status !== 'CANCELLED_BY_SELLER' && b.status !== 'CANCELLED_BY_CUSTOMER' && b.status !== 'DECLINED'
     );
 
     const customerCache = {};
@@ -76,7 +78,10 @@ export default async function handler(req, res) {
         );
         const d = await r.json();
         if (!r.ok) { serviceCache[variationId] = ''; return ''; }
-        const variationName = d.object?.item_variation_data?.name || '';
+        const rawVariationName = d.object?.item_variation_data?.name || '';
+        // "Regular" is Square's default variation name for single-variation items — it
+        // carries no real info, so drop it rather than appending it to every course name.
+        const variationName = rawVariationName.trim().toLowerCase() === 'regular' ? '' : rawVariationName;
         const itemId = d.object?.item_variation_data?.item_id;
         const itemObj = (d.related_objects || []).find(o => o.id === itemId);
         const itemName = itemObj?.item_data?.name || '';
