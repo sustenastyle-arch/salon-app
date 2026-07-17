@@ -247,6 +247,13 @@ const EMPTY_STAFF_PURCHASE = { id: Date.now(), staffName: "", productName: "", a
 // done manually by unlocking and editing the original day's appointment.
 const EMPTY_REFUND = { id: Date.now(), clientName: "", serviceAmount: 0, tipAmount: 0, paymentType: "", originalDate: "", notes: "" };
 
+// The opposite case from a refund: a payment (usually a cash tip) that a client actually paid on
+// a past visit but staff forgot to ring into the register that day. Recorded as its own entry so
+// it's ADDED to *today's* revenue total (the day the cash physically gets counted/reconciled) and
+// credited to the therapist who should get payroll credit for it — without re-creating the old
+// appointment (which would wrongly count as a new visit toward today's customer-type totals).
+const EMPTY_FORGOTTEN_TIP = { id: Date.now(), clientName: "", therapist: "", serviceAmount: 0, tipAmount: 0, paymentType: "", originalDate: "", notes: "" };
+
 const PURCHASE_TAGS = [
   { id: "newTicket", label: "🎟️ チケット新規購入", color: "#B71C1C", bg: "#FFEBEE" },
   { id: "giftCard",  label: "🎁 ギフトカード購入",  color: "#00796B", bg: "#E0F2F1" },
@@ -324,6 +331,7 @@ export default function SpaDailySheet() {
   const [ticketPurchases, setTicketPurchases] = useState([]);
   const [staffPurchases, setStaffPurchases] = useState([]);
   const [refunds, setRefunds] = useState([]);
+  const [forgottenTips, setForgottenTips] = useState([]);
   const [locked, setLocked] = useState(false);
   const [editingStaffPurchase, setEditingStaffPurchase] = useState(null);
   const [editingAppt, setEditingAppt] = useState(null);
@@ -331,6 +339,7 @@ export default function SpaDailySheet() {
   const [editingDeposit, setEditingDeposit] = useState(null);
   const [editingTicketPurchase, setEditingTicketPurchase] = useState(null);
   const [editingRefund, setEditingRefund] = useState(null);
+  const [editingForgottenTip, setEditingForgottenTip] = useState(null);
   const [squareLoading, setSquareLoading] = useState(false);
   const [squareStatus, setSquareStatus] = useState(null);
   const [activeTab, setActiveTab] = useState("schedule");
@@ -364,7 +373,7 @@ export default function SpaDailySheet() {
   // 常に最新の状態を読めるようrefに同期しておき、非同期処理の続き(awaitの後)はこちらを使う。
   const stateRef = useRef({});
   useEffect(() => {
-    stateRef.current = { appointments, retails, deposits, ticketPurchases, staffPurchases, refunds, locked, workingStaff };
+    stateRef.current = { appointments, retails, deposits, ticketPurchases, staffPurchases, refunds, forgottenTips, locked, workingStaff };
   });
 
   useEffect(() => {
@@ -378,6 +387,7 @@ export default function SpaDailySheet() {
       setTicketPurchases(d.ticketPurchases || []);
       setStaffPurchases(d.staffPurchases || []);
       setRefunds(d.refunds || []);
+      setForgottenTips(d.forgottenTips || []);
       setLocked(!!d.locked);
       // Working-staff selection is per-day (who actually came in that day) — without this,
       // leaving the day and coming back always reset it to "everyone", which pushed staff
@@ -391,7 +401,7 @@ export default function SpaDailySheet() {
         setWorkingStaff(derived.length > 0 ? derived : THERAPISTS);
       }
     } else {
-      setAppointments([]); setRetails([]); setDeposits([]); setTicketPurchases([]); setStaffPurchases([]); setRefunds([]);
+      setAppointments([]); setRetails([]); setDeposits([]); setTicketPurchases([]); setStaffPurchases([]); setRefunds([]); setForgottenTips([]);
       setLocked(false);
       setWorkingStaff(THERAPISTS);
     }
@@ -418,13 +428,13 @@ export default function SpaDailySheet() {
     setDepositsForDate(found.sort((a, b) => (a.appointmentTime || "").localeCompare(b.appointmentTime || "")));
   }, [date, deposits]);
 
-  const save = useCallback((appts, rets, deps, tps, sps, refs, ws) => {
-    localStorage.setItem(`spa-sheet-${date}`, JSON.stringify({ appointments: appts, retails: rets, deposits: deps, ticketPurchases: tps || [], staffPurchases: sps || [], refunds: refs || [], locked, workingStaff: ws || workingStaff }));
+  const save = useCallback((appts, rets, deps, tps, sps, refs, fts, ws) => {
+    localStorage.setItem(`spa-sheet-${date}`, JSON.stringify({ appointments: appts, retails: rets, deposits: deps, ticketPurchases: tps || [], staffPurchases: sps || [], refunds: refs || [], forgottenTips: fts || [], locked, workingStaff: ws || workingStaff }));
   }, [date, locked, workingStaff]);
 
   // Toggling the lock writes immediately (doesn't wait for another edit) using current state.
   const setDayLocked = (newLocked) => {
-    localStorage.setItem(`spa-sheet-${date}`, JSON.stringify({ appointments, retails, deposits, ticketPurchases, staffPurchases, refunds, locked: newLocked, workingStaff }));
+    localStorage.setItem(`spa-sheet-${date}`, JSON.stringify({ appointments, retails, deposits, ticketPurchases, staffPurchases, refunds, forgottenTips, locked: newLocked, workingStaff }));
     setLocked(newLocked);
   };
 
@@ -508,7 +518,7 @@ export default function SpaDailySheet() {
         const bookingTherapists = [...new Set(newAppts.map(a => a.therapist).filter(t => t && THERAPISTS.includes(t)))];
         const nextWorkingStaff = bookingTherapists.length > 0 ? bookingTherapists : cur.workingStaff;
         if (bookingTherapists.length > 0) setWorkingStaff(bookingTherapists);
-        save(merged, cur.retails, cur.deposits, cur.ticketPurchases, cur.staffPurchases, cur.refunds, nextWorkingStaff);
+        save(merged, cur.retails, cur.deposits, cur.ticketPurchases, cur.staffPurchases, cur.refunds, cur.forgottenTips, nextWorkingStaff);
 
         showToast(`✅ ${newAppts.length}件取得しました`);
       }
@@ -564,7 +574,7 @@ export default function SpaDailySheet() {
       }
       const next = [...cur.deposits, ...newDeposits];
       setDeposits(next);
-      save(cur.appointments, cur.retails, next, cur.ticketPurchases, cur.staffPurchases, cur.refunds);
+      save(cur.appointments, cur.retails, next, cur.ticketPurchases, cur.staffPurchases, cur.refunds, cur.forgottenTips);
       showToast(`✅ ギフトカード購入 ${newDeposits.length}件追加しました`);
     } catch (e) {
       console.error("Gift card sync error:", e);
@@ -621,7 +631,7 @@ export default function SpaDailySheet() {
       }
       const next = [...cur.deposits, ...newDeposits];
       setDeposits(next);
-      save(cur.appointments, cur.retails, next, cur.ticketPurchases, cur.staffPurchases, cur.refunds);
+      save(cur.appointments, cur.retails, next, cur.ticketPurchases, cur.staffPurchases, cur.refunds, cur.forgottenTips);
       showToast(`✅ デポジット ${newDeposits.length}件追加しました`);
     } catch (e) {
       console.error("Deposit sync error:", e);
@@ -739,14 +749,14 @@ export default function SpaDailySheet() {
     if (cavSlot) next = [...next, cavSlot];
     next.sort((a, b) => (a.startTime || "").localeCompare(b.startTime || ""));
 
-    setAppointments(next); save(next, retails, deposits, ticketPurchases, staffPurchases, refunds); setEditingAppt(null); showToast("保存しました");
+    setAppointments(next); save(next, retails, deposits, ticketPurchases, staffPurchases, refunds, forgottenTips); setEditingAppt(null); showToast("保存しました");
   };
 
   const deleteAppt = (id) => {
     if (guardLocked()) return;
     const cavSlotId = `cav-${id}`;
     const next = appointments.filter(a => a.id !== id && a.id !== cavSlotId);
-    setAppointments(next); save(next, retails, deposits, ticketPurchases, staffPurchases, refunds); setEditingAppt(null);
+    setAppointments(next); save(next, retails, deposits, ticketPurchases, staffPurchases, refunds, forgottenTips); setEditingAppt(null);
   };
 
   // When editing an existing appointment, restore cavPrice/cavTip from the cav slot.
@@ -790,16 +800,18 @@ export default function SpaDailySheet() {
     }
     setEditingAppt(appt);
   };
-  const saveRetail = (r) => { if (guardLocked()) return; const next = retails.find(x => x.id === r.id) ? retails.map(x => x.id === r.id ? r : x) : [...retails, r]; setRetails(next); save(appointments, next, deposits, ticketPurchases, staffPurchases, refunds); setEditingRetail(null); showToast("物販保存"); };
-  const deleteRetail = (id) => { if (guardLocked()) return; const next = retails.filter(r => r.id !== id); setRetails(next); save(appointments, next, deposits, ticketPurchases, staffPurchases, refunds); };
-  const saveDeposit = (d) => { if (guardLocked()) return; const next = deposits.find(x => x.id === d.id) ? deposits.map(x => x.id === d.id ? d : x) : [...deposits, d]; setDeposits(next); save(appointments, retails, next, ticketPurchases, staffPurchases, refunds); setEditingDeposit(null); showToast("保存しました"); };
-  const deleteDeposit = (id) => { if (guardLocked()) return; const next = deposits.filter(d => d.id !== id); setDeposits(next); save(appointments, retails, next, ticketPurchases, staffPurchases, refunds); };
-  const saveTicketPurchase = (tp) => { if (guardLocked()) return; const next = ticketPurchases.find(x => x.id === tp.id) ? ticketPurchases.map(x => x.id === tp.id ? tp : x) : [...ticketPurchases, tp]; setTicketPurchases(next); save(appointments, retails, deposits, next, staffPurchases, refunds); setEditingTicketPurchase(null); showToast("🎟️ チケット購入保存"); };
-  const deleteTicketPurchase = (id) => { if (guardLocked()) return; const next = ticketPurchases.filter(tp => tp.id !== id); setTicketPurchases(next); save(appointments, retails, deposits, next, staffPurchases, refunds); };
-  const saveStaffPurchase = (sp) => { if (guardLocked()) return; const next = staffPurchases.find(x => x.id === sp.id) ? staffPurchases.map(x => x.id === sp.id ? sp : x) : [...staffPurchases, sp]; setStaffPurchases(next); save(appointments, retails, deposits, ticketPurchases, next, refunds); setEditingStaffPurchase(null); showToast("👩‍💼 社販保存"); };
-  const deleteStaffPurchase = (id) => { if (guardLocked()) return; const next = staffPurchases.filter(sp => sp.id !== id); setStaffPurchases(next); save(appointments, retails, deposits, ticketPurchases, next, refunds); };
-  const saveRefund = (rf) => { if (guardLocked()) return; const next = refunds.find(x => x.id === rf.id) ? refunds.map(x => x.id === rf.id ? rf : x) : [...refunds, rf]; setRefunds(next); save(appointments, retails, deposits, ticketPurchases, staffPurchases, next); setEditingRefund(null); showToast("🔙 返金を記録しました"); };
-  const deleteRefund = (id) => { if (guardLocked()) return; const next = refunds.filter(rf => rf.id !== id); setRefunds(next); save(appointments, retails, deposits, ticketPurchases, staffPurchases, next); };
+  const saveRetail = (r) => { if (guardLocked()) return; const next = retails.find(x => x.id === r.id) ? retails.map(x => x.id === r.id ? r : x) : [...retails, r]; setRetails(next); save(appointments, next, deposits, ticketPurchases, staffPurchases, refunds, forgottenTips); setEditingRetail(null); showToast("物販保存"); };
+  const deleteRetail = (id) => { if (guardLocked()) return; const next = retails.filter(r => r.id !== id); setRetails(next); save(appointments, next, deposits, ticketPurchases, staffPurchases, refunds, forgottenTips); };
+  const saveDeposit = (d) => { if (guardLocked()) return; const next = deposits.find(x => x.id === d.id) ? deposits.map(x => x.id === d.id ? d : x) : [...deposits, d]; setDeposits(next); save(appointments, retails, next, ticketPurchases, staffPurchases, refunds, forgottenTips); setEditingDeposit(null); showToast("保存しました"); };
+  const deleteDeposit = (id) => { if (guardLocked()) return; const next = deposits.filter(d => d.id !== id); setDeposits(next); save(appointments, retails, next, ticketPurchases, staffPurchases, refunds, forgottenTips); };
+  const saveTicketPurchase = (tp) => { if (guardLocked()) return; const next = ticketPurchases.find(x => x.id === tp.id) ? ticketPurchases.map(x => x.id === tp.id ? tp : x) : [...ticketPurchases, tp]; setTicketPurchases(next); save(appointments, retails, deposits, next, staffPurchases, refunds, forgottenTips); setEditingTicketPurchase(null); showToast("🎟️ チケット購入保存"); };
+  const deleteTicketPurchase = (id) => { if (guardLocked()) return; const next = ticketPurchases.filter(tp => tp.id !== id); setTicketPurchases(next); save(appointments, retails, deposits, next, staffPurchases, refunds, forgottenTips); };
+  const saveStaffPurchase = (sp) => { if (guardLocked()) return; const next = staffPurchases.find(x => x.id === sp.id) ? staffPurchases.map(x => x.id === sp.id ? sp : x) : [...staffPurchases, sp]; setStaffPurchases(next); save(appointments, retails, deposits, ticketPurchases, next, refunds, forgottenTips); setEditingStaffPurchase(null); showToast("👩‍💼 社販保存"); };
+  const deleteStaffPurchase = (id) => { if (guardLocked()) return; const next = staffPurchases.filter(sp => sp.id !== id); setStaffPurchases(next); save(appointments, retails, deposits, ticketPurchases, next, refunds, forgottenTips); };
+  const saveRefund = (rf) => { if (guardLocked()) return; const next = refunds.find(x => x.id === rf.id) ? refunds.map(x => x.id === rf.id ? rf : x) : [...refunds, rf]; setRefunds(next); save(appointments, retails, deposits, ticketPurchases, staffPurchases, next, forgottenTips); setEditingRefund(null); showToast("🔙 返金を記録しました"); };
+  const deleteRefund = (id) => { if (guardLocked()) return; const next = refunds.filter(rf => rf.id !== id); setRefunds(next); save(appointments, retails, deposits, ticketPurchases, staffPurchases, next, forgottenTips); };
+  const saveForgottenTip = (ft) => { if (guardLocked()) return; const next = forgottenTips.find(x => x.id === ft.id) ? forgottenTips.map(x => x.id === ft.id ? ft : x) : [...forgottenTips, ft]; setForgottenTips(next); save(appointments, retails, deposits, ticketPurchases, staffPurchases, refunds, next); setEditingForgottenTip(null); showToast("🙏 打ち忘れ入力を記録しました"); };
+  const deleteForgottenTip = (id) => { if (guardLocked()) return; const next = forgottenTips.filter(ft => ft.id !== id); setForgottenTips(next); save(appointments, retails, deposits, ticketPurchases, staffPurchases, refunds, next); };
 
   // Summary — tickets excluded from today's revenue; cav slots excluded (counted in parent)
   const regularAppts = appointments.filter(a => !a.isTicket && !a.isCavSlot && !a.isGiftCard && !a.isPromo);
@@ -824,6 +836,15 @@ export default function SpaDailySheet() {
   const totalRefundCard = refunds.filter(rf => rf.paymentType === "card").reduce((s, rf) => s + Number(rf.serviceAmount || 0), 0);
   const totalRefundTipCash = refunds.filter(rf => rf.paymentType === "cash").reduce((s, rf) => s + Number(rf.tipAmount || 0), 0);
   const totalRefundTipCard = refunds.filter(rf => rf.paymentType === "card").reduce((s, rf) => s + Number(rf.tipAmount || 0), 0);
+  // The opposite of a refund: a past visit's payment (usually a cash tip) that staff forgot to
+  // ring in that day. Recorded today and ADDED to *today's* totals only — the register drawer is
+  // physically counted today, so that's when this cash needs to show up in the system total too.
+  const totalForgottenService = forgottenTips.reduce((s, ft) => s + Number(ft.serviceAmount || 0), 0);
+  const totalForgottenTip = forgottenTips.reduce((s, ft) => s + Number(ft.tipAmount || 0), 0);
+  const totalForgottenCash = forgottenTips.filter(ft => ft.paymentType === "cash").reduce((s, ft) => s + Number(ft.serviceAmount || 0), 0);
+  const totalForgottenCard = forgottenTips.filter(ft => ft.paymentType === "card").reduce((s, ft) => s + Number(ft.serviceAmount || 0), 0);
+  const totalForgottenTipCash = forgottenTips.filter(ft => ft.paymentType === "cash").reduce((s, ft) => s + Number(ft.tipAmount || 0), 0);
+  const totalForgottenTipCard = forgottenTips.filter(ft => ft.paymentType === "card").reduce((s, ft) => s + Number(ft.tipAmount || 0), 0);
 
   // GC allocation: a giftCardUsed amount was already collected as revenue on the (possibly earlier)
   // day the gift card was purchased/loaded, so it must never also count as *today's* revenue —
@@ -853,6 +874,7 @@ export default function SpaDailySheet() {
     + sameDayAppts.reduce((s, a) => s + Number(a.packagePrice || 0) - gcAllocPackage(a).gcSvc, 0)
     + ticketAppts.reduce((s, a) => s + Number(a.extraPrice || 0), 0)
     + revenueAddons.reduce((s, ad) => s + Number(ad.price || 0), 0)
+    + totalForgottenService
     - totalRefundService;
   const totalCavRevenue = regularAppts.reduce((s, a) => s + Number(a.cavPrice || 0), 0)
     + cavSlotAppts.reduce((s, a) => s + Number(a.price || 0), 0);
@@ -860,6 +882,7 @@ export default function SpaDailySheet() {
     + sameDayAppts.reduce((s, a) => s + Number(a.packageTip ?? a.tip ?? 0) - gcAllocPackage(a).gcTip, 0)
     + ticketAppts.reduce((s, a) => s + Number(a.extraTip || 0), 0)
     + revenueAddons.reduce((s, ad) => s + Number(ad.tip || 0), 0)
+    + totalForgottenTip
     - totalRefundTip;
   const totalCavTips = regularAppts.reduce((s, a) => s + Number(a.cavTip || 0), 0)
     + cavSlotAppts.reduce((s, a) => s + Number(a.tip || 0), 0);
@@ -872,6 +895,7 @@ export default function SpaDailySheet() {
     + ticketAppts.filter(a => a.extraPricePaymentType === "cash").reduce((s, a) => s + Number(a.extraPrice || 0), 0)
     + revenueAddons.filter(ad => ad.paymentType === "cash").reduce((s, ad) => s + Number(ad.price || 0), 0)
     + cavSlotAppts.filter(a => a.paymentType === "cash").reduce((s, a) => s + Number(a.price || 0), 0)
+    + totalForgottenCash
     - totalRefundCash;
   const totalCard = regularAppts.filter(a => !a.svcSplitPayment && a.paymentType === "card").reduce((s, a) => s + Math.max(0, Number(a.price || 0) - gcAlloc(a).gcSvc), 0)
     + regularAppts.filter(a => a.svcSplitPayment).reduce((s, a) => s + Number(a.svcCardPortion || 0), 0)
@@ -880,6 +904,7 @@ export default function SpaDailySheet() {
     + ticketAppts.filter(a => a.extraPricePaymentType === "card").reduce((s, a) => s + Number(a.extraPrice || 0), 0)
     + revenueAddons.filter(ad => ad.paymentType !== "cash").reduce((s, ad) => s + Number(ad.price || 0), 0)
     + cavSlotAppts.filter(a => a.paymentType !== "cash").reduce((s, a) => s + Number(a.price || 0), 0)
+    + totalForgottenCard
     - totalRefundCard;
   const totalTipCash = regularAppts.filter(a => !a.tipSplitPayment && a.tipPaymentType === "cash").reduce((s, a) => s + Math.max(0, Number(a.tip || 0) - gcAlloc(a).gcTip), 0)
     + regularAppts.filter(a => a.tipSplitPayment).reduce((s, a) => s + Number(a.tipCashPortion || 0), 0)
@@ -888,6 +913,7 @@ export default function SpaDailySheet() {
     + revenueAddons.filter(ad => ad.tipPaymentType === "cash").reduce((s, ad) => s + Number(ad.tip || 0), 0)
     + cavSlotAppts.filter(a => a.tipPaymentType === "cash").reduce((s, a) => s + Number(a.tip || 0), 0)
     + deposits.filter(d => d.tipPaymentType === "cash" || !d.tipPaymentType).reduce((s, d) => s + Number(d.tip || 0), 0)
+    + totalForgottenTipCash
     - totalRefundTipCash;
   const totalTipCard = regularAppts.filter(a => !a.tipSplitPayment && a.tipPaymentType === "card").reduce((s, a) => s + Math.max(0, Number(a.tip || 0) - gcAlloc(a).gcTip), 0)
     + regularAppts.filter(a => a.tipSplitPayment).reduce((s, a) => s + Number(a.tipCardPortion || 0), 0)
@@ -896,6 +922,7 @@ export default function SpaDailySheet() {
     + revenueAddons.filter(ad => ad.tipPaymentType !== "cash").reduce((s, ad) => s + Number(ad.tip || 0), 0)
     + cavSlotAppts.filter(a => a.tipPaymentType === "card").reduce((s, a) => s + Number(a.tip || 0), 0)
     + deposits.filter(d => d.tipPaymentType === "card").reduce((s, d) => s + Number(d.tip || 0), 0)
+    + totalForgottenTipCard
     - totalRefundTipCard;
   const totalRetail = retails.reduce((s, r) => s + Number(r.price || 0), 0);
   // 社販 (staff buying product for themselves) is still real product revenue for the salon.
@@ -1151,7 +1178,7 @@ export default function SpaDailySheet() {
           {THERAPISTS.map(t => (
             <button key={t} onClick={() => setWorkingStaff(prev => {
               const next = prev.includes(t) ? prev.filter(x => x !== t) : [...prev, t];
-              save(appointments, retails, deposits, ticketPurchases, staffPurchases, refunds, next);
+              save(appointments, retails, deposits, ticketPurchases, staffPurchases, refunds, forgottenTips, next);
               return next;
             })} style={{
               padding: "4px 12px", borderRadius: 20, border: `2px solid ${workingStaff.includes(t) ? "#2E7D32" : "#CCC"}`,
@@ -1320,6 +1347,35 @@ export default function SpaDailySheet() {
                 <button onClick={() => deleteDeposit(d.id)} disabled={locked} style={{...iconBtn, opacity: locked ? 0.35 : 1, cursor: locked ? "not-allowed" : "pointer"}}>🗑️</button>
               </div>
             ))}
+          </SectionBox>
+
+          {/* Forgotten tips/payments — a past visit's payment (usually a cash tip) staff forgot to
+              ring in that day. Added to *today's* totals (register is physically counted today)
+              and credited to the therapist's payroll for today, without re-creating the old
+              appointment (which would wrongly count as a new visit toward today's customer stats). */}
+          <SectionBox title="🙏 打ち忘れ入力（デポジット/チップ）" color="#00695C" onAdd={() => setEditingForgottenTip({ ...EMPTY_FORGOTTEN_TIP, id: Date.now() })} disabled={locked}>
+            {forgottenTips.length === 0 && <p style={{ color: "#AAA", fontSize: 13 }}>なし</p>}
+            {forgottenTips.map(ft => {
+              const svc = Number(ft.serviceAmount || 0);
+              const tip = Number(ft.tipAmount || 0);
+              return (
+                <div key={ft.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 0", borderBottom: "1px solid #F0F0F0", flexWrap: "wrap" }}>
+                  <span style={{ flex: 1, fontWeight: 700, fontSize: 14 }}>{ft.clientName || "—"}</span>
+                  {ft.therapist && <span style={{ fontSize: 11, color: "#00695C", background: "#E0F2F1", borderRadius: 8, padding: "2px 8px" }}>{ft.therapist}</span>}
+                  {svc > 0 && <span style={{ fontWeight: 700, color: "#00695C" }}>施術{formatCurrency(svc)}</span>}
+                  {tip > 0 && <span style={{ fontWeight: 700, color: "#00695C" }}>チップ{formatCurrency(tip)}</span>}
+                  <PayBadge type={ft.paymentType} />
+                  {ft.originalDate && <span style={{ fontSize: 11, color: "#888" }}>来店日 {ft.originalDate}</span>}
+                  <button onClick={() => setEditingForgottenTip(ft)} disabled={locked} style={{...iconBtn, opacity: locked ? 0.35 : 1, cursor: locked ? "not-allowed" : "pointer"}}>✏️</button>
+                  <button onClick={() => deleteForgottenTip(ft.id)} disabled={locked} style={{...iconBtn, opacity: locked ? 0.35 : 1, cursor: locked ? "not-allowed" : "pointer"}}>🗑️</button>
+                </div>
+              );
+            })}
+            {forgottenTips.length > 0 && (
+              <div style={{ marginTop: 8, fontSize: 11, color: "#00695C", fontWeight: 700, textAlign: "right" }}>
+                施術 {formatCurrency(totalForgottenService)}　チップ {formatCurrency(totalForgottenTip)}
+              </div>
+            )}
           </SectionBox>
 
           {/* Staff Purchases 社販 */}
@@ -1737,6 +1793,7 @@ export default function SpaDailySheet() {
       {editingTicketPurchase && <TicketPurchaseModal tp={editingTicketPurchase} onSave={saveTicketPurchase} onDelete={() => { deleteTicketPurchase(editingTicketPurchase.id); setEditingTicketPurchase(null); }} onClose={() => setEditingTicketPurchase(null)} />}
       {editingStaffPurchase && <StaffPurchaseModal sp={editingStaffPurchase} onSave={saveStaffPurchase} onDelete={() => { deleteStaffPurchase(editingStaffPurchase.id); setEditingStaffPurchase(null); }} onClose={() => setEditingStaffPurchase(null)} />}
       {editingRefund && <RefundModal rf={editingRefund} onSave={saveRefund} onDelete={() => { deleteRefund(editingRefund.id); setEditingRefund(null); }} onClose={() => setEditingRefund(null)} />}
+      {editingForgottenTip && <ForgottenTipModal ft={editingForgottenTip} onSave={saveForgottenTip} onDelete={() => { deleteForgottenTip(editingForgottenTip.id); setEditingForgottenTip(null); }} onClose={() => setEditingForgottenTip(null)} />}
 
       {toast && (
         <div style={{ position: "fixed", bottom: 20, right: 20, padding: "12px 20px", borderRadius: 10, background: toast.type === "error" ? "#C62828" : toast.type === "info" ? "#1565C0" : "#0D4F4F", color: "#fff", fontWeight: 600, fontSize: 14, boxShadow: "0 4px 12px rgba(0,0,0,0.2)", zIndex: 9999 }}>
@@ -4241,6 +4298,77 @@ function RefundModal({ rf, onSave, onDelete, onClose }) {
   );
 }
 
+function ForgottenTipModal({ ft, onSave, onDelete, onClose }) {
+  const [form, setForm] = useState({ ...ft });
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+  const [errors, setErrors] = useState([]);
+  const handleSave = () => {
+    const errs = [];
+    if (!form.therapist) errs.push("therapist");
+    if ((Number(form.serviceAmount) > 0 || Number(form.tipAmount) > 0) && !form.paymentType) errs.push("paymentType");
+    if (errs.length > 0) { setErrors(errs); return; }
+    onSave(form);
+  };
+  return (
+    <Modal onClose={onClose}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+        <h2 style={{ margin: 0, fontSize: 18, color: "#00695C" }}>🙏 打ち忘れ入力</h2>
+        <button onClick={onClose} style={{ border: "none", background: "none", fontSize: 22, cursor: "pointer" }}>✕</button>
+      </div>
+      <div style={{ fontSize: 11, color: "#888", marginBottom: 12, background: "#E0F2F1", borderRadius: 8, padding: "8px 10px" }}>
+        過去の来店分でレジに打ち忘れた支払い（現金チップなど）を、日をまたいだ「本日」の売上に追加し、担当セラピストの本日分お給料にも計上するための記録です。来店日の予約は編集不要です（顧客タイプの件数には影響しません）。
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        <Field label="お客様名">
+          <input value={form.clientName} onChange={e => set("clientName", e.target.value)} style={inputStyle} placeholder="例：田中様" />
+        </Field>
+        <Field label="担当セラピスト" error={errors.includes("therapist")}>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            {THERAPISTS.map(t => (
+              <button key={t} onClick={() => { set("therapist", t); setErrors(e => e.filter(x => x !== "therapist")); }}
+                style={{ padding: "7px 12px", borderRadius: 8, border: `2px solid ${form.therapist===t?"#00695C":(errors.includes("therapist")?"#C62828":"#DDD")}`, background: form.therapist===t?"#00695C":"#fff", cursor: "pointer", fontWeight: 700, fontSize: 12, color: form.therapist===t?"#fff":"#888" }}>
+                {t}
+              </button>
+            ))}
+          </div>
+        </Field>
+        <Field label="来店日（任意・実際に施術があった日）">
+          <input type="date" value={form.originalDate || ""} onChange={e => set("originalDate", e.target.value)} style={inputStyle} />
+        </Field>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+          <Field label="打ち忘れ施術料 ($)">
+            <input type="number" value={form.serviceAmount || ""} onChange={e => set("serviceAmount", e.target.value)} style={inputStyle} placeholder="例：0" />
+          </Field>
+          <Field label="打ち忘れチップ ($)">
+            <input type="number" value={form.tipAmount || ""} onChange={e => set("tipAmount", e.target.value)} style={inputStyle} placeholder="例：20" />
+          </Field>
+        </div>
+        <Field label="支払方法" error={errors.includes("paymentType")}>
+          <div style={{ display: "flex", gap: 6 }}>
+            {[["cash","💵 現金"],["card","💳 カード"]].map(([val, label]) => (
+              <button key={val} onClick={() => { set("paymentType", val); setErrors(e => e.filter(x => x !== "paymentType")); }}
+                style={{ flex: 1, padding: "9px 4px", borderRadius: 8, border: `2px solid ${form.paymentType===val?"#00695C":"#DDD"}`, background: form.paymentType===val?"#E0F2F1":"#fff", cursor: "pointer", fontWeight: 700, fontSize: 12, color: form.paymentType===val?"#00695C":"#888" }}>
+                {label}
+              </button>
+            ))}
+          </div>
+        </Field>
+        {(Number(form.serviceAmount) > 0 || Number(form.tipAmount) > 0) && (
+          <div style={{ background: "#00695C", borderRadius: 8, padding: "10px 14px", textAlign: "right" }}>
+            <span style={{ color: "#B2DFDB", fontSize: 11 }}>本日追加合計　</span>
+            <span style={{ color: "#fff", fontSize: 22, fontWeight: 800 }}>+${Number(form.serviceAmount||0) + Number(form.tipAmount||0)}</span>
+          </div>
+        )}
+        <Field label="メモ"><input value={form.notes} onChange={e => set("notes", e.target.value)} style={inputStyle} placeholder="例：16日レジ打ち忘れ" /></Field>
+      </div>
+      <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
+        <button onClick={handleSave} style={{ flex: 1, padding: "12px", borderRadius: 10, border: "none", background: "#00695C", color: "#fff", fontWeight: 700, fontSize: 15, cursor: "pointer" }}>💾 保存</button>
+        {ft.id && <button onClick={onDelete} style={{ padding: "12px 16px", borderRadius: 10, border: "none", background: "#FFEBEE", color: "#C62828", fontWeight: 700, cursor: "pointer" }}>🗑️</button>}
+      </div>
+    </Modal>
+  );
+}
+
 function SectionBox({ title, color, onAdd, disabled, children }) {
   return (
     <div style={{ marginTop: 20, background: "#fff", borderRadius: 12, padding: 16, boxShadow: "0 1px 4px rgba(0,0,0,0.08)" }}>
@@ -4301,6 +4429,7 @@ function exportSalesReportXlsx(monthStr) {
       const appts = (data.appointments || []).filter(a => !a.isCavSlot);
       const retails = data.retails || [];
       const refunds = data.refunds || [];
+      const forgottenTips = data.forgottenTips || [];
       appts.forEach(a => {
         const therapists = a.cavTherapist ? [{ name: a.therapist, share: 0.5 }, { name: a.cavTherapist, share: 0.5 }] : [{ name: a.therapist, share: 1 }];
         const hasTicketSale = (a.isSameDayTicket && Number(a.packagePrice || 0) > 0) || ((a.purchaseTags || []).includes("newTicket") && Number(a.newTicketAmount || 0) > 0);
@@ -4319,6 +4448,10 @@ function exportSalesReportXlsx(monthStr) {
       const refundServiceCard = refunds.filter(rf => rf.paymentType === "card").reduce((s,rf) => s + Number(rf.serviceAmount||0), 0);
       const refundTipCash = refunds.filter(rf => rf.paymentType === "cash").reduce((s,rf) => s + Number(rf.tipAmount||0), 0);
       const refundTipCard = refunds.filter(rf => rf.paymentType === "card").reduce((s,rf) => s + Number(rf.tipAmount||0), 0);
+      const forgottenServiceCash = forgottenTips.filter(ft => ft.paymentType === "cash").reduce((s,ft) => s + Number(ft.serviceAmount||0), 0);
+      const forgottenServiceCard = forgottenTips.filter(ft => ft.paymentType === "card").reduce((s,ft) => s + Number(ft.serviceAmount||0), 0);
+      const forgottenTipCash = forgottenTips.filter(ft => ft.paymentType === "cash").reduce((s,ft) => s + Number(ft.tipAmount||0), 0);
+      const forgottenTipCard = forgottenTips.filter(ft => ft.paymentType === "card").reduce((s,ft) => s + Number(ft.tipAmount||0), 0);
 
       // Only count money actually received today: regular visits and same-day ticket purchases.
       // Excludes GC消化/PR無料 (no money received today) and pure ticket redemptions (already paid
@@ -4360,6 +4493,7 @@ function exportSalesReportXlsx(monthStr) {
         + sameDayTicketAppts.filter(a => a.extraPricePaymentType === "cash").reduce((s,a) => s + Number(a.extraPrice||0), 0)
         + revenueAddons.filter(ad => ad.paymentType === "cash").reduce((s,ad) => s + Number(ad.price||0), 0)
         + depositCash
+        + forgottenServiceCash
         - refundServiceCash;
       const cashProduct = retails.filter(r => r.paymentType === "cash").reduce((s,r) => s + Number(r.price||0), 0);
       const cashTip = revenueAppts.filter(a => !a.tipSplitPayment && a.tipPaymentType === "cash").reduce((s,a) => s + Number(a.tip||0) - gcAlloc(a).gcTip, 0)
@@ -4368,6 +4502,7 @@ function exportSalesReportXlsx(monthStr) {
         + pureTicketAppts.filter(a => a.extraTipPaymentType === "cash").reduce((s,a) => s + Number(a.extraTip||0), 0)
         + sameDayTicketAppts.filter(a => a.extraTipPaymentType === "cash").reduce((s,a) => s + Number(a.extraTip||0), 0)
         + revenueAddons.filter(ad => ad.tipPaymentType === "cash").reduce((s,ad) => s + Number(ad.tip||0), 0)
+        + forgottenTipCash
         - refundTipCash;
       const cardTreatment = revenueAppts.filter(a => !a.svcSplitPayment && a.paymentType === "card").reduce((s,a) => s + Number(a.price||0) - gcAlloc(a).gcSvc, 0)
         + revenueAppts.filter(a => a.svcSplitPayment).reduce((s,a) => s + Number(a.svcCardPortion||0), 0)
@@ -4377,6 +4512,7 @@ function exportSalesReportXlsx(monthStr) {
         + sameDayTicketAppts.filter(a => a.extraPricePaymentType === "card").reduce((s,a) => s + Number(a.extraPrice||0), 0)
         + revenueAddons.filter(ad => ad.paymentType !== "cash").reduce((s,ad) => s + Number(ad.price||0), 0)
         + depositCard
+        + forgottenServiceCard
         - refundServiceCard;
       const cardProduct = retails.filter(r => r.paymentType === "card").reduce((s,r) => s + Number(r.price||0), 0);
       const cardTip = revenueAppts.filter(a => !a.tipSplitPayment && a.tipPaymentType === "card").reduce((s,a) => s + Number(a.tip||0) - gcAlloc(a).gcTip, 0)
@@ -4385,12 +4521,14 @@ function exportSalesReportXlsx(monthStr) {
         + pureTicketAppts.filter(a => a.extraTipPaymentType === "card").reduce((s,a) => s + Number(a.extraTip||0), 0)
         + sameDayTicketAppts.filter(a => a.extraTipPaymentType === "card").reduce((s,a) => s + Number(a.extraTip||0), 0)
         + revenueAddons.filter(ad => ad.tipPaymentType !== "cash").reduce((s,ad) => s + Number(ad.tip||0), 0)
+        + forgottenTipCard
         - refundTipCard;
       const totalTip = revenueAppts.reduce((s,a) => s + Number(a.tip||0) - gcAlloc(a).gcTip, 0)
         + sameDayTicketAppts.reduce((s,a) => s + Number(a.packageTip ?? a.tip ?? 0) - gcAllocPackage(a).gcTip, 0)
         + pureTicketAppts.reduce((s,a) => s + Number(a.extraTip||0), 0)
         + sameDayTicketAppts.reduce((s,a) => s + Number(a.extraTip||0), 0)
         + revenueAddons.reduce((s,ad) => s + Number(ad.tip||0), 0)
+        + forgottenTipCash + forgottenTipCard
         - refundTipCash - refundTipCard;
       const totalSales = cashTreatment + cashProduct + cardTreatment + cardProduct;
       const totalCash = cashTreatment + cashProduct;
@@ -4577,6 +4715,7 @@ function PayrollTab() {
     const endD = new Date(end);
     const allAppts = [];
     const allRetails = [];
+    const allForgottenTips = [];
 
     for (let d = new Date(startD); d <= endD; d.setDate(d.getDate() + 1)) {
       const dateStr = d.toISOString().slice(0, 10);
@@ -4588,6 +4727,9 @@ function PayrollTab() {
         });
         (data.retails || []).forEach(r => {
           allRetails.push({ ...r, date: dateStr });
+        });
+        (data.forgottenTips || []).forEach(ft => {
+          allForgottenTips.push({ ...ft, date: dateStr });
         });
       }
     }
@@ -4724,6 +4866,33 @@ function PayrollTab() {
         byTherapist[t].totalRetail += retail;
         if (isCard) byTherapist[t].totalRetailCard += retail;
       });
+    });
+
+    // Forgotten tips/payments — a past visit's payment staff forgot to ring in that day, entered
+    // later and credited to the therapist on the day it's *entered* (not the original visit date),
+    // matching how the daily sheet folds it into that day's revenue too.
+    allForgottenTips.forEach(ft => {
+      const t = ft.therapist;
+      if (!t || !byTherapist[t]) return;
+      const svc = Number(ft.serviceAmount || 0);
+      const tip = Number(ft.tipAmount || 0);
+      const isCard = ft.paymentType === "card";
+      byTherapist[t].rows.push({
+        date: ft.date,
+        client: ft.clientName,
+        isTicket: false,
+        ticketInfo: "",
+        duration: 0,
+        service: svc,
+        tip,
+        paymentType: ft.paymentType,
+        tipPaymentType: ft.paymentType,
+        notes: `🙏 打ち忘れ${ft.originalDate ? `(${ft.originalDate}来店分)` : ""}${ft.notes ? ` ${ft.notes}` : ""}`,
+      });
+      byTherapist[t].totalService += svc;
+      byTherapist[t].totalTip += tip;
+      if (isCard) byTherapist[t].totalServiceCard += svc;
+      if (isCard) byTherapist[t].totalTipCard += tip;
     });
 
     // Add-on services → attributed therapist (or fall back to main therapist)
