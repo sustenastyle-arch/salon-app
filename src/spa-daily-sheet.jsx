@@ -1829,23 +1829,27 @@ function ApptCard({ appt, onClick, allAppointments }) {
         const dep = isSameDay ? Number(appt.packageDepositAmount||0) : Number(appt.depositApplied||0);
         const depDate = isSameDay ? appt.packageDepositDate : appt.depositPaidDate;
 
-        // A prior-visit deposit plus a machine (cav) therapist means payroll credits each
-        // therapist a deposit-inclusive share split by treatment minutes (see PayrollTab's
-        // identical formula) — mirror that here so the board shows what staff actually get
-        // paid, not just the raw price typed into this appointment's own record (the cav
-        // slot's portion is stripped to 0 on save and lives on its own isCavSlot record).
+        // Red on this card is today's register-close figure — cash actually collected today —
+        // NOT the payroll allocation. A prior-visit deposit already counted as revenue on the
+        // day it was collected, so it must stay out of today's red total. We still need the
+        // deposit-inclusive, minutes-split payroll share (same formula as PayrollTab) to find
+        // the body therapist's fair cut of the deposit, then back the full deposit back out —
+        // the machine (cav) card keeps its full payroll share untouched, matching how this
+        // shop attributes deposits entirely against the body therapist's side.
         let bodySvc = Number(appt.price||0);
         if (dep > 0 && appt.cavTherapist && !isSameDay) {
           const cavSlot = (allAppointments || []).find(a => a.isCavSlot && a.parentId === appt.id);
           const cavReceived = Number(cavSlot?.price || 0);
+          let bodyPayrollShare;
           if (isWeightLossService(appt.serviceName)) {
-            bodySvc = r2(bodySvc + dep);
+            bodyPayrollShare = r2(bodySvc + dep);
           } else {
             const bodyMins = Number(appt.duration || 0);
             const cavMins = Number(cavSlot?.duration || 0) || 15;
             const allMins = bodyMins + cavMins;
-            bodySvc = allMins > 0 ? Math.round((bodySvc + cavReceived + dep) * bodyMins / allMins * 100) / 100 : r2(bodySvc + dep);
+            bodyPayrollShare = allMins > 0 ? Math.round((bodySvc + cavReceived + dep) * bodyMins / allMins * 100) / 100 : r2(bodySvc + dep);
           }
+          bodySvc = r2(bodyPayrollShare - dep);
         }
         const svc = r2(bodySvc + Number(appt.cavPrice||0));
         const tip = r2(Number(appt.tip||0) + Number(appt.cavTip||0));
@@ -1907,7 +1911,7 @@ function ApptCard({ appt, onClick, allAppointments }) {
               <div style={{ color: "#6A1B9A", fontSize: 10 }}>with {appt.cavTherapist}</div>
             )}
             {dep > 0 && (
-              <div style={{ color: "#2E7D32", fontSize: 10 }}>💰デポジット${dep}按分済み{depDate ? ` ${depDate}` : ""}</div>
+              <div style={{ color: "#2E7D32", fontSize: 10 }}>💰デポジット${dep} 支払済み（本日受取額には含まず）{depDate ? ` ${depDate}` : ""}</div>
             )}
             {gc > 0 && (
               <div style={{ color: "#2E7D32", fontSize: 10 }}>GC使用 ${gc}</div>
