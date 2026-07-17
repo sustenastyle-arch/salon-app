@@ -1244,7 +1244,7 @@ export default function SpaDailySheet() {
                     return (
                       <td key={t} style={{ padding: "4px", verticalAlign: "top" }}
                         onClick={() => !hasContent && !locked && setEditingAppt({ ...EMPTY_APPOINTMENT, id: `m-${Date.now()}`, therapist: t, startTime: `${String(hour).padStart(2,"0")}:00` })}>
-                        {appts.map(a => <ApptCard key={a.id} appt={a} onClick={() => {
+                        {appts.map(a => <ApptCard key={a.id} appt={a} allAppointments={appointments} onClick={() => {
                           if (locked) { showToast("🔒 この日は確定済みです。解除してから編集してください", "error"); return; }
                           if (a.isCavSlot) {
                             const parent = appointments.find(p => p.id === a.parentId);
@@ -1752,7 +1752,7 @@ export default function SpaDailySheet() {
 const REVENUE_COLOR = "#C62828";
 const NON_REVENUE_COLOR = "#1565C0";
 
-function ApptCard({ appt, onClick }) {
+function ApptCard({ appt, onClick, allAppointments }) {
   const typeColors = { RL: "#4CAF50", RT: "#2196F3", NL: "#FF9800", NT: "#9C27B0" };
   const isTicket = appt.isTicket;
   const isCavSlot = appt.isCavSlot;
@@ -1773,7 +1773,21 @@ function ApptCard({ appt, onClick }) {
   const bg = isCavSlot ? "#F9F0FF" : isGiftCard ? "#FFFDE7" : isPromo ? "#E3F2FD" : isTicket ? "#EEF5FF" : appt.paymentType === "cash" ? "#F1FBF3" : "#EEF5FF";
 
   if (isCavSlot) {
-    const cavSvc = Number(appt.price||0);
+    const parent = (allAppointments || []).find(a => a.id === appt.parentId);
+    const dep = Number(parent?.depositApplied || 0);
+    let cavSvc = Number(appt.price||0);
+    // Mirror the body card's deposit-inclusive minutes split (see the non-cav branch below and
+    // PayrollTab) so this card shows the same deposit-adjusted share staff actually get paid.
+    if (dep > 0 && parent && !isWeightLossService(parent.serviceName)) {
+      const bodyReceived = Number(parent.price || 0);
+      const bodyMins = Number(parent.duration || 0);
+      const cavMins = Number(appt.duration || 0) || 15;
+      const allMins = bodyMins + cavMins;
+      if (allMins > 0) {
+        const bodyShare = Math.round((bodyReceived + cavSvc + dep) * bodyMins / allMins * 100) / 100;
+        cavSvc = Math.round((bodyReceived + cavSvc + dep - bodyShare) * 100) / 100;
+      }
+    }
     const cavTip = Number(appt.tip||0);
     const cavTotal = r2(cavSvc + cavTip);
     const svcIcon = appt.paymentType === "card" ? "💳" : appt.paymentType === "cash" ? "💵" : "";
@@ -1794,6 +1808,9 @@ function ApptCard({ appt, onClick }) {
             <div style={{ fontWeight: 800 }}>{cavTotal}</div>
           </div>
         )}
+        {dep > 0 && !isWeightLossService(parent?.serviceName) && (
+          <div style={{ color: "#2E7D32", fontSize: 9 }}>💰デポジット按分込み</div>
+        )}
       </div>
     );
   }
@@ -1809,7 +1826,28 @@ function ApptCard({ appt, onClick }) {
       {(() => {
         const isSameDay = isTicket && appt.isSameDayTicket;
         const isRedemption = isTicket && !isSameDay;
-        const svc = r2(Number(appt.price||0) + Number(appt.cavPrice||0));
+        const dep = isSameDay ? Number(appt.packageDepositAmount||0) : Number(appt.depositApplied||0);
+        const depDate = isSameDay ? appt.packageDepositDate : appt.depositPaidDate;
+
+        // A prior-visit deposit plus a machine (cav) therapist means payroll credits each
+        // therapist a deposit-inclusive share split by treatment minutes (see PayrollTab's
+        // identical formula) — mirror that here so the board shows what staff actually get
+        // paid, not just the raw price typed into this appointment's own record (the cav
+        // slot's portion is stripped to 0 on save and lives on its own isCavSlot record).
+        let bodySvc = Number(appt.price||0);
+        if (dep > 0 && appt.cavTherapist && !isSameDay) {
+          const cavSlot = (allAppointments || []).find(a => a.isCavSlot && a.parentId === appt.id);
+          const cavReceived = Number(cavSlot?.price || 0);
+          if (isWeightLossService(appt.serviceName)) {
+            bodySvc = r2(bodySvc + dep);
+          } else {
+            const bodyMins = Number(appt.duration || 0);
+            const cavMins = Number(cavSlot?.duration || 0) || 15;
+            const allMins = bodyMins + cavMins;
+            bodySvc = allMins > 0 ? Math.round((bodySvc + cavReceived + dep) * bodyMins / allMins * 100) / 100 : r2(bodySvc + dep);
+          }
+        }
+        const svc = r2(bodySvc + Number(appt.cavPrice||0));
         const tip = r2(Number(appt.tip||0) + Number(appt.cavTip||0));
         const extra = Number(appt.extraTip||0);
         const extraSvc = Number(appt.extraPrice||0);
@@ -1835,8 +1873,6 @@ function ApptCard({ appt, onClick }) {
           : isSameDay ? ` ×${appt.ticketTotal}回` : "";
 
         const gc = (!isGiftCard && !isPromo) ? Number(appt.giftCardUsed||0) : 0;
-        const dep = isSameDay ? Number(appt.packageDepositAmount||0) : Number(appt.depositApplied||0);
-        const depDate = isSameDay ? appt.packageDepositDate : appt.depositPaidDate;
 
         return (
           <div style={{ fontSize: 11, marginTop: 2 }}>
@@ -1871,7 +1907,7 @@ function ApptCard({ appt, onClick }) {
               <div style={{ color: "#6A1B9A", fontSize: 10 }}>with {appt.cavTherapist}</div>
             )}
             {dep > 0 && (
-              <div style={{ color: "#2E7D32", fontSize: 10 }}>Deposit ${dep}{depDate ? ` ${depDate}` : ""}</div>
+              <div style={{ color: "#2E7D32", fontSize: 10 }}>💰デポジット${dep}按分済み{depDate ? ` ${depDate}` : ""}</div>
             )}
             {gc > 0 && (
               <div style={{ color: "#2E7D32", fontSize: 10 }}>GC使用 ${gc}</div>
