@@ -1214,7 +1214,7 @@ export default function SpaDailySheet() {
           <div style={{ color: "#fff", fontSize: 22, fontWeight: 700 }}>🌺 Spa Schedule</div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-          <input type="date" value={date} onChange={e => setDate(e.target.value)}
+          <DatePicker value={date} onChange={setDate}
             style={{ padding: "8px 12px", borderRadius: 8, border: "none", background: "rgba(255,255,255,0.15)", color: "#fff", fontSize: 14 }} />
           <button onClick={fetchSquare} disabled={squareLoading}
             style={{ padding: "8px 16px", borderRadius: 8, border: "none", background: squareLoading ? "#666" : "#E8A84A", color: "#fff", fontWeight: 700, cursor: squareLoading ? "not-allowed" : "pointer", fontSize: 13 }}>
@@ -2997,8 +2997,8 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                       </div>
                       <div>
                         <div style={{ fontSize: 10, color: "#2E7D32", marginBottom: 4 }}>Date Paid{errors.includes("packageDepositDate") && " ⚠️"}</div>
-                        <input type="date" value={form.packageDepositDate || ""}
-                          onChange={e => set("packageDepositDate", e.target.value)}
+                        <DatePicker value={form.packageDepositDate || ""}
+                          onChange={v => set("packageDepositDate", v)}
                           style={{ ...inputStyle, borderColor: errors.includes("packageDepositDate") ? "#C62828" : "#81C784", borderWidth: errors.includes("packageDepositDate") ? 2 : 1 }} />
                       </div>
                     </div>
@@ -3165,8 +3165,8 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                     </div>
                     <div>
                       <div style={{ fontSize: 10, color: "#2E7D32", marginBottom: 4 }}>Date Paid{errors.includes("depositPaidDate") && " ⚠️"}</div>
-                      <input type="date" value={form.depositPaidDate || ""}
-                        onChange={e => set("depositPaidDate", e.target.value)}
+                      <DatePicker value={form.depositPaidDate || ""}
+                        onChange={v => set("depositPaidDate", v)}
                         style={{ ...inputStyle, borderColor: errors.includes("depositPaidDate") ? "#C62828" : "#81C784", borderWidth: errors.includes("depositPaidDate") ? 2 : 1 }} />
                     </div>
                   </div>
@@ -4041,7 +4041,7 @@ function DepositModal({ deposit, onSave, onDelete, onClose }) {
         {!isCancellation && (
           <Field label={`Scheduled Visit Date/Time (optional${isGiftCard ? " — e.g. if fully prepaid by gift card" : ""})`}>
             <div style={{ display: "flex", gap: 8 }}>
-              <input type="date" value={form.appointmentDate || ""} onChange={e => set("appointmentDate", e.target.value)} style={{ ...inputStyle, flex: 1 }} />
+              <DatePicker value={form.appointmentDate || ""} onChange={v => set("appointmentDate", v)} style={{ ...inputStyle, flex: 1 }} />
               <input type="time" value={form.appointmentTime || ""} onChange={e => set("appointmentTime", e.target.value)} style={{ ...inputStyle, width: 100 }} />
             </div>
             {form.appointmentDate && form.clientName && (
@@ -4413,7 +4413,7 @@ function RefundModal({ rf, onSave, onDelete, onClose }) {
           <input value={form.clientName} onChange={e => set("clientName", e.target.value)} style={inputStyle} placeholder="e.g. Tanaka" />
         </Field>
         <Field label="Visit Date (optional)">
-          <input type="date" value={form.originalDate || ""} onChange={e => set("originalDate", e.target.value)} style={inputStyle} />
+          <DatePicker value={form.originalDate || ""} onChange={v => set("originalDate", v)} style={inputStyle} />
         </Field>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
           <Field label="Treatment Refund Amount ($)">
@@ -4484,7 +4484,7 @@ function ForgottenTipModal({ ft, onSave, onDelete, onClose }) {
           </div>
         </Field>
         <Field label="Visit Date (optional — the date the treatment actually happened)">
-          <input type="date" value={form.originalDate || ""} onChange={e => set("originalDate", e.target.value)} style={inputStyle} />
+          <DatePicker value={form.originalDate || ""} onChange={v => set("originalDate", v)} style={inputStyle} />
         </Field>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
           <Field label="Forgotten Treatment Amount ($)">
@@ -4582,6 +4582,39 @@ function MonthPicker({ value, onChange, style }) {
       </select>
       <input type="number" value={y} onChange={e => onChange(`${e.target.value}-${String(m).padStart(2, "0")}`)}
         style={{ ...style, width: 80 }} />
+    </div>
+  );
+}
+
+// Same reasoning as MonthPicker above: native <input type="date">'s calendar popup (era labels
+// like "令和", "今日"/Today, "削除"/Clear) renders in the browser's UI language, not the page's —
+// this custom picker has no native popup at all, so it can't leak the browser's language. Accepts
+// and emits "" for date fields that are genuinely optional (e.g. an unset deposit date) rather
+// than silently defaulting to today, which would make an unset field look set.
+function DatePicker({ value, onChange, style }) {
+  const [y, m, d] = value ? value.split("-").map(Number) : [null, null, null];
+  const daysInMonth = (y && m) ? new Date(y, m, 0).getDate() : 31;
+  const commit = (ny, nm, nd) => {
+    if (!ny || !nm || !nd) { onChange(""); return; }
+    const maxDay = new Date(ny, nm, 0).getDate();
+    onChange(`${ny}-${String(nm).padStart(2, "0")}-${String(Math.min(nd, maxDay)).padStart(2, "0")}`);
+  };
+  const thisYear = new Date().getFullYear();
+  return (
+    <div style={{ display: "flex", gap: 4 }}>
+      <select value={m || ""} onChange={e => commit(y || thisYear, Number(e.target.value), d || 1)} style={style}>
+        <option value="">Month</option>
+        {MONTH_NAMES.map((name, i) => <option key={i} value={i + 1}>{name}</option>)}
+      </select>
+      <select value={d || ""} onChange={e => commit(y || thisYear, m || 1, Number(e.target.value))} style={{ ...style, width: 62 }}>
+        <option value="">Day</option>
+        {Array.from({ length: daysInMonth }, (_, i) => i + 1).map(day => <option key={day} value={day}>{day}</option>)}
+      </select>
+      <input type="number" value={y || ""} placeholder="Year" onChange={e => {
+        const ny = Number(e.target.value);
+        if (!ny) { onChange(""); return; }
+        commit(ny, m || 1, d || 1);
+      }} style={{ ...style, width: 72 }} />
     </div>
   );
 }
