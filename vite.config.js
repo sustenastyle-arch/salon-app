@@ -1,5 +1,17 @@
 import { defineConfig, loadEnv } from 'vite'
 import react from '@vitejs/plugin-react'
+import { getDay, setDay, getDaysInRange, getAllDayBlobs, setDays, checkAuth } from './api/_lib/dayDataStore.js'
+
+function readJsonBody(req) {
+  return new Promise((resolve, reject) => {
+    let body = ''
+    req.on('data', (chunk) => { body += chunk })
+    req.on('end', () => {
+      try { resolve(body ? JSON.parse(body) : {}) } catch (e) { reject(e) }
+    })
+    req.on('error', reject)
+  })
+}
 
 // Dev-only middleware that proxies Square's Gift Card Activities API.
 // Keeps SQUARE_ACCESS_TOKEN on the server side (never sent to the browser).
@@ -460,10 +472,199 @@ function squareBookingsApi(env) {
   }
 }
 
+// Dev-only middleware — production equivalent is api/day-data.js, api/day-data-range.js,
+// api/deposits.js, api/export-all.js, api/import-all.js. All of them (dev and prod alike)
+// share the same Redis logic via api/_lib/dayDataStore.js, so only the request/response
+// plumbing below is duplicated, not the actual store logic.
+function dayDataApi(env) {
+  return {
+    name: 'day-data-api',
+    configureServer(server) {
+      // dayDataStore.js reads these from process.env (matching how Vercel injects them in
+      // production) — under `vite dev` nothing copies .env into process.env automatically,
+      // so do it here before any request can reach the (lazily constructed) Redis client.
+      // Assigning `undefined` to a process.env property coerces it to the string "undefined"
+      // (process.env values are always strings) — only assign when actually set, so an unset
+      // VITE_APP_PASSWORD in local .env stays truly unset instead of becoming a truthy string.
+      if (env.KV_REST_API_URL) process.env.KV_REST_API_URL = env.KV_REST_API_URL
+      if (env.KV_REST_API_TOKEN) process.env.KV_REST_API_TOKEN = env.KV_REST_API_TOKEN
+      if (env.VITE_APP_PASSWORD) process.env.VITE_APP_PASSWORD = env.VITE_APP_PASSWORD
+
+      const authed = (req, res) => {
+        if (!checkAuth(req)) {
+          res.statusCode = 401
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify({ error: 'unauthorized' }))
+          return false
+        }
+        return true
+      }
+
+      server.middlewares.use('/api/day-data', async (req, res) => {
+        if (!authed(req, res)) return
+        try {
+          const url = new URL(req.url, 'http://localhost')
+          if (req.method === 'GET') {
+            const date = url.searchParams.get('date')
+            if (!date) {
+              res.statusCode = 400
+              res.setHeader('Content-Type', 'application/json')
+              res.end(JSON.stringify({ error: 'date query param required (YYYY-MM-DD)' }))
+              return
+            }
+            const data = await getDay(date)
+            res.setHeader('Content-Type', 'application/json')
+            res.end(JSON.stringify({ data }))
+            return
+          }
+          if (req.method === 'POST') {
+            const body = await readJsonBody(req)
+            if (!body.date || body.data === undefined) {
+              res.statusCode = 400
+              res.setHeader('Content-Type', 'application/json')
+              res.end(JSON.stringify({ error: 'date and data required' }))
+              return
+            }
+            await setDay(body.date, body.data)
+            res.setHeader('Content-Type', 'application/json')
+            res.end(JSON.stringify({ ok: true }))
+            return
+          }
+          res.statusCode = 405
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify({ error: 'method not allowed' }))
+        } catch (e) {
+          res.statusCode = 500
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify({ error: String(e) }))
+        }
+      })
+
+      server.middlewares.use('/api/day-data-range', async (req, res) => {
+        if (!authed(req, res)) return
+        try {
+          const url = new URL(req.url, 'http://localhost')
+          const start = url.searchParams.get('start')
+          const end = url.searchParams.get('end')
+          if (!start || !end) {
+            res.statusCode = 400
+            res.setHeader('Content-Type', 'application/json')
+            res.end(JSON.stringify({ error: 'start and end query params required (YYYY-MM-DD)' }))
+            return
+          }
+          const days = await getDaysInRange(start, end)
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify({ days }))
+        } catch (e) {
+          res.statusCode = 500
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify({ error: String(e) }))
+        }
+      })
+
+      server.middlewares.use('/api/deposits', async (req, res) => {
+        if (!authed(req, res)) return
+        try {
+          const url = new URL(req.url, 'http://localhost')
+          const mode = url.searchParams.get('mode')
+          const allDays = await getAllDayBlobs()
+          if (mode === 'date') {
+            const date = url.searchParams.get('date')
+            if (!date) {
+              res.statusCode = 400
+              res.setHeader('Content-Type', 'application/json')
+              res.end(JSON.stringify({ error: 'date query param required' }))
+              return
+            }
+            const found = []
+            for (const [recordedDate, d] of Object.entries(allDays)) {
+              (d.deposits || []).forEach((dep) => {
+                if (dep.appointmentDate === date && (dep.type === 'deposit' || dep.type === 'giftcard')) {
+                  found.push({ ...dep, recordedDate })
+                }
+              })
+            }
+            found.sort((a, b) => (a.appointmentTime || '').localeCompare(b.appointmentTime || ''))
+            res.setHeader('Content-Type', 'application/json')
+            res.end(JSON.stringify({ deposits: found }))
+            return
+          }
+          if (mode === 'client') {
+            const name = (url.searchParams.get('name') || '').toLowerCase().trim()
+            if (!name) {
+              res.setHeader('Content-Type', 'application/json')
+              res.end(JSON.stringify({ deposits: [] }))
+              return
+            }
+            const found = []
+            for (const [sheetDate, d] of Object.entries(allDays)) {
+              (d.deposits || []).forEach((dep) => {
+                if ((dep.clientName || '').toLowerCase().trim() === name && (dep.type === 'deposit' || dep.type === 'giftcard')) {
+                  found.push({ ...dep, sheetDate })
+                }
+              })
+            }
+            found.sort((a, b) => a.sheetDate.localeCompare(b.sheetDate))
+            res.setHeader('Content-Type', 'application/json')
+            res.end(JSON.stringify({ deposits: found }))
+            return
+          }
+          res.statusCode = 400
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify({ error: 'mode query param required (date|client)' }))
+        } catch (e) {
+          res.statusCode = 500
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify({ error: String(e) }))
+        }
+      })
+
+      server.middlewares.use('/api/export-all', async (req, res) => {
+        if (!authed(req, res)) return
+        try {
+          const days = await getAllDayBlobs()
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify({ days }))
+        } catch (e) {
+          res.statusCode = 500
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify({ error: String(e) }))
+        }
+      })
+
+      server.middlewares.use('/api/import-all', async (req, res) => {
+        if (!authed(req, res)) return
+        if (req.method !== 'POST') {
+          res.statusCode = 405
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify({ error: 'method not allowed' }))
+          return
+        }
+        try {
+          const days = await readJsonBody(req)
+          if (typeof days !== 'object' || Object.keys(days).length === 0) {
+            res.statusCode = 400
+            res.setHeader('Content-Type', 'application/json')
+            res.end(JSON.stringify({ error: 'body must be a non-empty {date: data} object' }))
+            return
+          }
+          const count = await setDays(days)
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify({ count }))
+        } catch (e) {
+          res.statusCode = 500
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify({ error: String(e) }))
+        }
+      })
+    },
+  }
+}
+
 // https://vite.dev/config/
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
   return {
-    plugins: [react(), squareGiftCardApi(env), squareBookingsApi(env), squarePaymentsApi(env), squareDepositsApi(env)],
+    plugins: [react(), squareGiftCardApi(env), squareBookingsApi(env), squarePaymentsApi(env), squareDepositsApi(env), dayDataApi(env)],
   }
 })

@@ -301,6 +301,20 @@ const formatCurrency = (n) => `$${Number(n || 0).toLocaleString("en-US", { minim
 const r2 = (n) => Math.round(n * 100) / 100;
 const formatTime = (hour) => { const h = hour % 12 || 12; return `${h}:00 ${hour < 12 ? "AM" : "PM"}`; };
 
+// All day data now lives in a shared cloud store (see api/_lib/dayDataStore.js) instead of
+// localStorage, so the same data shows up on every computer instead of being stuck in
+// whichever browser it was typed into. The site password (already shipped to this bundle
+// for PasswordGate) doubles as this API's shared secret — see checkAuth in dayDataStore.js.
+const API_PASSWORD = import.meta.env.VITE_APP_PASSWORD || "";
+async function apiFetch(path, options = {}) {
+  const res = await fetch(path, {
+    ...options,
+    headers: { "Content-Type": "application/json", "X-App-Password": API_PASSWORD, ...(options.headers || {}) },
+  });
+  if (!res.ok) throw new Error(`API error ${res.status}`);
+  return res.json();
+}
+
 const PaymentToggle = ({ value, onChange, small }) => (
   <div style={{ display: "flex", gap: 6 }}>
     {["cash", "card"].map(pt => (
@@ -348,10 +362,12 @@ export default function SpaDailySheet() {
   const [showStaffPicker, setShowStaffPicker] = useState(false);
   const [toast, setToast] = useState(null);
   const [depositsForDate, setDepositsForDate] = useState([]);
+  const [clientDepositHistory, setClientDepositHistory] = useState([]);
   const [gcSyncLoading, setGcSyncLoading] = useState(false);
   const [depositSyncLoading, setDepositSyncLoading] = useState(false);
   const [reconcileLoading, setReconcileLoading] = useState(false);
   const [reconcileResult, setReconcileResult] = useState(null);
+  const [dayLoading, setDayLoading] = useState(true);
 
   const showToast = (msg, type = "success") => { setToast({ msg, type }); setTimeout(() => setToast(null), 3000); };
 
@@ -377,65 +393,121 @@ export default function SpaDailySheet() {
   });
 
   useEffect(() => {
+    let cancelled = false;
     setReconcileResult(null);
-    const saved = localStorage.getItem(`spa-sheet-${date}`);
-    if (saved) {
-      const d = JSON.parse(saved);
-      setAppointments(d.appointments || []);
-      setRetails(d.retails || []);
-      setDeposits(d.deposits || []);
-      setTicketPurchases(d.ticketPurchases || []);
-      setStaffPurchases(d.staffPurchases || []);
-      setRefunds(d.refunds || []);
-      setForgottenTips(d.forgottenTips || []);
-      setLocked(!!d.locked);
-      // Working-staff selection is per-day (who actually came in that day) — without this,
-      // leaving the day and coming back always reset it to "everyone", which pushed staff
-      // who weren't actually working that day back into the schedule grid as extra columns.
-      // Days saved before this field existed have no d.workingStaff — for those, derive it
-      // from who actually has an appointment that day instead of falling back to "everyone".
-      if (d.workingStaff && d.workingStaff.length > 0) {
-        setWorkingStaff(d.workingStaff);
-      } else {
-        const derived = [...new Set((d.appointments || []).map(a => a.therapist).filter(t => t && THERAPISTS.includes(t)))];
-        setWorkingStaff(derived.length > 0 ? derived : THERAPISTS);
+    setDayLoading(true);
+    (async () => {
+      try {
+        const { data: d } = await apiFetch(`/api/day-data?date=${date}`);
+        if (cancelled) return;
+        if (d) {
+          setAppointments(d.appointments || []);
+          setRetails(d.retails || []);
+          setDeposits(d.deposits || []);
+          setTicketPurchases(d.ticketPurchases || []);
+          setStaffPurchases(d.staffPurchases || []);
+          setRefunds(d.refunds || []);
+          setForgottenTips(d.forgottenTips || []);
+          setLocked(!!d.locked);
+          // Working-staff selection is per-day (who actually came in that day) — without this,
+          // leaving the day and coming back always reset it to "everyone", which pushed staff
+          // who weren't actually working that day back into the schedule grid as extra columns.
+          // Days saved before this field existed have no d.workingStaff — for those, derive it
+          // from who actually has an appointment that day instead of falling back to "everyone".
+          if (d.workingStaff && d.workingStaff.length > 0) {
+            setWorkingStaff(d.workingStaff);
+          } else {
+            const derived = [...new Set((d.appointments || []).map(a => a.therapist).filter(t => t && THERAPISTS.includes(t)))];
+            setWorkingStaff(derived.length > 0 ? derived : THERAPISTS);
+          }
+        } else {
+          setAppointments([]); setRetails([]); setDeposits([]); setTicketPurchases([]); setStaffPurchases([]); setRefunds([]); setForgottenTips([]);
+          setLocked(false);
+          setWorkingStaff(THERAPISTS);
+        }
+      } catch (e) {
+        if (!cancelled) {
+          console.error("Day load error:", e);
+          showToast("データの読み込みに失敗しました。ネット接続を確認して再読み込みしてください", "error");
+        }
+      } finally {
+        if (!cancelled) setDayLoading(false);
       }
-    } else {
-      setAppointments([]); setRetails([]); setDeposits([]); setTicketPurchases([]); setStaffPurchases([]); setRefunds([]); setForgottenTips([]);
-      setLocked(false);
-      setWorkingStaff(THERAPISTS);
-    }
+    })();
+    return () => { cancelled = true; };
   }, [date]);
 
-  // Scan all localStorage entries for deposits/gift-card prepayments with appointmentDate
-  // matching current date — covers both a partial deposit and a fully prepaid ("ギフト"
-  // as advance payment) visit, since either can be booked for a future date that later changes.
+  // Scan every saved day for deposits/gift-card prepayments with appointmentDate matching
+  // the current date — covers both a partial deposit and a fully prepaid ("ギフト" as advance
+  // payment) visit, since either can be booked for a future date that later changes. Runs
+  // server-side now (api/deposits.js) instead of enumerating every localStorage key.
   useEffect(() => {
-    const found = [];
-    for (let i = 0; i < localStorage.length; i++) {
-      const key = localStorage.key(i);
-      if (!key?.startsWith("spa-sheet-")) continue;
+    let cancelled = false;
+    (async () => {
       try {
-        const d = JSON.parse(localStorage.getItem(key));
-        const recordedDate = key.replace("spa-sheet-", "");
-        (d.deposits || []).forEach(dep => {
-          if (dep.appointmentDate === date && (dep.type === "deposit" || dep.type === "giftcard")) {
-            found.push({ ...dep, recordedDate });
-          }
-        });
-      } catch {}
-    }
-    setDepositsForDate(found.sort((a, b) => (a.appointmentTime || "").localeCompare(b.appointmentTime || "")));
+        const { deposits: found } = await apiFetch(`/api/deposits?mode=date&date=${date}`);
+        if (!cancelled) setDepositsForDate(found);
+      } catch (e) {
+        if (!cancelled) console.error("Deposit scan error:", e);
+      }
+    })();
+    return () => { cancelled = true; };
   }, [date, deposits]);
 
-  const save = useCallback((appts, rets, deps, tps, sps, refs, fts, ws) => {
-    localStorage.setItem(`spa-sheet-${date}`, JSON.stringify({ appointments: appts, retails: rets, deposits: deps, ticketPurchases: tps || [], staffPurchases: sps || [], refunds: refs || [], forgottenTips: fts || [], locked, workingStaff: ws || workingStaff }));
+  // A client's deposit/gift-card history, shown when their appointment modal opens — was an
+  // inline localStorage-enumerating IIFE before; now a network call, so it has to live in
+  // state+effect instead of a synchronous JSX expression.
+  useEffect(() => {
+    const name = (editingAppt?.clientName || "").toLowerCase().trim();
+    if (!name) { setClientDepositHistory([]); return; }
+    let cancelled = false;
+    (async () => {
+      try {
+        const { deposits: found } = await apiFetch(`/api/deposits?mode=client&name=${encodeURIComponent(name)}`);
+        if (!cancelled) setClientDepositHistory(found);
+      } catch (e) {
+        if (!cancelled) console.error("Client deposit history error:", e);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [editingAppt?.clientName]);
+
+  const save = useCallback(async (appts, rets, deps, tps, sps, refs, fts, ws) => {
+    try {
+      await apiFetch("/api/day-data", {
+        method: "POST",
+        body: JSON.stringify({
+          date,
+          data: { appointments: appts, retails: rets, deposits: deps, ticketPurchases: tps || [], staffPurchases: sps || [], refunds: refs || [], forgottenTips: fts || [], locked, workingStaff: ws || workingStaff },
+        }),
+      });
+      return true;
+    } catch (e) {
+      console.error("Save error:", e);
+      showToast("保存に失敗しました。ネット接続を確認してもう一度お試しください", "error");
+      return false;
+    }
   }, [date, locked, workingStaff]);
 
   // Toggling the lock writes immediately (doesn't wait for another edit) using current state.
-  const setDayLocked = (newLocked) => {
-    localStorage.setItem(`spa-sheet-${date}`, JSON.stringify({ appointments, retails, deposits, ticketPurchases, staffPurchases, refunds, forgottenTips, locked: newLocked, workingStaff }));
-    setLocked(newLocked);
+  // Only flips the UI state after the cloud write actually succeeds, so "locked" shown on
+  // screen can't diverge from what the server recorded.
+  const setDayLocked = async (newLocked) => {
+    try {
+      await apiFetch("/api/day-data", {
+        method: "POST",
+        body: JSON.stringify({
+          date,
+          data: { appointments, retails, deposits, ticketPurchases, staffPurchases, refunds, forgottenTips, locked: newLocked, workingStaff },
+        }),
+      });
+      setLocked(newLocked);
+      return true;
+    } catch (e) {
+      console.error("Lock toggle error:", e);
+      showToast("保存に失敗しました。ネット接続を確認してもう一度お試しください", "error");
+      return false;
+    }
   };
 
   const MANAGER_PIN = import.meta.env.VITE_MANAGER_PIN || "0000";
@@ -443,19 +515,17 @@ export default function SpaDailySheet() {
     if (locked) { showToast("🔒 この日は確定済みです。解除してから編集してください", "error"); return true; }
     return false;
   };
-  const handleLockToggle = () => {
+  const handleLockToggle = async () => {
     if (!locked) {
       if (window.confirm(`${date} を確定してロックしますか？\nロック後は解除するまで編集・削除ができなくなります。`)) {
-        setDayLocked(true);
-        showToast("🔒 この日を確定しました");
+        if (await setDayLocked(true)) showToast("🔒 この日を確定しました");
       }
       return;
     }
     const pin = window.prompt("解除するにはPINコードを入力してください");
     if (pin === null) return;
     if (pin === MANAGER_PIN) {
-      setDayLocked(false);
-      showToast("🔓 ロックを解除しました");
+      if (await setDayLocked(false)) showToast("🔓 ロックを解除しました");
     } else {
       showToast("PINが違います", "error");
     }
@@ -518,7 +588,7 @@ export default function SpaDailySheet() {
         const bookingTherapists = [...new Set(newAppts.map(a => a.therapist).filter(t => t && THERAPISTS.includes(t)))];
         const nextWorkingStaff = bookingTherapists.length > 0 ? bookingTherapists : cur.workingStaff;
         if (bookingTherapists.length > 0) setWorkingStaff(bookingTherapists);
-        save(merged, cur.retails, cur.deposits, cur.ticketPurchases, cur.staffPurchases, cur.refunds, cur.forgottenTips, nextWorkingStaff);
+        await save(merged, cur.retails, cur.deposits, cur.ticketPurchases, cur.staffPurchases, cur.refunds, cur.forgottenTips, nextWorkingStaff);
 
         showToast(`✅ ${newAppts.length}件取得しました`);
       }
@@ -574,7 +644,7 @@ export default function SpaDailySheet() {
       }
       const next = [...cur.deposits, ...newDeposits];
       setDeposits(next);
-      save(cur.appointments, cur.retails, next, cur.ticketPurchases, cur.staffPurchases, cur.refunds, cur.forgottenTips);
+      await save(cur.appointments, cur.retails, next, cur.ticketPurchases, cur.staffPurchases, cur.refunds, cur.forgottenTips);
       showToast(`✅ ギフトカード購入 ${newDeposits.length}件追加しました`);
     } catch (e) {
       console.error("Gift card sync error:", e);
@@ -631,7 +701,7 @@ export default function SpaDailySheet() {
       }
       const next = [...cur.deposits, ...newDeposits];
       setDeposits(next);
-      save(cur.appointments, cur.retails, next, cur.ticketPurchases, cur.staffPurchases, cur.refunds, cur.forgottenTips);
+      await save(cur.appointments, cur.retails, next, cur.ticketPurchases, cur.staffPurchases, cur.refunds, cur.forgottenTips);
       showToast(`✅ デポジット ${newDeposits.length}件追加しました`);
     } catch (e) {
       console.error("Deposit sync error:", e);
@@ -663,36 +733,36 @@ export default function SpaDailySheet() {
     }
   };
 
-  // Downloads every saved day as one JSON file — the export counterpart to handleImportBackup
-  // below, for migrating data between environments or pulling a copy for offline use (e.g.
-  // filling in an external spreadsheet from days this browser has recorded).
-  const handleExportBackup = () => {
-    const data = {};
-    for (let i = 0; i < localStorage.length; i++) {
-      const key = localStorage.key(i);
-      if (key?.startsWith("spa-sheet-")) data[key.replace("spa-sheet-", "")] = localStorage.getItem(key);
+  // Downloads every saved day (from the cloud store, not this browser) as one JSON file — the
+  // export counterpart to handleImportBackup below, for an offline copy or a manual transfer.
+  const handleExportBackup = async () => {
+    try {
+      const { days } = await apiFetch("/api/export-all");
+      const blob = new Blob([JSON.stringify(days)], { type: "application/json" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `spa-sheet-backup-${new Date().toISOString().slice(0, 10)}.json`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+      showToast(`✅ ${Object.keys(days).length}日分のデータをバックアップしました`);
+    } catch (e) {
+      console.error("Export error:", e);
+      showToast("バックアップに失敗しました。ネット接続を確認してもう一度お試しください", "error");
     }
-    const blob = new Blob([JSON.stringify(data)], { type: "application/json" });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = `spa-sheet-backup-${new Date().toISOString().slice(0, 10)}.json`;
-    a.click();
-    URL.revokeObjectURL(a.href);
-    showToast(`✅ ${Object.keys(data).length}日分のデータをバックアップしました`);
   };
 
-  // One-time helper for migrating data between environments (e.g. localhost -> production) —
-  // this app has no backend, so each origin's localStorage is otherwise completely isolated
-  // and there's no other way to carry data across them.
+  // Restores a previously exported JSON file into the shared cloud store (bulk upsert via
+  // /api/import-all — accepts both this format and the older per-browser localStorage export
+  // format, since setDays() on the server normalizes either raw JSON strings or parsed objects).
   const handleImportBackup = (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = () => {
+    reader.onload = async () => {
       try {
         const data = JSON.parse(reader.result);
-        Object.entries(data).forEach(([d, v]) => localStorage.setItem(`spa-sheet-${d}`, v));
-        showToast(`✅ ${Object.keys(data).length}日分のデータを復元しました`);
+        const { count } = await apiFetch("/api/import-all", { method: "POST", body: JSON.stringify(data) });
+        showToast(`✅ ${count}日分のデータを復元しました`);
         window.location.reload();
       } catch (err) {
         showToast("読み込みに失敗しました: " + err.message, "error");
@@ -700,6 +770,30 @@ export default function SpaDailySheet() {
     };
     reader.readAsText(file);
     e.target.value = "";
+  };
+
+  // One-time helper for the shop PC (or any browser with real pre-cloud-sync data still sitting
+  // in its localStorage) to push that data into the shared cloud store — after this runs once,
+  // every computer reads/writes the same place instead of each browser keeping its own copy.
+  const handleMigrateLocalToCloud = async () => {
+    const data = {};
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key?.startsWith("spa-sheet-")) data[key.replace("spa-sheet-", "")] = localStorage.getItem(key);
+    }
+    if (Object.keys(data).length === 0) {
+      showToast("この端末には移行するデータがありません", "info");
+      return;
+    }
+    if (!window.confirm(`この端末に保存されている${Object.keys(data).length}日分のデータをクラウドへ移行します。よろしいですか？`)) return;
+    try {
+      const { count } = await apiFetch("/api/import-all", { method: "POST", body: JSON.stringify(data) });
+      showToast(`✅ ${count}日分のデータをクラウドへ移行しました`);
+      window.location.reload();
+    } catch (e) {
+      console.error("Migration error:", e);
+      showToast("移行に失敗しました。ネット接続を確認してもう一度お試しください", "error");
+    }
   };
 
   const calcCavStartTime = (startTime, duration, cavDuration = 15) => {
@@ -711,7 +805,7 @@ export default function SpaDailySheet() {
     return `${String(ch).padStart(2, "0")}:${String(cm).padStart(2, "0")}`;
   };
 
-  const saveAppt = (appt) => {
+  const saveAppt = async (appt) => {
     if (guardLocked()) return;
     const cavSlotId = `cav-${appt.id}`;
 
@@ -767,14 +861,15 @@ export default function SpaDailySheet() {
     if (cavSlot) next = [...next, cavSlot];
     next.sort((a, b) => (a.startTime || "").localeCompare(b.startTime || ""));
 
-    setAppointments(next); save(next, retails, deposits, ticketPurchases, staffPurchases, refunds, forgottenTips); setEditingAppt(null); showToast("保存しました");
+    setAppointments(next);
+    if (await save(next, retails, deposits, ticketPurchases, staffPurchases, refunds, forgottenTips)) { setEditingAppt(null); showToast("保存しました"); }
   };
 
-  const deleteAppt = (id) => {
+  const deleteAppt = async (id) => {
     if (guardLocked()) return;
     const cavSlotId = `cav-${id}`;
     const next = appointments.filter(a => a.id !== id && a.id !== cavSlotId);
-    setAppointments(next); save(next, retails, deposits, ticketPurchases, staffPurchases, refunds, forgottenTips); setEditingAppt(null);
+    setAppointments(next); await save(next, retails, deposits, ticketPurchases, staffPurchases, refunds, forgottenTips); setEditingAppt(null);
   };
 
   // When editing an existing appointment, restore cavPrice/cavTip from the cav slot.
@@ -818,18 +913,18 @@ export default function SpaDailySheet() {
     }
     setEditingAppt(appt);
   };
-  const saveRetail = (r) => { if (guardLocked()) return; const next = retails.find(x => x.id === r.id) ? retails.map(x => x.id === r.id ? r : x) : [...retails, r]; setRetails(next); save(appointments, next, deposits, ticketPurchases, staffPurchases, refunds, forgottenTips); setEditingRetail(null); showToast("物販保存"); };
-  const deleteRetail = (id) => { if (guardLocked()) return; const next = retails.filter(r => r.id !== id); setRetails(next); save(appointments, next, deposits, ticketPurchases, staffPurchases, refunds, forgottenTips); };
-  const saveDeposit = (d) => { if (guardLocked()) return; const next = deposits.find(x => x.id === d.id) ? deposits.map(x => x.id === d.id ? d : x) : [...deposits, d]; setDeposits(next); save(appointments, retails, next, ticketPurchases, staffPurchases, refunds, forgottenTips); setEditingDeposit(null); showToast("保存しました"); };
-  const deleteDeposit = (id) => { if (guardLocked()) return; const next = deposits.filter(d => d.id !== id); setDeposits(next); save(appointments, retails, next, ticketPurchases, staffPurchases, refunds, forgottenTips); };
-  const saveTicketPurchase = (tp) => { if (guardLocked()) return; const next = ticketPurchases.find(x => x.id === tp.id) ? ticketPurchases.map(x => x.id === tp.id ? tp : x) : [...ticketPurchases, tp]; setTicketPurchases(next); save(appointments, retails, deposits, next, staffPurchases, refunds, forgottenTips); setEditingTicketPurchase(null); showToast("🎟️ チケット購入保存"); };
-  const deleteTicketPurchase = (id) => { if (guardLocked()) return; const next = ticketPurchases.filter(tp => tp.id !== id); setTicketPurchases(next); save(appointments, retails, deposits, next, staffPurchases, refunds, forgottenTips); };
-  const saveStaffPurchase = (sp) => { if (guardLocked()) return; const next = staffPurchases.find(x => x.id === sp.id) ? staffPurchases.map(x => x.id === sp.id ? sp : x) : [...staffPurchases, sp]; setStaffPurchases(next); save(appointments, retails, deposits, ticketPurchases, next, refunds, forgottenTips); setEditingStaffPurchase(null); showToast("👩‍💼 社販保存"); };
-  const deleteStaffPurchase = (id) => { if (guardLocked()) return; const next = staffPurchases.filter(sp => sp.id !== id); setStaffPurchases(next); save(appointments, retails, deposits, ticketPurchases, next, refunds, forgottenTips); };
-  const saveRefund = (rf) => { if (guardLocked()) return; const next = refunds.find(x => x.id === rf.id) ? refunds.map(x => x.id === rf.id ? rf : x) : [...refunds, rf]; setRefunds(next); save(appointments, retails, deposits, ticketPurchases, staffPurchases, next, forgottenTips); setEditingRefund(null); showToast("🔙 返金を記録しました"); };
-  const deleteRefund = (id) => { if (guardLocked()) return; const next = refunds.filter(rf => rf.id !== id); setRefunds(next); save(appointments, retails, deposits, ticketPurchases, staffPurchases, next, forgottenTips); };
-  const saveForgottenTip = (ft) => { if (guardLocked()) return; const next = forgottenTips.find(x => x.id === ft.id) ? forgottenTips.map(x => x.id === ft.id ? ft : x) : [...forgottenTips, ft]; setForgottenTips(next); save(appointments, retails, deposits, ticketPurchases, staffPurchases, refunds, next); setEditingForgottenTip(null); showToast("🙏 打ち忘れ入力を記録しました"); };
-  const deleteForgottenTip = (id) => { if (guardLocked()) return; const next = forgottenTips.filter(ft => ft.id !== id); setForgottenTips(next); save(appointments, retails, deposits, ticketPurchases, staffPurchases, refunds, next); };
+  const saveRetail = async (r) => { if (guardLocked()) return; const next = retails.find(x => x.id === r.id) ? retails.map(x => x.id === r.id ? r : x) : [...retails, r]; setRetails(next); if (await save(appointments, next, deposits, ticketPurchases, staffPurchases, refunds, forgottenTips)) { setEditingRetail(null); showToast("物販保存"); } };
+  const deleteRetail = async (id) => { if (guardLocked()) return; const next = retails.filter(r => r.id !== id); setRetails(next); await save(appointments, next, deposits, ticketPurchases, staffPurchases, refunds, forgottenTips); };
+  const saveDeposit = async (d) => { if (guardLocked()) return; const next = deposits.find(x => x.id === d.id) ? deposits.map(x => x.id === d.id ? d : x) : [...deposits, d]; setDeposits(next); if (await save(appointments, retails, next, ticketPurchases, staffPurchases, refunds, forgottenTips)) { setEditingDeposit(null); showToast("保存しました"); } };
+  const deleteDeposit = async (id) => { if (guardLocked()) return; const next = deposits.filter(d => d.id !== id); setDeposits(next); await save(appointments, retails, next, ticketPurchases, staffPurchases, refunds, forgottenTips); };
+  const saveTicketPurchase = async (tp) => { if (guardLocked()) return; const next = ticketPurchases.find(x => x.id === tp.id) ? ticketPurchases.map(x => x.id === tp.id ? tp : x) : [...ticketPurchases, tp]; setTicketPurchases(next); if (await save(appointments, retails, deposits, next, staffPurchases, refunds, forgottenTips)) { setEditingTicketPurchase(null); showToast("🎟️ チケット購入保存"); } };
+  const deleteTicketPurchase = async (id) => { if (guardLocked()) return; const next = ticketPurchases.filter(tp => tp.id !== id); setTicketPurchases(next); await save(appointments, retails, deposits, next, staffPurchases, refunds, forgottenTips); };
+  const saveStaffPurchase = async (sp) => { if (guardLocked()) return; const next = staffPurchases.find(x => x.id === sp.id) ? staffPurchases.map(x => x.id === sp.id ? sp : x) : [...staffPurchases, sp]; setStaffPurchases(next); if (await save(appointments, retails, deposits, ticketPurchases, next, refunds, forgottenTips)) { setEditingStaffPurchase(null); showToast("👩‍💼 社販保存"); } };
+  const deleteStaffPurchase = async (id) => { if (guardLocked()) return; const next = staffPurchases.filter(sp => sp.id !== id); setStaffPurchases(next); await save(appointments, retails, deposits, ticketPurchases, next, refunds, forgottenTips); };
+  const saveRefund = async (rf) => { if (guardLocked()) return; const next = refunds.find(x => x.id === rf.id) ? refunds.map(x => x.id === rf.id ? rf : x) : [...refunds, rf]; setRefunds(next); if (await save(appointments, retails, deposits, ticketPurchases, staffPurchases, next, forgottenTips)) { setEditingRefund(null); showToast("🔙 返金を記録しました"); } };
+  const deleteRefund = async (id) => { if (guardLocked()) return; const next = refunds.filter(rf => rf.id !== id); setRefunds(next); await save(appointments, retails, deposits, ticketPurchases, staffPurchases, next, forgottenTips); };
+  const saveForgottenTip = async (ft) => { if (guardLocked()) return; const next = forgottenTips.find(x => x.id === ft.id) ? forgottenTips.map(x => x.id === ft.id ? ft : x) : [...forgottenTips, ft]; setForgottenTips(next); if (await save(appointments, retails, deposits, ticketPurchases, staffPurchases, refunds, next)) { setEditingForgottenTip(null); showToast("🙏 打ち忘れ入力を記録しました"); } };
+  const deleteForgottenTip = async (id) => { if (guardLocked()) return; const next = forgottenTips.filter(ft => ft.id !== id); setForgottenTips(next); await save(appointments, retails, deposits, ticketPurchases, staffPurchases, refunds, next); };
 
   // Summary — tickets excluded from today's revenue; cav slots excluded (counted in parent)
   const regularAppts = appointments.filter(a => !a.isTicket && !a.isCavSlot && !a.isGiftCard && !a.isPromo);
@@ -1112,8 +1207,17 @@ export default function SpaDailySheet() {
             📥 データ復元
             <input type="file" accept="application/json" onChange={handleImportBackup} style={{ display: "none" }} />
           </label>
+          <button onClick={handleMigrateLocalToCloud}
+            style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: "rgba(255,255,255,0.15)", color: "#fff", fontWeight: 700, cursor: "pointer", fontSize: 13 }}>
+            ☁️ この端末のデータをクラウドへ移行
+          </button>
         </div>
       </div>
+      {dayLoading && (
+        <div style={{ background: "#E3F2FD", padding: "8px 20px", fontSize: 13, color: "#1565C0", fontWeight: 700 }}>
+          ⏳ データを読み込み中です...
+        </div>
+      )}
       {locked && (
         <div style={{ background: "#FFEBEE", padding: "8px 20px", fontSize: 13, color: "#C62828", fontWeight: 700, borderBottom: "2px solid #C62828" }}>
           🔒 この日は確定済みです。編集・削除するには「確定済み」ボタンからPINを入力して解除してください。
@@ -1198,11 +1302,11 @@ export default function SpaDailySheet() {
         <div style={{ background: "#E8F5E9", padding: "10px 20px", borderBottom: "1px solid #C8E6C9", display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
           <span style={{ fontSize: 12, fontWeight: 700, color: "#2E7D32" }}>今日の出勤スタッフ：</span>
           {THERAPISTS.map(t => (
-            <button key={t} onClick={() => setWorkingStaff(prev => {
-              const next = prev.includes(t) ? prev.filter(x => x !== t) : [...prev, t];
+            <button key={t} onClick={() => {
+              const next = workingStaff.includes(t) ? workingStaff.filter(x => x !== t) : [...workingStaff, t];
+              setWorkingStaff(next);
               save(appointments, retails, deposits, ticketPurchases, staffPurchases, refunds, forgottenTips, next);
-              return next;
-            })} style={{
+            }} style={{
               padding: "4px 12px", borderRadius: 20, border: `2px solid ${workingStaff.includes(t) ? "#2E7D32" : "#CCC"}`,
               background: workingStaff.includes(t) ? "#2E7D32" : "#F5F5F5",
               color: workingStaff.includes(t) ? "#fff" : "#888",
@@ -1790,25 +1894,7 @@ export default function SpaDailySheet() {
 
       {/* Modals */}
       {editingAppt && <ApptModal appt={editingAppt} onSave={saveAppt} onDelete={() => deleteAppt(editingAppt.id)} onClose={() => setEditingAppt(null)}
-        clientDeposits={(() => {
-          const name = (editingAppt.clientName || "").toLowerCase().trim();
-          if (!name) return [];
-          const found = [];
-          for (let i = 0; i < localStorage.length; i++) {
-            const key = localStorage.key(i);
-            if (!key?.startsWith("spa-sheet-")) continue;
-            try {
-              const d = JSON.parse(localStorage.getItem(key));
-              const sheetDate = key.replace("spa-sheet-", "");
-              (d.deposits || []).forEach(dep => {
-                if ((dep.clientName || "").toLowerCase().trim() === name && (dep.type === "deposit" || dep.type === "giftcard")) {
-                  found.push({ ...dep, sheetDate });
-                }
-              });
-            } catch {}
-          }
-          return found.sort((a, b) => a.sheetDate.localeCompare(b.sheetDate));
-        })()}
+        clientDeposits={clientDepositHistory}
       />}
       {editingRetail && <RetailModal retail={editingRetail} onSave={saveRetail} onClose={() => setEditingRetail(null)} />}
       {editingDeposit && <DepositModal deposit={editingDeposit} onSave={saveDeposit} onDelete={() => { deleteDeposit(editingDeposit.id); setEditingDeposit(null); }} onClose={() => setEditingDeposit(null)} />}
@@ -4428,11 +4514,16 @@ const iconBtn = { border: "none", background: "none", cursor: "pointer", fontSiz
 // ============================================================
 // SALES REPORT EXCEL EXPORT
 // ============================================================
-function exportSalesReportXlsx(monthStr) {
+async function exportSalesReportXlsx(monthStr) {
   const [y, m] = monthStr.split("-").map(Number);
   const lastDay = new Date(y, m, 0).getDate();
   const monthNames = ["January","February","March","April","May","June","July","August","September","October","November","December"];
   const monthName = monthNames[m - 1];
+
+  // One round trip for every day in the month instead of a per-day localStorage read.
+  const startDate = `${monthStr}-01`;
+  const endDate = `${monthStr}-${String(lastDay).padStart(2, "0")}`;
+  const { days } = await apiFetch(`/api/day-data-range?start=${startDate}&end=${endDate}`);
 
   // Collect all daily data for the month
   const dailyData = [];
@@ -4445,9 +4536,8 @@ function exportSalesReportXlsx(monthStr) {
   const localVisitEvents = [];
   for (let d = 1; d <= lastDay; d++) {
     const dateStr = `${monthStr}-${String(d).padStart(2,"0")}`;
-    const saved = localStorage.getItem(`spa-sheet-${dateStr}`);
-    if (saved) {
-      const data = JSON.parse(saved);
+    const data = days[dateStr];
+    if (data) {
       const appts = (data.appointments || []).filter(a => !a.isCavSlot);
       const retails = data.retails || [];
       const refunds = data.refunds || [];
@@ -4717,6 +4807,8 @@ function PayrollTab() {
   const [month, setMonth] = useState(`${yyyy}-${mm}`);
   const [payrollData, setPayrollData] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState(null);
+  const [xlsxLoading, setXlsxLoading] = useState(false);
 
   const calcPeriodDates = (monthStr, p) => {
     const [y, m] = monthStr.split("-").map(Number);
@@ -4728,33 +4820,35 @@ function PayrollTab() {
     }
   };
 
-  const loadPayroll = () => {
+  const loadPayroll = async () => {
     setLoading(true);
+    setLoadError(null);
     const { start, end } = calcPeriodDates(month, period);
 
-    // Collect all dates in range from localStorage
-    const startD = new Date(start);
-    const endD = new Date(end);
-    const allAppts = [];
-    const allRetails = [];
-    const allForgottenTips = [];
+    try {
+      // One round trip for every day in the period instead of a per-day localStorage read.
+      const { days } = await apiFetch(`/api/day-data-range?start=${start}&end=${end}`);
+      const startD = new Date(start);
+      const endD = new Date(end);
+      const allAppts = [];
+      const allRetails = [];
+      const allForgottenTips = [];
 
-    for (let d = new Date(startD); d <= endD; d.setDate(d.getDate() + 1)) {
-      const dateStr = d.toISOString().slice(0, 10);
-      const saved = localStorage.getItem(`spa-sheet-${dateStr}`);
-      if (saved) {
-        const data = JSON.parse(saved);
-        (data.appointments || []).forEach(a => {
-          allAppts.push({ ...a, date: dateStr });
-        });
-        (data.retails || []).forEach(r => {
-          allRetails.push({ ...r, date: dateStr });
-        });
-        (data.forgottenTips || []).forEach(ft => {
-          allForgottenTips.push({ ...ft, date: dateStr });
-        });
+      for (let d = new Date(startD); d <= endD; d.setDate(d.getDate() + 1)) {
+        const dateStr = d.toISOString().slice(0, 10);
+        const data = days[dateStr];
+        if (data) {
+          (data.appointments || []).forEach(a => {
+            allAppts.push({ ...a, date: dateStr });
+          });
+          (data.retails || []).forEach(r => {
+            allRetails.push({ ...r, date: dateStr });
+          });
+          (data.forgottenTips || []).forEach(ft => {
+            allForgottenTips.push({ ...ft, date: dateStr });
+          });
+        }
       }
-    }
 
     // Aggregate per therapist
     const byTherapist = {};
@@ -4998,7 +5092,12 @@ function PayrollTab() {
     });
 
     setPayrollData({ byTherapist, start, end });
-    setLoading(false);
+    } catch (e) {
+      console.error("Payroll load error:", e);
+      setLoadError("読み込みに失敗しました。ネット接続を確認してもう一度お試しください");
+    } finally {
+      setLoading(false);
+    }
   };
 
   const downloadCSV = (therapist) => {
@@ -5068,9 +5167,14 @@ function PayrollTab() {
         <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
           <input type="month" value={month} onChange={e => setMonth(e.target.value)}
             style={{ padding: "8px 12px", borderRadius: 8, border: "1.5px solid #4CAF50", fontSize: 14 }} />
-          <button onClick={() => exportSalesReportXlsx(month)}
-            style={{ padding: "10px 20px", borderRadius: 10, border: "none", background: "#2E7D32", color: "#fff", fontWeight: 700, cursor: "pointer", fontSize: 14 }}>
-            ⬇️ Excel ダウンロード
+          <button onClick={async () => {
+              setXlsxLoading(true);
+              try { await exportSalesReportXlsx(month); }
+              catch (e) { console.error("Excel export error:", e); window.alert("Excel出力に失敗しました。ネット接続を確認してもう一度お試しください"); }
+              finally { setXlsxLoading(false); }
+            }} disabled={xlsxLoading}
+            style={{ padding: "10px 20px", borderRadius: 10, border: "none", background: xlsxLoading ? "#666" : "#2E7D32", color: "#fff", fontWeight: 700, cursor: xlsxLoading ? "not-allowed" : "pointer", fontSize: 14 }}>
+            {xlsxLoading ? "⏳ 出力中..." : "⬇️ Excel ダウンロード"}
           </button>
         </div>
       </div>
@@ -5093,6 +5197,7 @@ function PayrollTab() {
           </Field>
         </div>
         <div style={{ fontSize: 12, color: "#888", marginBottom: 12 }}>集計期間：{start} 〜 {end}</div>
+        {loadError && <div style={{ color: "#C62828", fontSize: 13, marginBottom: 12 }}>{loadError}</div>}
         <div style={{ display: "flex", gap: 10 }}>
           <button onClick={loadPayroll} disabled={loading}
             style={{ padding: "10px 24px", borderRadius: 10, border: "none", background: "#0D4F4F", color: "#fff", fontWeight: 700, cursor: "pointer", fontSize: 14 }}>
