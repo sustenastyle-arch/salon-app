@@ -663,6 +663,24 @@ export default function SpaDailySheet() {
     }
   };
 
+  // Downloads every saved day as one JSON file — the export counterpart to handleImportBackup
+  // below, for migrating data between environments or pulling a copy for offline use (e.g.
+  // filling in an external spreadsheet from days this browser has recorded).
+  const handleExportBackup = () => {
+    const data = {};
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key?.startsWith("spa-sheet-")) data[key.replace("spa-sheet-", "")] = localStorage.getItem(key);
+    }
+    const blob = new Blob([JSON.stringify(data)], { type: "application/json" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `spa-sheet-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+    showToast(`✅ ${Object.keys(data).length}日分のデータをバックアップしました`);
+  };
+
   // One-time helper for migrating data between environments (e.g. localhost -> production) —
   // this app has no backend, so each origin's localStorage is otherwise completely isolated
   // and there's no other way to carry data across them.
@@ -1085,6 +1103,10 @@ export default function SpaDailySheet() {
           <button onClick={handleLockToggle}
             style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: locked ? "#C62828" : "rgba(255,255,255,0.15)", color: "#fff", fontWeight: 700, cursor: "pointer", fontSize: 13 }}>
             {locked ? "🔒 確定済み（解除）" : "🔓 この日を確定する"}
+          </button>
+          <button onClick={handleExportBackup}
+            style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: "rgba(255,255,255,0.15)", color: "#fff", fontWeight: 700, cursor: "pointer", fontSize: 13 }}>
+            📤 データバックアップ
           </button>
           <label style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: "rgba(255,255,255,0.15)", color: "#fff", fontWeight: 700, cursor: "pointer", fontSize: 13 }}>
             📥 データ復元
