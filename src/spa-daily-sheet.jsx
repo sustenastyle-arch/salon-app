@@ -4,6 +4,9 @@ import * as XLSX from "xlsx";
 const THERAPISTS = ["Mami", "Aya", "Megumi", "Hitomi", "Maki", "Yuka", "Mai", "Betsy"];
 const CUSTOMER_TYPES = ["RL", "RT", "NL", "NT"];
 const REFERRAL_SOURCES = ["Google / Website", "Google Map", "Instagram", "Yelp", "紹介"];
+// Stored value stays "紹介" (already-saved appointments are matched against it by exact equality
+// in reporting) — this only translates it for display, same pattern as CUSTOMER_TYPE_LABELS below.
+const REFERRAL_LABELS = { "紹介": "Referral" };
 const HOURS = Array.from({ length: 11 }, (_, i) => i + 9);
 // Weight Loss (regular, non-ticket): machine/cavitation allocation is a fixed $116 regardless
 // of duration or total price — the rest goes to the body therapist.
@@ -255,17 +258,17 @@ const EMPTY_REFUND = { id: Date.now(), clientName: "", serviceAmount: 0, tipAmou
 const EMPTY_FORGOTTEN_TIP = { id: Date.now(), clientName: "", therapist: "", serviceAmount: 0, tipAmount: 0, paymentType: "", originalDate: "", notes: "" };
 
 const PURCHASE_TAGS = [
-  { id: "newTicket", label: "🎟️ チケット新規購入", color: "#B71C1C", bg: "#FFEBEE" },
-  { id: "giftCard",  label: "🎁 ギフトカード購入",  color: "#00796B", bg: "#E0F2F1" },
-  { id: "retail",    label: "🛍️ 物販購入",         color: "#6A1B9A", bg: "#F3E5F5" },
+  { id: "newTicket", label: "🎟️ New Ticket Purchase", color: "#B71C1C", bg: "#FFEBEE" },
+  { id: "giftCard",  label: "🎁 Gift Card Purchase",   color: "#00796B", bg: "#E0F2F1" },
+  { id: "retail",    label: "🛍️ Retail Purchase",      color: "#6A1B9A", bg: "#F3E5F5" },
 ];
 
 const ADDON_PRESETS = [
-  "前回キャビ未消化分",
-  "キャビ追加 +10分",
-  "キャビ追加 +20分",
-  "キャビ追加 +30分",
-  "キャビ追加 +40分",
+  "Previous unused cav time",
+  "Cav add-on +10min",
+  "Cav add-on +20min",
+  "Cav add-on +30min",
+  "Cav add-on +40min",
 ];
 
 // Sales tax subtracted before splitting a retail sale's commission-eligible amount among sellers.
@@ -296,6 +299,9 @@ const RETAIL_PRODUCTS = [
   { name: "Liftech Cream", price: 0 },
   { name: "電気バリブラシ", price: 2095 },
 ];
+// Stored value stays "電気バリブラシ" (already-saved retail sales are matched against it by exact
+// name equality) — this only translates it for display, same pattern as REFERRAL_LABELS above.
+const RETAIL_PRODUCT_LABELS = { "電気バリブラシ": "Electric Facial Brush" };
 
 const formatCurrency = (n) => `$${Number(n || 0).toLocaleString("en-US", { minimumFractionDigits: 0 })}`;
 const r2 = (n) => Math.round(n * 100) / 100;
@@ -325,7 +331,7 @@ const PaymentToggle = ({ value, onChange, small }) => (
         cursor: "pointer", fontWeight: 700, fontSize: small ? 12 : 14,
         color: value === pt ? (pt === "cash" ? "#2E7D32" : "#1565C0") : "#888"
       }}>
-        {pt === "cash" ? "💵 現金" : "💳 カード"}
+        {pt === "cash" ? "💵 Cash" : "💳 Card"}
       </button>
     ))}
   </div>
@@ -333,7 +339,7 @@ const PaymentToggle = ({ value, onChange, small }) => (
 
 const PayBadge = ({ type }) => (
   <span style={{ fontSize: 11, background: type === "cash" ? "#E8F5E9" : "#E3F2FD", color: type === "cash" ? "#2E7D32" : "#1565C0", padding: "2px 8px", borderRadius: 10, whiteSpace: "nowrap" }}>
-    {type === "cash" ? "現金" : "カード"}
+    {type === "cash" ? "Cash" : "Card"}
   </span>
 );
 
@@ -428,7 +434,7 @@ export default function SpaDailySheet() {
       } catch (e) {
         if (!cancelled) {
           console.error("Day load error:", e);
-          showToast("データの読み込みに失敗しました。ネット接続を確認して再読み込みしてください", "error");
+          showToast("Failed to load data. Please check your internet connection and reload", "error");
         }
       } finally {
         if (!cancelled) setDayLoading(false);
@@ -484,7 +490,7 @@ export default function SpaDailySheet() {
       return true;
     } catch (e) {
       console.error("Save error:", e);
-      showToast("保存に失敗しました。ネット接続を確認してもう一度お試しください", "error");
+      showToast("Failed to save. Please check your internet connection and try again", "error");
       return false;
     }
   }, [date, locked, workingStaff]);
@@ -505,29 +511,29 @@ export default function SpaDailySheet() {
       return true;
     } catch (e) {
       console.error("Lock toggle error:", e);
-      showToast("保存に失敗しました。ネット接続を確認してもう一度お試しください", "error");
+      showToast("Failed to save. Please check your internet connection and try again", "error");
       return false;
     }
   };
 
   const MANAGER_PIN = import.meta.env.VITE_MANAGER_PIN || "0000";
   const guardLocked = () => {
-    if (locked) { showToast("🔒 この日は確定済みです。解除してから編集してください", "error"); return true; }
+    if (locked) { showToast("🔒 This day is finalized. Unlock it before editing", "error"); return true; }
     return false;
   };
   const handleLockToggle = async () => {
     if (!locked) {
-      if (window.confirm(`${date} を確定してロックしますか？\nロック後は解除するまで編集・削除ができなくなります。`)) {
-        if (await setDayLocked(true)) showToast("🔒 この日を確定しました");
+      if (window.confirm(`Finalize and lock ${date}?\nOnce locked, no edits or deletions can be made until it's unlocked.`)) {
+        if (await setDayLocked(true)) showToast("🔒 This day has been finalized");
       }
       return;
     }
-    const pin = window.prompt("解除するにはPINコードを入力してください");
+    const pin = window.prompt("Enter the PIN to unlock");
     if (pin === null) return;
     if (pin === MANAGER_PIN) {
-      if (await setDayLocked(false)) showToast("🔓 ロックを解除しました");
+      if (await setDayLocked(false)) showToast("🔓 Unlocked");
     } else {
-      showToast("PINが違います", "error");
+      showToast("Incorrect PIN", "error");
     }
   };
 
@@ -544,8 +550,8 @@ export default function SpaDailySheet() {
       const bookings = data.bookings || [];
 
       if (!bookings.length) {
-        setSquareStatus("この日の予約がSquareに見つかりませんでした。");
-        showToast("予約なし", "info");
+        setSquareStatus("No bookings found in Square for this day.");
+        showToast("No bookings", "info");
       } else {
         const newAppts = bookings.map((b, i) => ({
           ...EMPTY_APPOINTMENT,
@@ -566,7 +572,7 @@ export default function SpaDailySheet() {
         // otherwise this save (using a `locked: false` closure from before the lock happened)
         // would silently re-unlock the day and overwrite whatever was just locked in.
         if (cur.locked) {
-          showToast("🔒 取得中にこの日がロックされたため中止しました", "error");
+          showToast("🔒 Cancelled — this day was locked while fetching", "error");
           return;
         }
         const merged = [...cur.appointments];
@@ -590,12 +596,12 @@ export default function SpaDailySheet() {
         if (bookingTherapists.length > 0) setWorkingStaff(bookingTherapists);
         await save(merged, cur.retails, cur.deposits, cur.ticketPurchases, cur.staffPurchases, cur.refunds, cur.forgottenTips, nextWorkingStaff);
 
-        showToast(`✅ ${newAppts.length}件取得しました`);
+        showToast(`✅ Fetched ${newAppts.length} booking(s)`);
       }
     } catch (e) {
       console.error("Square sync error:", e);
-      setSquareStatus("Square接続エラー。手動入力してください。");
-      showToast("接続エラー", "error");
+      setSquareStatus("Square connection error. Please enter manually.");
+      showToast("Connection error", "error");
     }
     setSquareLoading(false);
   };
@@ -609,7 +615,7 @@ export default function SpaDailySheet() {
       const res = await fetch(`/api/giftcard-activities?date=${date}`);
       const data = await res.json();
       if (!res.ok) {
-        showToast(data.error || "取得エラー", "error");
+        showToast(data.error || "Fetch error", "error");
         return;
       }
       const activities = data.activities || [];
@@ -620,7 +626,7 @@ export default function SpaDailySheet() {
       // otherwise this save (using a `locked: false` closure from before the lock happened)
       // would silently re-unlock the day and overwrite whatever was just locked in.
       if (cur.locked) {
-        showToast("🔒 取得中にこの日がロックされたため中止しました", "error");
+        showToast("🔒 Cancelled — this day was locked while fetching", "error");
         return;
       }
       const existingIds = new Set(cur.deposits.map(d => d.id));
@@ -630,25 +636,25 @@ export default function SpaDailySheet() {
           id: a.id,
           type: "giftcard",
           amount: a.amount,
-          clientName: "ギフトカード購入（お客様名不明）",
+          clientName: "Gift Card Purchase (customer name unknown)",
           paymentType: a.paymentType === "cash" ? "cash" : "card",
           tip: 0,
           tipPaymentType: "cash",
           appointmentDate: "",
           appointmentTime: "",
-          notes: `Square自動取得${a.createdAt ? ` (${a.createdAt})` : ""}`,
+          notes: `Auto-fetched from Square${a.createdAt ? ` (${a.createdAt})` : ""}`,
         }));
       if (newDeposits.length === 0) {
-        showToast(activities.length === 0 ? "この日のギフトカード購入はありません" : "すべて取得済みです", "info");
+        showToast(activities.length === 0 ? "No gift card purchases this day" : "Already up to date", "info");
         return;
       }
       const next = [...cur.deposits, ...newDeposits];
       setDeposits(next);
       await save(cur.appointments, cur.retails, next, cur.ticketPurchases, cur.staffPurchases, cur.refunds, cur.forgottenTips);
-      showToast(`✅ ギフトカード購入 ${newDeposits.length}件追加しました`);
+      showToast(`✅ Added ${newDeposits.length} gift card purchase(s)`);
     } catch (e) {
       console.error("Gift card sync error:", e);
-      showToast("接続エラー", "error");
+      showToast("Connection error", "error");
     } finally {
       setGcSyncLoading(false);
     }
@@ -666,7 +672,7 @@ export default function SpaDailySheet() {
       const res = await fetch(`/api/square-deposits?date=${date}`);
       const data = await res.json();
       if (!res.ok) {
-        showToast(data.error || "取得エラー", "error");
+        showToast(data.error || "Fetch error", "error");
         return;
       }
       const found = data.deposits || [];
@@ -677,7 +683,7 @@ export default function SpaDailySheet() {
       // otherwise this save (using a `locked: false` closure from before the lock happened)
       // would silently re-unlock the day and overwrite whatever was just locked in.
       if (cur.locked) {
-        showToast("🔒 取得中にこの日がロックされたため中止しました", "error");
+        showToast("🔒 Cancelled — this day was locked while fetching", "error");
         return;
       }
       const existingIds = new Set(cur.deposits.map(d => d.id));
@@ -693,19 +699,19 @@ export default function SpaDailySheet() {
           tipPaymentType: "cash",
           appointmentDate: "",
           appointmentTime: "",
-          notes: `Square自動取得${d.createdAt ? ` (${d.createdAt})` : ""}`,
+          notes: `Auto-fetched from Square${d.createdAt ? ` (${d.createdAt})` : ""}`,
         }));
       if (newDeposits.length === 0) {
-        showToast(found.length === 0 ? "この日のデポジット支払いはありません" : "すべて取得済みです", "info");
+        showToast(found.length === 0 ? "No deposit payments this day" : "Already up to date", "info");
         return;
       }
       const next = [...cur.deposits, ...newDeposits];
       setDeposits(next);
       await save(cur.appointments, cur.retails, next, cur.ticketPurchases, cur.staffPurchases, cur.refunds, cur.forgottenTips);
-      showToast(`✅ デポジット ${newDeposits.length}件追加しました`);
+      showToast(`✅ Added ${newDeposits.length} deposit(s)`);
     } catch (e) {
       console.error("Deposit sync error:", e);
-      showToast("接続エラー", "error");
+      showToast("Connection error", "error");
     } finally {
       setDepositSyncLoading(false);
     }
@@ -721,13 +727,13 @@ export default function SpaDailySheet() {
       const res = await fetch(`/api/square-payments?date=${date}`);
       const data = await res.json();
       if (!res.ok) {
-        showToast(data.error || "取得エラー", "error");
+        showToast(data.error || "Fetch error", "error");
         return;
       }
       setReconcileResult({ ...data, checkedAt: Date.now() });
     } catch (e) {
       console.error("Square reconcile error:", e);
-      showToast("接続エラー", "error");
+      showToast("Connection error", "error");
     } finally {
       setReconcileLoading(false);
     }
@@ -744,10 +750,10 @@ export default function SpaDailySheet() {
       a.download = `spa-sheet-backup-${new Date().toISOString().slice(0, 10)}.json`;
       a.click();
       URL.revokeObjectURL(a.href);
-      showToast(`✅ ${Object.keys(days).length}日分のデータをバックアップしました`);
+      showToast(`✅ Backed up ${Object.keys(days).length} day(s) of data`);
     } catch (e) {
       console.error("Export error:", e);
-      showToast("バックアップに失敗しました。ネット接続を確認してもう一度お試しください", "error");
+      showToast("Backup failed. Please check your internet connection and try again", "error");
     }
   };
 
@@ -762,10 +768,10 @@ export default function SpaDailySheet() {
       try {
         const data = JSON.parse(reader.result);
         const { count } = await apiFetch("/api/import-all", { method: "POST", body: JSON.stringify(data) });
-        showToast(`✅ ${count}日分のデータを復元しました`);
+        showToast(`✅ Restored ${count} day(s) of data`);
         window.location.reload();
       } catch (err) {
-        showToast("読み込みに失敗しました: " + err.message, "error");
+        showToast("Failed to load: " + err.message, "error");
       }
     };
     reader.readAsText(file);
@@ -782,17 +788,17 @@ export default function SpaDailySheet() {
       if (key?.startsWith("spa-sheet-")) data[key.replace("spa-sheet-", "")] = localStorage.getItem(key);
     }
     if (Object.keys(data).length === 0) {
-      showToast("この端末には移行するデータがありません", "info");
+      showToast("No data on this device to migrate", "info");
       return;
     }
-    if (!window.confirm(`この端末に保存されている${Object.keys(data).length}日分のデータをクラウドへ移行します。よろしいですか？`)) return;
+    if (!window.confirm(`This will migrate ${Object.keys(data).length} day(s) of data saved on this device to the cloud. Continue?`)) return;
     try {
       const { count } = await apiFetch("/api/import-all", { method: "POST", body: JSON.stringify(data) });
-      showToast(`✅ ${count}日分のデータをクラウドへ移行しました`);
+      showToast(`✅ Migrated ${count} day(s) of data to the cloud`);
       window.location.reload();
     } catch (e) {
       console.error("Migration error:", e);
-      showToast("移行に失敗しました。ネット接続を確認してもう一度お試しください", "error");
+      showToast("Migration failed. Please check your internet connection and try again", "error");
     }
   };
 
@@ -844,7 +850,7 @@ export default function SpaDailySheet() {
       cavTip: 0,
       cavTherapist: "",
       customerType: appt.customerType,
-      notes: `⚡ 機械 for ${appt.clientName}（${appt.therapist}）`,
+      notes: `⚡ Machine for ${appt.clientName} (${appt.therapist})`,
       fromSquare: false,
     } : null;
 
@@ -862,7 +868,7 @@ export default function SpaDailySheet() {
     next.sort((a, b) => (a.startTime || "").localeCompare(b.startTime || ""));
 
     setAppointments(next);
-    if (await save(next, retails, deposits, ticketPurchases, staffPurchases, refunds, forgottenTips)) { setEditingAppt(null); showToast("保存しました"); }
+    if (await save(next, retails, deposits, ticketPurchases, staffPurchases, refunds, forgottenTips)) { setEditingAppt(null); showToast("Saved"); }
   };
 
   const deleteAppt = async (id) => {
@@ -913,17 +919,17 @@ export default function SpaDailySheet() {
     }
     setEditingAppt(appt);
   };
-  const saveRetail = async (r) => { if (guardLocked()) return; const next = retails.find(x => x.id === r.id) ? retails.map(x => x.id === r.id ? r : x) : [...retails, r]; setRetails(next); if (await save(appointments, next, deposits, ticketPurchases, staffPurchases, refunds, forgottenTips)) { setEditingRetail(null); showToast("物販保存"); } };
+  const saveRetail = async (r) => { if (guardLocked()) return; const next = retails.find(x => x.id === r.id) ? retails.map(x => x.id === r.id ? r : x) : [...retails, r]; setRetails(next); if (await save(appointments, next, deposits, ticketPurchases, staffPurchases, refunds, forgottenTips)) { setEditingRetail(null); showToast("Retail sale saved"); } };
   const deleteRetail = async (id) => { if (guardLocked()) return; const next = retails.filter(r => r.id !== id); setRetails(next); await save(appointments, next, deposits, ticketPurchases, staffPurchases, refunds, forgottenTips); };
-  const saveDeposit = async (d) => { if (guardLocked()) return; const next = deposits.find(x => x.id === d.id) ? deposits.map(x => x.id === d.id ? d : x) : [...deposits, d]; setDeposits(next); if (await save(appointments, retails, next, ticketPurchases, staffPurchases, refunds, forgottenTips)) { setEditingDeposit(null); showToast("保存しました"); } };
+  const saveDeposit = async (d) => { if (guardLocked()) return; const next = deposits.find(x => x.id === d.id) ? deposits.map(x => x.id === d.id ? d : x) : [...deposits, d]; setDeposits(next); if (await save(appointments, retails, next, ticketPurchases, staffPurchases, refunds, forgottenTips)) { setEditingDeposit(null); showToast("Saved"); } };
   const deleteDeposit = async (id) => { if (guardLocked()) return; const next = deposits.filter(d => d.id !== id); setDeposits(next); await save(appointments, retails, next, ticketPurchases, staffPurchases, refunds, forgottenTips); };
-  const saveTicketPurchase = async (tp) => { if (guardLocked()) return; const next = ticketPurchases.find(x => x.id === tp.id) ? ticketPurchases.map(x => x.id === tp.id ? tp : x) : [...ticketPurchases, tp]; setTicketPurchases(next); if (await save(appointments, retails, deposits, next, staffPurchases, refunds, forgottenTips)) { setEditingTicketPurchase(null); showToast("🎟️ チケット購入保存"); } };
+  const saveTicketPurchase = async (tp) => { if (guardLocked()) return; const next = ticketPurchases.find(x => x.id === tp.id) ? ticketPurchases.map(x => x.id === tp.id ? tp : x) : [...ticketPurchases, tp]; setTicketPurchases(next); if (await save(appointments, retails, deposits, next, staffPurchases, refunds, forgottenTips)) { setEditingTicketPurchase(null); showToast("🎟️ Ticket purchase saved"); } };
   const deleteTicketPurchase = async (id) => { if (guardLocked()) return; const next = ticketPurchases.filter(tp => tp.id !== id); setTicketPurchases(next); await save(appointments, retails, deposits, next, staffPurchases, refunds, forgottenTips); };
-  const saveStaffPurchase = async (sp) => { if (guardLocked()) return; const next = staffPurchases.find(x => x.id === sp.id) ? staffPurchases.map(x => x.id === sp.id ? sp : x) : [...staffPurchases, sp]; setStaffPurchases(next); if (await save(appointments, retails, deposits, ticketPurchases, next, refunds, forgottenTips)) { setEditingStaffPurchase(null); showToast("👩‍💼 社販保存"); } };
+  const saveStaffPurchase = async (sp) => { if (guardLocked()) return; const next = staffPurchases.find(x => x.id === sp.id) ? staffPurchases.map(x => x.id === sp.id ? sp : x) : [...staffPurchases, sp]; setStaffPurchases(next); if (await save(appointments, retails, deposits, ticketPurchases, next, refunds, forgottenTips)) { setEditingStaffPurchase(null); showToast("👩‍💼 Staff purchase saved"); } };
   const deleteStaffPurchase = async (id) => { if (guardLocked()) return; const next = staffPurchases.filter(sp => sp.id !== id); setStaffPurchases(next); await save(appointments, retails, deposits, ticketPurchases, next, refunds, forgottenTips); };
-  const saveRefund = async (rf) => { if (guardLocked()) return; const next = refunds.find(x => x.id === rf.id) ? refunds.map(x => x.id === rf.id ? rf : x) : [...refunds, rf]; setRefunds(next); if (await save(appointments, retails, deposits, ticketPurchases, staffPurchases, next, forgottenTips)) { setEditingRefund(null); showToast("🔙 返金を記録しました"); } };
+  const saveRefund = async (rf) => { if (guardLocked()) return; const next = refunds.find(x => x.id === rf.id) ? refunds.map(x => x.id === rf.id ? rf : x) : [...refunds, rf]; setRefunds(next); if (await save(appointments, retails, deposits, ticketPurchases, staffPurchases, next, forgottenTips)) { setEditingRefund(null); showToast("🔙 Refund recorded"); } };
   const deleteRefund = async (id) => { if (guardLocked()) return; const next = refunds.filter(rf => rf.id !== id); setRefunds(next); await save(appointments, retails, deposits, ticketPurchases, staffPurchases, next, forgottenTips); };
-  const saveForgottenTip = async (ft) => { if (guardLocked()) return; const next = forgottenTips.find(x => x.id === ft.id) ? forgottenTips.map(x => x.id === ft.id ? ft : x) : [...forgottenTips, ft]; setForgottenTips(next); if (await save(appointments, retails, deposits, ticketPurchases, staffPurchases, refunds, next)) { setEditingForgottenTip(null); showToast("🙏 打ち忘れ入力を記録しました"); } };
+  const saveForgottenTip = async (ft) => { if (guardLocked()) return; const next = forgottenTips.find(x => x.id === ft.id) ? forgottenTips.map(x => x.id === ft.id ? ft : x) : [...forgottenTips, ft]; setForgottenTips(next); if (await save(appointments, retails, deposits, ticketPurchases, staffPurchases, refunds, next)) { setEditingForgottenTip(null); showToast("🙏 Forgotten entry recorded"); } };
   const deleteForgottenTip = async (id) => { if (guardLocked()) return; const next = forgottenTips.filter(ft => ft.id !== id); setForgottenTips(next); await save(appointments, retails, deposits, ticketPurchases, staffPurchases, refunds, next); };
 
   // Summary — tickets excluded from today's revenue; cav slots excluded (counted in parent)
@@ -1181,46 +1187,46 @@ export default function SpaDailySheet() {
             style={{ padding: "8px 12px", borderRadius: 8, border: "none", background: "rgba(255,255,255,0.15)", color: "#fff", fontSize: 14 }} />
           <button onClick={fetchSquare} disabled={squareLoading}
             style={{ padding: "8px 16px", borderRadius: 8, border: "none", background: squareLoading ? "#666" : "#E8A84A", color: "#fff", fontWeight: 700, cursor: squareLoading ? "not-allowed" : "pointer", fontSize: 13 }}>
-            {squareLoading ? "⏳ 取得中..." : "□ Square同期"}
+            {squareLoading ? "⏳ Fetching..." : "□ Square Sync"}
           </button>
           <button onClick={syncOnlineGiftCards} disabled={gcSyncLoading}
             style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: gcSyncLoading ? "#666" : "#B45309", color: "#fff", fontWeight: 700, cursor: gcSyncLoading ? "not-allowed" : "pointer", fontSize: 13 }}>
-            {gcSyncLoading ? "⏳ 取得中..." : "🎁 ギフトカード購入取得"}
+            {gcSyncLoading ? "⏳ Fetching..." : "🎁 Fetch Gift Card Purchases"}
           </button>
           <button onClick={syncSquareDeposits} disabled={depositSyncLoading}
             style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: depositSyncLoading ? "#666" : "#00796B", color: "#fff", fontWeight: 700, cursor: depositSyncLoading ? "not-allowed" : "pointer", fontSize: 13 }}>
-            {depositSyncLoading ? "⏳ 取得中..." : "💰 デポジット自動取得"}
+            {depositSyncLoading ? "⏳ Fetching..." : "💰 Auto-Fetch Deposits"}
           </button>
           <button onClick={checkSquareReconciliation} disabled={reconcileLoading}
             style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: reconcileLoading ? "#666" : "#4A6572", color: "#fff", fontWeight: 700, cursor: reconcileLoading ? "not-allowed" : "pointer", fontSize: 13 }}>
-            {reconcileLoading ? "⏳ 照合中..." : "🔍 Square照合"}
+            {reconcileLoading ? "⏳ Checking..." : "🔍 Square Reconcile"}
           </button>
           <button onClick={handleLockToggle}
             style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: locked ? "#C62828" : "rgba(255,255,255,0.15)", color: "#fff", fontWeight: 700, cursor: "pointer", fontSize: 13 }}>
-            {locked ? "🔒 確定済み（解除）" : "🔓 この日を確定する"}
+            {locked ? "🔒 Finalized (Unlock)" : "🔓 Finalize This Day"}
           </button>
           <button onClick={handleExportBackup}
             style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: "rgba(255,255,255,0.15)", color: "#fff", fontWeight: 700, cursor: "pointer", fontSize: 13 }}>
-            📤 データバックアップ
+            📤 Backup Data
           </button>
           <label style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: "rgba(255,255,255,0.15)", color: "#fff", fontWeight: 700, cursor: "pointer", fontSize: 13 }}>
-            📥 データ復元
+            📥 Restore Data
             <input type="file" accept="application/json" onChange={handleImportBackup} style={{ display: "none" }} />
           </label>
           <button onClick={handleMigrateLocalToCloud}
             style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: "rgba(255,255,255,0.15)", color: "#fff", fontWeight: 700, cursor: "pointer", fontSize: 13 }}>
-            ☁️ この端末のデータをクラウドへ移行
+            ☁️ Migrate This Device's Data to Cloud
           </button>
         </div>
       </div>
       {dayLoading && (
         <div style={{ background: "#E3F2FD", padding: "8px 20px", fontSize: 13, color: "#1565C0", fontWeight: 700 }}>
-          ⏳ データを読み込み中です...
+          ⏳ Loading data...
         </div>
       )}
       {locked && (
         <div style={{ background: "#FFEBEE", padding: "8px 20px", fontSize: 13, color: "#C62828", fontWeight: 700, borderBottom: "2px solid #C62828" }}>
-          🔒 この日は確定済みです。編集・削除するには「確定済み」ボタンからPINを入力して解除してください。
+          🔒 This day is finalized. To edit or delete, unlock it with the "Finalized" button and enter the PIN.
         </div>
       )}
       {squareStatus && <div style={{ background: "#FFF3CD", padding: "8px 20px", fontSize: 13, color: "#856404" }}>⚠️ {squareStatus}</div>}
@@ -1231,25 +1237,25 @@ export default function SpaDailySheet() {
         // there's nothing to compare the sheet's cash-tip figure against. Card tips, on the
         // other hand, are always captured separately and can be checked directly.
         const rows = [
-          { label: "現金 合計（施術＋物販＋チップ）", sheet: sheetCashTotal, square: reconcileResult.cashTotal },
-          { label: "カード 合計（施術＋物販＋チップ）", sheet: sheetCardTotal, square: reconcileResult.cardTotal },
-          { label: "カード チップ", sheet: sheetCardTip, square: reconcileResult.cardTip },
+          { label: "Cash Total (Treatment + Retail + Tip)", sheet: sheetCashTotal, square: reconcileResult.cashTotal },
+          { label: "Card Total (Treatment + Retail + Tip)", sheet: sheetCardTotal, square: reconcileResult.cardTotal },
+          { label: "Card Tip", sheet: sheetCardTip, square: reconcileResult.cardTip },
         ];
         return (
           <div style={{ background: "#fff", margin: "10px 20px", borderRadius: 10, border: "1px solid #DDD", padding: 14 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-              <div style={{ fontWeight: 700, fontSize: 14, color: "#0D4F4F" }}>🔍 Square照合結果</div>
+              <div style={{ fontWeight: 700, fontSize: 14, color: "#0D4F4F" }}>🔍 Square Reconciliation Result</div>
               <button onClick={() => setReconcileResult(null)}
-                style={{ border: "none", background: "none", color: "#999", cursor: "pointer", fontSize: 13 }}>✕ 閉じる</button>
+                style={{ border: "none", background: "none", color: "#999", cursor: "pointer", fontSize: 13 }}>✕ Close</button>
             </div>
             <div style={{ overflowX: "auto" }}>
               <table style={{ borderCollapse: "collapse", fontSize: 13, width: "100%" }}>
                 <thead>
                   <tr style={{ background: "#F7F4EE" }}>
-                    <th style={{ textAlign: "left", padding: "6px 10px" }}>項目</th>
-                    <th style={{ textAlign: "right", padding: "6px 10px" }}>シート入力</th>
-                    <th style={{ textAlign: "right", padding: "6px 10px" }}>Square実績</th>
-                    <th style={{ textAlign: "right", padding: "6px 10px" }}>差額</th>
+                    <th style={{ textAlign: "left", padding: "6px 10px" }}>Item</th>
+                    <th style={{ textAlign: "right", padding: "6px 10px" }}>Sheet Entry</th>
+                    <th style={{ textAlign: "right", padding: "6px 10px" }}>Square Actual</th>
+                    <th style={{ textAlign: "right", padding: "6px 10px" }}>Difference</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1262,7 +1268,7 @@ export default function SpaDailySheet() {
                         <td style={{ textAlign: "right", padding: "6px 10px" }}>{formatCurrency(r.sheet)}</td>
                         <td style={{ textAlign: "right", padding: "6px 10px" }}>{formatCurrency(r.square)}</td>
                         <td style={{ textAlign: "right", padding: "6px 10px", fontWeight: 700, color: mismatch ? "#C62828" : "#2E7D32" }}>
-                          {mismatch ? `⚠️ ${diff > 0 ? "+" : ""}${formatCurrency(diff)}` : "✓ 一致"}
+                          {mismatch ? `⚠️ ${diff > 0 ? "+" : ""}${formatCurrency(diff)}` : "✓ Match"}
                         </td>
                       </tr>
                     );
@@ -1271,7 +1277,7 @@ export default function SpaDailySheet() {
               </table>
             </div>
             <div style={{ fontSize: 11, color: "#999", marginTop: 8 }}>
-              ※ 現金チップはスクエア側で内訳が記録されないため照合対象外です（現金は合計金額のみ比較しています）
+              ※ Cash tips aren't broken out separately on Square's side, so they're excluded from this check (only the cash total is compared).
             </div>
           </div>
         );
@@ -1279,7 +1285,7 @@ export default function SpaDailySheet() {
 
       {/* Tabs */}
       <div style={{ background: "#fff", borderBottom: "2px solid #E8E4DC", display: "flex", padding: "0 20px", overflowX: "auto" }}>
-        {[["schedule","📅 スケジュール"],["summary","📊 集計"],["payroll","💴 給料集計"]].map(([tab, label]) => (
+        {[["schedule","📅 Schedule"],["summary","📊 Summary"],["payroll","💴 Payroll"]].map(([tab, label]) => (
           <button key={tab} onClick={() => setActiveTab(tab)} style={{ padding: "12px 20px", border: "none", background: "none", cursor: "pointer", fontSize: 14, fontWeight: 600, color: activeTab === tab ? "#0D4F4F" : "#888", borderBottom: activeTab === tab ? "2px solid #0D4F4F" : "2px solid transparent", marginBottom: -2, whiteSpace: "nowrap" }}>
             {label}
           </button>
@@ -1287,12 +1293,12 @@ export default function SpaDailySheet() {
         <div style={{ flex: 1 }} />
         <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 0", flexWrap: "wrap" }}>
           <select value={selectedTherapist} onChange={e => setSelectedTherapist(e.target.value)} style={{ padding: "4px 8px", borderRadius: 6, border: "1px solid #DDD", fontSize: 13 }}>
-            <option value="All">全員</option>
+            <option value="All">Everyone</option>
             {workingStaff.map(t => <option key={t} value={t}>{t}</option>)}
           </select>
           <button onClick={() => setShowStaffPicker(p => !p)}
             style={{ padding: "4px 10px", borderRadius: 6, border: "1px solid #0D4F4F", background: showStaffPicker ? "#0D4F4F" : "#fff", color: showStaffPicker ? "#fff" : "#0D4F4F", fontSize: 12, cursor: "pointer", fontWeight: 600 }}>
-            👥 出勤設定
+            👥 Working Staff
           </button>
         </div>
       </div>
@@ -1300,7 +1306,7 @@ export default function SpaDailySheet() {
       {/* Working staff picker */}
       {showStaffPicker && (
         <div style={{ background: "#E8F5E9", padding: "10px 20px", borderBottom: "1px solid #C8E6C9", display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-          <span style={{ fontSize: 12, fontWeight: 700, color: "#2E7D32" }}>今日の出勤スタッフ：</span>
+          <span style={{ fontSize: 12, fontWeight: 700, color: "#2E7D32" }}>Today's working staff:</span>
           {THERAPISTS.map(t => (
             <button key={t} onClick={() => {
               const next = workingStaff.includes(t) ? workingStaff.filter(x => x !== t) : [...workingStaff, t];
@@ -1315,7 +1321,7 @@ export default function SpaDailySheet() {
           ))}
           <button onClick={() => setShowStaffPicker(false)}
             style={{ marginLeft: "auto", padding: "4px 12px", borderRadius: 8, border: "none", background: "#0D4F4F", color: "#fff", cursor: "pointer", fontSize: 12, fontWeight: 700 }}>
-            完了
+            Done
           </button>
         </div>
       )}
@@ -1324,16 +1330,16 @@ export default function SpaDailySheet() {
       {activeTab === "schedule" && (
         <div style={{ padding: "16px 12px", overflowX: "auto" }}>
 
-          {/* 本日の来店人数 — cavSlot(同じお客様の機械担当分の複製行)を除いた実来店数 */}
+          {/* Today's visit count — excludes cavSlot rows (duplicate row for the machine therapist's share of the same client) */}
           <div style={{ display: "inline-block", background: "#0D4F4F", color: "#fff", borderRadius: 20, padding: "6px 16px", fontSize: 13, fontWeight: 700, marginBottom: 12 }}>
-            👥 本日の来店人数: {appointments.filter(a => !a.isCavSlot).length}名
+            👥 Today's Visits: {appointments.filter(a => !a.isCavSlot).length}
           </div>
 
-          {/* デポジット済み来店予定 */}
+          {/* Clients arriving today who already have a deposit on file */}
           {depositsForDate.length > 0 && (
             <div style={{ background: "#E3F2FD", borderRadius: 12, padding: 12, marginBottom: 14, border: "2px solid #1565C0" }}>
               <div style={{ fontWeight: 800, fontSize: 13, color: "#1565C0", marginBottom: 10 }}>
-                💰 本日来店予定 — 領収済みのお客様 {depositsForDate.length}名
+                💰 Arriving Today — {depositsForDate.length} client(s) already paid
               </div>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
                 {depositsForDate.map((dep, i) => (
@@ -1345,21 +1351,21 @@ export default function SpaDailySheet() {
                     <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                       <span style={{ fontWeight: 800, fontSize: 14, color: "#0D47A1" }}>{dep.clientName}</span>
                       <span style={{ fontSize: 9, fontWeight: 700, padding: "1px 6px", borderRadius: 8, background: dep.type === "giftcard" ? "#FFF3E0" : "#E3F2FD", color: dep.type === "giftcard" ? "#E65100" : "#1565C0" }}>
-                        {dep.type === "giftcard" ? "🎁 全額ギフト" : "💰 デポジット"}
+                        {dep.type === "giftcard" ? "🎁 Fully Prepaid" : "💰 Deposit"}
                       </span>
                     </div>
                     <div style={{ fontSize: 13, fontWeight: 700, color: "#1565C0", marginTop: 3 }}>
                       💰 ${dep.amount}
                       <span style={{ fontSize: 11, fontWeight: 400, color: "#888", marginLeft: 6 }}>
-                        {dep.paymentType === "cash" ? "現金" : dep.paymentType === "card" ? "カード" : "Check"}
+                        {dep.paymentType === "cash" ? "Cash" : dep.paymentType === "card" ? "Card" : "Check"}
                       </span>
-                      {Number(dep.tip) > 0 && <span style={{ fontSize: 11, color: "#E65100", marginLeft: 6 }}>＋チップ${dep.tip}</span>}
+                      {Number(dep.tip) > 0 && <span style={{ fontSize: 11, color: "#E65100", marginLeft: 6 }}>+ Tip ${dep.tip}</span>}
                     </div>
                     {dep.appointmentTime && (
                       <div style={{ fontSize: 12, color: "#555", marginTop: 3 }}>🕐 {dep.appointmentTime}</div>
                     )}
                     {dep.notes && <div style={{ fontSize: 11, color: "#666", marginTop: 3 }}>{dep.notes}</div>}
-                    <div style={{ fontSize: 10, color: "#AAA", marginTop: 5 }}>支払日：{dep.recordedDate}</div>
+                    <div style={{ fontSize: 10, color: "#AAA", marginTop: 5 }}>Paid on: {dep.recordedDate}</div>
                   </div>
                 ))}
               </div>
@@ -1369,7 +1375,7 @@ export default function SpaDailySheet() {
           <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 800 }}>
             <thead>
               <tr>
-                <th style={{ width: 70, padding: "8px 4px", fontSize: 11, color: "#888", textAlign: "left", borderBottom: "2px solid #0D4F4F" }}>時間</th>
+                <th style={{ width: 70, padding: "8px 4px", fontSize: 11, color: "#888", textAlign: "left", borderBottom: "2px solid #0D4F4F" }}>Time</th>
                 {visibleTherapists.map(t => (
                   <th key={t} style={{ padding: "8px 6px", fontSize: 13, fontWeight: 700, color: "#0D4F4F", textAlign: "center", borderBottom: "2px solid #0D4F4F", minWidth: 140 }}>
                     {t}
@@ -1398,7 +1404,7 @@ export default function SpaDailySheet() {
                       <td key={t} style={{ padding: "4px", verticalAlign: "top" }}
                         onClick={() => !hasContent && !locked && setEditingAppt({ ...EMPTY_APPOINTMENT, id: `m-${Date.now()}`, therapist: t, startTime: `${String(hour).padStart(2,"0")}:00` })}>
                         {appts.map(a => <ApptCard key={a.id} appt={a} allAppointments={appointments} onClick={() => {
-                          if (locked) { showToast("🔒 この日は確定済みです。解除してから編集してください", "error"); return; }
+                          if (locked) { showToast("🔒 This day is finalized. Unlock it before editing", "error"); return; }
                           if (a.isCavSlot) {
                             const parent = appointments.find(p => p.id === a.parentId);
                             if (parent) openApptForEdit(parent);
@@ -1417,10 +1423,10 @@ export default function SpaDailySheet() {
                             <div key={`${parentAppt.id}-${addon.id}`}
                               onClick={e => { e.stopPropagation(); openApptForEdit(parentAppt); }}
                               style={{ background: "#E0F2F1", border: "1.5px solid #00796B", borderRadius: 8, padding: "5px 7px", marginBottom: 3, cursor: "pointer" }}>
-                              <div style={{ fontSize: 10, fontWeight: 800, color: "#00695C" }}>➕ オプション</div>
+                              <div style={{ fontSize: 10, fontWeight: 800, color: "#00695C" }}>➕ Add-on</div>
                               <div style={{ fontSize: 11, fontWeight: 700, color: "#004D40" }}>{parentAppt.clientName}</div>
                               <div style={{ fontSize: 10, color: "#00796B" }}>
-                                {addon.serviceName || "オプション"}{addon.ticketCurrent ? ` ${addon.ticketCurrent}/${parentAppt.ticketTotal||3}` : ""}
+                                {addon.serviceName || "Add-on"}{addon.ticketCurrent ? ` ${addon.ticketCurrent}/${parentAppt.ticketTotal||3}` : ""}
                               </div>
                               {aTotal > 0 && (
                                 <div style={{ fontSize: 10, fontWeight: 700, color: aColor }}>
@@ -1442,11 +1448,11 @@ export default function SpaDailySheet() {
           </table>
 
           {/* Retail */}
-          <SectionBox title="🛍️ 物販" color="#6A1B9A" onAdd={() => setEditingRetail({ ...EMPTY_RETAIL, id: Date.now() })} disabled={locked}>
-            {retails.length === 0 && <p style={{ color: "#AAA", fontSize: 13 }}>なし</p>}
+          <SectionBox title="🛍️ Retail" color="#6A1B9A" onAdd={() => setEditingRetail({ ...EMPTY_RETAIL, id: Date.now() })} disabled={locked}>
+            {retails.length === 0 && <p style={{ color: "#AAA", fontSize: 13 }}>None</p>}
             {retails.map(r => (
               <div key={r.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: "1px solid #F0F0F0", flexWrap: "wrap" }}>
-                <span style={{ flex: 1, fontSize: 14 }}>{r.item || "（未入力）"}</span>
+                <span style={{ flex: 1, fontSize: 14 }}>{r.item || "(not entered)"}</span>
                 <span style={{ fontWeight: 700, color: "#6A1B9A" }}>{formatCurrency(r.price)}</span>
                 <PayBadge type={r.paymentType} />
                 <span style={{ fontSize: 12, color: "#888" }}>
@@ -1459,12 +1465,12 @@ export default function SpaDailySheet() {
           </SectionBox>
 
           {/* Deposits */}
-          <SectionBox title="💰 デポジット・ギフトカード・キャンセル料" color="#1565C0" onAdd={() => setEditingDeposit({ ...EMPTY_DEPOSIT, id: Date.now() })} disabled={locked}>
-            {deposits.length === 0 && <p style={{ color: "#AAA", fontSize: 13 }}>なし</p>}
+          <SectionBox title="💰 Deposits / Gift Cards / Cancellation Fees" color="#1565C0" onAdd={() => setEditingDeposit({ ...EMPTY_DEPOSIT, id: Date.now() })} disabled={locked}>
+            {deposits.length === 0 && <p style={{ color: "#AAA", fontSize: 13 }}>None</p>}
             {deposits.map(d => (
               <div key={d.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: "1px solid #F0F0F0", flexWrap: "wrap" }}>
                 <span style={{ fontSize: 11, background: d.type === "deposit" ? "#E3F2FD" : d.type === "cancellation" ? "#FFEBEE" : "#FFF3E0", color: d.type === "deposit" ? "#1565C0" : d.type === "cancellation" ? "#C62828" : "#E65100", padding: "2px 8px", borderRadius: 10, fontWeight: 700 }}>
-                  {d.type === "deposit" ? "デポジット" : d.type === "cancellation" ? "❌ キャンセル料" : "ギフトカード"}
+                  {d.type === "deposit" ? "Deposit" : d.type === "cancellation" ? "❌ Cancellation Fee" : "Gift Card"}
                 </span>
                 <span style={{ flex: 1, fontSize: 14 }}>{d.clientName || "—"}</span>
                 <span style={{ fontWeight: 700 }}>{formatCurrency(d.amount)}</span>
@@ -1479,8 +1485,8 @@ export default function SpaDailySheet() {
               ring in that day. Added to *today's* totals (register is physically counted today)
               and credited to the therapist's payroll for today, without re-creating the old
               appointment (which would wrongly count as a new visit toward today's customer stats). */}
-          <SectionBox title="🙏 打ち忘れ入力（デポジット/チップ）" color="#00695C" onAdd={() => setEditingForgottenTip({ ...EMPTY_FORGOTTEN_TIP, id: Date.now() })} disabled={locked}>
-            {forgottenTips.length === 0 && <p style={{ color: "#AAA", fontSize: 13 }}>なし</p>}
+          <SectionBox title="🙏 Forgotten Entry (Deposit/Tip)" color="#00695C" onAdd={() => setEditingForgottenTip({ ...EMPTY_FORGOTTEN_TIP, id: Date.now() })} disabled={locked}>
+            {forgottenTips.length === 0 && <p style={{ color: "#AAA", fontSize: 13 }}>None</p>}
             {forgottenTips.map(ft => {
               const svc = Number(ft.serviceAmount || 0);
               const tip = Number(ft.tipAmount || 0);
@@ -1488,10 +1494,10 @@ export default function SpaDailySheet() {
                 <div key={ft.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 0", borderBottom: "1px solid #F0F0F0", flexWrap: "wrap" }}>
                   <span style={{ flex: 1, fontWeight: 700, fontSize: 14 }}>{ft.clientName || "—"}</span>
                   {ft.therapist && <span style={{ fontSize: 11, color: "#00695C", background: "#E0F2F1", borderRadius: 8, padding: "2px 8px" }}>{ft.therapist}</span>}
-                  {svc > 0 && <span style={{ fontWeight: 700, color: "#00695C" }}>施術{formatCurrency(svc)}</span>}
-                  {tip > 0 && <span style={{ fontWeight: 700, color: "#00695C" }}>チップ{formatCurrency(tip)}</span>}
+                  {svc > 0 && <span style={{ fontWeight: 700, color: "#00695C" }}>Treatment {formatCurrency(svc)}</span>}
+                  {tip > 0 && <span style={{ fontWeight: 700, color: "#00695C" }}>Tip {formatCurrency(tip)}</span>}
                   <PayBadge type={ft.paymentType} />
-                  {ft.originalDate && <span style={{ fontSize: 11, color: "#888" }}>来店日 {ft.originalDate}</span>}
+                  {ft.originalDate && <span style={{ fontSize: 11, color: "#888" }}>Visit date {ft.originalDate}</span>}
                   <button onClick={() => setEditingForgottenTip(ft)} disabled={locked} style={{...iconBtn, opacity: locked ? 0.35 : 1, cursor: locked ? "not-allowed" : "pointer"}}>✏️</button>
                   <button onClick={() => deleteForgottenTip(ft.id)} disabled={locked} style={{...iconBtn, opacity: locked ? 0.35 : 1, cursor: locked ? "not-allowed" : "pointer"}}>🗑️</button>
                 </div>
@@ -1499,14 +1505,14 @@ export default function SpaDailySheet() {
             })}
             {forgottenTips.length > 0 && (
               <div style={{ marginTop: 8, fontSize: 11, color: "#00695C", fontWeight: 700, textAlign: "right" }}>
-                施術 {formatCurrency(totalForgottenService)}　チップ {formatCurrency(totalForgottenTip)}
+                Treatment {formatCurrency(totalForgottenService)}　Tip {formatCurrency(totalForgottenTip)}
               </div>
             )}
           </SectionBox>
 
           {/* Staff Purchases 社販 */}
-          <SectionBox title="👩‍💼 社販（スタッフ購入・施術）" color="#37474F" onAdd={() => setEditingStaffPurchase({ ...EMPTY_STAFF_PURCHASE, id: Date.now() })} disabled={locked}>
-            {staffPurchases.length === 0 && <p style={{ color: "#AAA", fontSize: 13 }}>なし</p>}
+          <SectionBox title="👩‍💼 Staff Purchases (Employee Purchase/Treatment)" color="#37474F" onAdd={() => setEditingStaffPurchase({ ...EMPTY_STAFF_PURCHASE, id: Date.now() })} disabled={locked}>
+            {staffPurchases.length === 0 && <p style={{ color: "#AAA", fontSize: 13 }}>None</p>}
             {staffPurchases.map(sp => {
               const items = getStaffPurchaseItems(sp);
               const total = items.reduce((s, it) => s + Number(it.amount || 0), 0);
@@ -1518,7 +1524,7 @@ export default function SpaDailySheet() {
                       <span style={{ fontSize: 11, color: "#37474F", background: "#ECEFF1", borderRadius: 8, padding: "2px 8px" }}>{items[0].productName}</span>
                     )}
                     {items.length > 1 && (
-                      <span style={{ fontSize: 11, color: "#37474F", background: "#ECEFF1", borderRadius: 8, padding: "2px 8px" }}>{items.length}点</span>
+                      <span style={{ fontSize: 11, color: "#37474F", background: "#ECEFF1", borderRadius: 8, padding: "2px 8px" }}>{items.length} items</span>
                     )}
                     <span style={{ fontWeight: 700, color: "#37474F" }}>{formatCurrency(total)}</span>
                     {items.length === 1 && <PayBadge type={items[0].paymentType} />}
@@ -1530,7 +1536,7 @@ export default function SpaDailySheet() {
                     <div style={{ display: "flex", flexDirection: "column", gap: 3, marginTop: 4, paddingLeft: 4 }}>
                       {items.map((it, idx) => (
                         <div key={idx} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "#555" }}>
-                          <span style={{ flex: 1 }}>{it.productName || "（商品名なし）"}</span>
+                          <span style={{ flex: 1 }}>{it.productName || "(no product name)"}</span>
                           <span style={{ fontWeight: 700 }}>{formatCurrency(it.amount)}</span>
                           <PayBadge type={it.paymentType} />
                         </div>
@@ -1543,8 +1549,8 @@ export default function SpaDailySheet() {
           </SectionBox>
 
           {/* Ticket New Purchases */}
-          <SectionBox title="🎟️ チケット新規購入（電話・当日）" color="#B71C1C" onAdd={() => setEditingTicketPurchase({ ...EMPTY_TICKET_PURCHASE, id: Date.now() })} disabled={locked}>
-            {ticketPurchases.length === 0 && <p style={{ color: "#AAA", fontSize: 13 }}>なし</p>}
+          <SectionBox title="🎟️ New Ticket Purchase (Phone/Walk-in)" color="#B71C1C" onAdd={() => setEditingTicketPurchase({ ...EMPTY_TICKET_PURCHASE, id: Date.now() })} disabled={locked}>
+            {ticketPurchases.length === 0 && <p style={{ color: "#AAA", fontSize: 13 }}>None</p>}
             {ticketPurchases.map(tp => {
               const tip = Number(tp.tip || 0);
               const amt = Number(tp.amount || 0);
@@ -1553,7 +1559,7 @@ export default function SpaDailySheet() {
                   <span style={{ flex: 1, fontWeight: 700, fontSize: 14 }}>{tp.clientName || "—"}</span>
                   {tp.packageName && <span style={{ fontSize: 11, color: "#B71C1C", background: "#FFEBEE", borderRadius: 8, padding: "2px 8px" }}>{tp.packageName}</span>}
                   <span style={{ fontWeight: 700, color: "#B71C1C" }}>{formatCurrency(amt)}</span>
-                  {tip > 0 && <span style={{ fontSize: 11, color: "#E65100" }}>チップ{formatCurrency(tip)}</span>}
+                  {tip > 0 && <span style={{ fontSize: 11, color: "#E65100" }}>Tip {formatCurrency(tip)}</span>}
                   {tp.splitPayment
                     ? <span style={{ fontSize: 11, color: "#B71C1C", background: "#FFEBEE", borderRadius: 8, padding: "2px 8px" }}>💵{formatCurrency(tp.cashPortion||0)}＋💳{formatCurrency(tp.cardPortion||0)}</span>
                     : <PayBadge type={tp.paymentType} />}
@@ -1564,23 +1570,23 @@ export default function SpaDailySheet() {
             })}
             {ticketPurchases.length > 0 && (
               <div style={{ marginTop: 8, fontSize: 11, color: "#B71C1C", fontWeight: 700, textAlign: "right" }}>
-                合計 {formatCurrency(tpTotal)}　チップ {formatCurrency(tpTipTotal)}
+                Total {formatCurrency(tpTotal)}　Tip {formatCurrency(tpTipTotal)}
               </div>
             )}
           </SectionBox>
 
           {/* Refunds — for a past visit's refund processed today (deducts from today's totals only) */}
-          <SectionBox title="🔙 返金（リファンド）" color="#5D4037" onAdd={() => setEditingRefund({ ...EMPTY_REFUND, id: Date.now() })} disabled={locked}>
-            {refunds.length === 0 && <p style={{ color: "#AAA", fontSize: 13 }}>なし</p>}
+          <SectionBox title="🔙 Refund" color="#5D4037" onAdd={() => setEditingRefund({ ...EMPTY_REFUND, id: Date.now() })} disabled={locked}>
+            {refunds.length === 0 && <p style={{ color: "#AAA", fontSize: 13 }}>None</p>}
             {refunds.map(rf => {
               const svc = Number(rf.serviceAmount || 0);
               const tip = Number(rf.tipAmount || 0);
               return (
                 <div key={rf.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 0", borderBottom: "1px solid #F0F0F0", flexWrap: "wrap" }}>
                   <span style={{ flex: 1, fontWeight: 700, fontSize: 14 }}>{rf.clientName || "—"}</span>
-                  {rf.originalDate && <span style={{ fontSize: 11, color: "#5D4037", background: "#EFEBE9", borderRadius: 8, padding: "2px 8px" }}>来店日: {rf.originalDate}</span>}
-                  {svc > 0 && <span style={{ fontWeight: 700, color: "#C62828" }}>施術 -{formatCurrency(svc)}</span>}
-                  {tip > 0 && <span style={{ fontWeight: 700, color: "#C62828" }}>チップ -{formatCurrency(tip)}</span>}
+                  {rf.originalDate && <span style={{ fontSize: 11, color: "#5D4037", background: "#EFEBE9", borderRadius: 8, padding: "2px 8px" }}>Visit date: {rf.originalDate}</span>}
+                  {svc > 0 && <span style={{ fontWeight: 700, color: "#C62828" }}>Treatment -{formatCurrency(svc)}</span>}
+                  {tip > 0 && <span style={{ fontWeight: 700, color: "#C62828" }}>Tip -{formatCurrency(tip)}</span>}
                   <PayBadge type={rf.paymentType} />
                   {rf.notes && <span style={{ fontSize: 11, color: "#888" }}>{rf.notes}</span>}
                   <button onClick={() => setEditingRefund(rf)} disabled={locked} style={{...iconBtn, opacity: locked ? 0.35 : 1, cursor: locked ? "not-allowed" : "pointer"}}>✏️</button>
@@ -1590,7 +1596,7 @@ export default function SpaDailySheet() {
             })}
             {refunds.length > 0 && (
               <div style={{ marginTop: 8, fontSize: 11, color: "#C62828", fontWeight: 700, textAlign: "right" }}>
-                施術 -{formatCurrency(totalRefundService)}　チップ -{formatCurrency(totalRefundTip)}
+                Treatment -{formatCurrency(totalRefundService)}　Tip -{formatCurrency(totalRefundTip)}
               </div>
             )}
           </SectionBox>
@@ -1604,31 +1610,31 @@ export default function SpaDailySheet() {
           {/* === SALES REPORT 形式 === */}
           <div style={{ background: "#fff", borderRadius: 12, padding: 16, marginBottom: 14, boxShadow: "0 2px 8px rgba(0,0,0,0.10)" }}>
             <div style={{ fontWeight: 800, fontSize: 15, color: "#0D4F4F", marginBottom: 12, borderBottom: "2px solid #0D4F4F", paddingBottom: 8 }}>
-              📋 本日売上サマリー　<span style={{ fontSize: 12, color: "#888", fontWeight: 400 }}>Sales Report 形式</span>
+              📋 Today's Sales Summary　<span style={{ fontSize: 12, color: "#888", fontWeight: 400 }}>Sales Report format</span>
             </div>
 
-            {/* 来店人数 & 総売上 */}
+            {/* Visit count & total sales */}
             <div style={{ display: "flex", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
               <div style={{ background: "#F0F7FF", borderRadius: 10, padding: "10px 18px", textAlign: "center", minWidth: 90 }}>
-                <div style={{ fontSize: 11, color: "#888" }}>来店人数</div>
-                <div style={{ fontSize: 26, fontWeight: 800, color: "#0D4F4F" }}>{appointments.filter(a => !a.isCavSlot).length}<span style={{ fontSize: 13 }}>名</span></div>
+                <div style={{ fontSize: 11, color: "#888" }}>Visits</div>
+                <div style={{ fontSize: 26, fontWeight: 800, color: "#0D4F4F" }}>{appointments.filter(a => !a.isCavSlot).length}</div>
               </div>
               <div style={{ background: "#FFF8E1", borderRadius: 10, padding: "10px 18px", textAlign: "center", flex: 1, minWidth: 120 }}>
-                <div style={{ fontSize: 11, color: "#888" }}>Total Sales（施術＋物販）</div>
+                <div style={{ fontSize: 11, color: "#888" }}>Total Sales (Treatment + Retail)</div>
                 <div style={{ fontSize: 26, fontWeight: 800, color: "#C62828" }}>{formatCurrency(totalSalesAll)}</div>
               </div>
               <div style={{ background: "#F3E5F5", borderRadius: 10, padding: "10px 18px", textAlign: "center", flex: 1, minWidth: 120 }}>
-                <div style={{ fontSize: 11, color: "#888" }}>Total Sales ＋ Tip</div>
+                <div style={{ fontSize: 11, color: "#888" }}>Total Sales + Tip</div>
                 <div style={{ fontSize: 26, fontWeight: 800, color: "#6A1B9A" }}>{formatCurrency(totalSalesAll + totalTipAllCC)}</div>
               </div>
             </div>
 
-            {/* Cash セクション */}
+            {/* Cash section */}
             <div style={{ marginBottom: 12 }}>
               <div style={{ fontSize: 13, fontWeight: 800, color: "#fff", background: "#2E7D32", padding: "5px 12px", borderRadius: 6, marginBottom: 8, display: "inline-block" }}>💵 CASH</div>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 8 }}>
                 {[
-                  { label: "Treatment", sub: "デポジット・GC・キャンセル料・チケット購入込み", value: cashTreatmentAll, color: "#2E7D32" },
+                  { label: "Treatment", sub: "Includes deposits/GC/cancellation fees/ticket purchases", value: cashTreatmentAll, color: "#2E7D32" },
                   { label: "Product", value: cashProductStd, color: "#2E7D32" },
                   { label: "Total Cash", value: cashTreatmentAll + cashProductStd, color: "#1B5E20", bold: true },
                   { label: "Tip", value: tipCashAllSources, color: "#558B2F" },
@@ -1647,7 +1653,7 @@ export default function SpaDailySheet() {
               <div style={{ fontSize: 13, fontWeight: 800, color: "#fff", background: "#1565C0", padding: "5px 12px", borderRadius: 6, marginBottom: 8, display: "inline-block" }}>💳 CARD</div>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 8 }}>
                 {[
-                  { label: "Treatment", sub: "デポジット・GC・キャンセル料・チケット購入込み", value: cardTreatmentAll, color: "#1565C0" },
+                  { label: "Treatment", sub: "Includes deposits/GC/cancellation fees/ticket purchases", value: cardTreatmentAll, color: "#1565C0" },
                   { label: "Product", value: cardProductStd, color: "#1565C0" },
                   { label: "Total Card", value: cardTreatmentAll + cardProductStd, color: "#0D47A1", bold: true },
                   { label: "Tip", value: tipCardAllSources, color: "#1976D2" },
@@ -1664,20 +1670,20 @@ export default function SpaDailySheet() {
             {/* Total Tip */}
             <div style={{ marginBottom: 12 }}>
               <div style={{ background: "#FFF3E0", borderRadius: 8, padding: "8px 10px", textAlign: "center", border: "1.5px solid #E65100" }}>
-                <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>Total Tip（Cash＋Card）</div>
+                <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>Total Tip (Cash + Card)</div>
                 <div style={{ fontSize: 20, fontWeight: 800, color: "#E65100" }}>{formatCurrency(totalTipAllCC)}</div>
               </div>
             </div>
 
-            {/* その他内訳（上のTreatmentに含まれています） */}
+            {/* Other breakdown (already included in Treatment above) */}
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(110px,1fr))", gap: 8, marginBottom: 12 }}>
               {[
-                { label: "デポジット受取", note: "Treatmentに計上済み", value: totalDepositAmt, color: "#0277BD", bg: "#E1F5FE" },
-                ...(totalDepositApplied > 0 ? [{ label: "💰 Payroll加算", value: totalDepositApplied, color: "#2E7D32", bg: "#C8E6C9", prefix: "+" }] : []),
-                { label: "ギフトカード購入", note: "Treatmentに計上済み", value: totalGiftCard, color: "#00796B", bg: "#E0F2F1" },
-                ...(totalGCUsed > 0 ? [{ label: "🎁 GC使用", value: totalGCUsed, color: "#00695C", bg: "#B2DFDB" }] : []),
-                { label: "❌ キャンセル料", note: "Treatmentに計上済み", value: totalCancellation, color: "#C62828", bg: "#FFEBEE" },
-                { label: "物販合計", value: totalRetail + inlineRetailTotal + spTotal, color: "#6A1B9A", bg: "#F3E5F5" },
+                { label: "Deposits Received", note: "Already counted in Treatment", value: totalDepositAmt, color: "#0277BD", bg: "#E1F5FE" },
+                ...(totalDepositApplied > 0 ? [{ label: "💰 Added to Payroll", value: totalDepositApplied, color: "#2E7D32", bg: "#C8E6C9", prefix: "+" }] : []),
+                { label: "Gift Card Purchases", note: "Already counted in Treatment", value: totalGiftCard, color: "#00796B", bg: "#E0F2F1" },
+                ...(totalGCUsed > 0 ? [{ label: "🎁 GC Used", value: totalGCUsed, color: "#00695C", bg: "#B2DFDB" }] : []),
+                { label: "❌ Cancellation Fees", note: "Already counted in Treatment", value: totalCancellation, color: "#C62828", bg: "#FFEBEE" },
+                { label: "Retail Total", value: totalRetail + inlineRetailTotal + spTotal, color: "#6A1B9A", bg: "#F3E5F5" },
               ].map(s => (
                 <div key={s.label} style={{ background: s.bg, borderRadius: 8, padding: "8px 10px", textAlign: "center" }}>
                   <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>{s.label}</div>
@@ -1689,27 +1695,27 @@ export default function SpaDailySheet() {
 
             {/* Grand Total */}
             <div style={{ borderTop: "2px solid #0D4F4F", paddingTop: 12 }}>
-              <div style={{ fontSize: 12, fontWeight: 700, color: "#0D4F4F", marginBottom: 8 }}>📊 当日 GRAND TOTAL</div>
+              <div style={{ fontSize: 12, fontWeight: 700, color: "#0D4F4F", marginBottom: 8 }}>📊 Today's GRAND TOTAL</div>
               {/* Treatment breakdown */}
               <div style={{ background: "#F9F9F9", borderRadius: 8, padding: "8px 12px", marginBottom: 8, fontSize: 11, color: "#555" }}>
-                <span style={{ fontWeight: 700 }}>施術料合計（Deposit・GC・チケット購入含む）：</span>
+                <span style={{ fontWeight: 700 }}>Treatment total (incl. Deposit/GC/ticket purchases):</span>
                 <span style={{ color: "#C62828", fontWeight: 800, fontSize: 14, marginLeft: 4 }}>{formatCurrency(totalCash + totalCard + totalDepositAmt + totalGiftCard + totalCancellation + tpTotal + inlineNTTotal + inlineGCTotal)}</span>
                 <div style={{ marginTop: 4, color: "#999", fontSize: 10 }}>
                   Cash ${totalCash.toFixed(2)}　Card ${totalCard.toFixed(2)}
                   {totalDepositAmt > 0 && `　Deposit $${totalDepositAmt.toFixed(2)}`}
                   {totalGiftCard > 0 && `　GiftCard $${(totalGiftCard + inlineGCTotal).toFixed(2)}`}
-                  {totalCancellation > 0 && `　キャンセル料 $${totalCancellation.toFixed(2)}`}
-                  {(tpTotal + inlineNTTotal) > 0 && `　チケット購入 $${(tpTotal + inlineNTTotal).toFixed(2)}`}
-                  {inlineRetailTotal > 0 && `　物販(inline) $${inlineRetailTotal.toFixed(2)}`}
+                  {totalCancellation > 0 && `　Cancellation Fee $${totalCancellation.toFixed(2)}`}
+                  {(tpTotal + inlineNTTotal) > 0 && `　Ticket Purchase $${(tpTotal + inlineNTTotal).toFixed(2)}`}
+                  {inlineRetailTotal > 0 && `　Retail (inline) $${inlineRetailTotal.toFixed(2)}`}
                 </div>
               </div>
               {/* Final totals grid */}
               <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 6 }}>
                 {[
-                  { label: "Cash合計\n（全て）", value: totalCash + retails.filter(r=>r.paymentType==="cash").reduce((s,r)=>s+Number(r.price||0),0) + tpCash + inlineNTCash + inlineRetailCash + inlineGCCash + totalCancellationCash + spCash, color: "#2E7D32", bg: "#E8F5E9" },
-                  { label: "Card合計\n（全て）", value: totalCard + retails.filter(r=>r.paymentType==="card").reduce((s,r)=>s+Number(r.price||0),0) + tpCard + inlineNTCard + inlineRetailCard + inlineGCCard + totalCancellationCard + spCard, color: "#1565C0", bg: "#E3F2FD" },
-                  { label: "Tip合計", value: totalTipAllCC, color: "#E65100", bg: "#FFF3E0" },
-                  { label: "🏆 TOTAL\n（全て込み）", value: totalCash + totalCard + totalDepositAmt + totalGiftCard + totalCancellation + totalRetail + totalTipAllCC + tpTotal + inlineNTTotal + inlineRetailTotal + inlineGCTotal + spTotal, color: "#fff", bg: "#0D4F4F", bold: true },
+                  { label: "Cash Total\n(all)", value: totalCash + retails.filter(r=>r.paymentType==="cash").reduce((s,r)=>s+Number(r.price||0),0) + tpCash + inlineNTCash + inlineRetailCash + inlineGCCash + totalCancellationCash + spCash, color: "#2E7D32", bg: "#E8F5E9" },
+                  { label: "Card Total\n(all)", value: totalCard + retails.filter(r=>r.paymentType==="card").reduce((s,r)=>s+Number(r.price||0),0) + tpCard + inlineNTCard + inlineRetailCard + inlineGCCard + totalCancellationCard + spCard, color: "#1565C0", bg: "#E3F2FD" },
+                  { label: "Tip Total", value: totalTipAllCC, color: "#E65100", bg: "#FFF3E0" },
+                  { label: "🏆 TOTAL\n(everything)", value: totalCash + totalCard + totalDepositAmt + totalGiftCard + totalCancellation + totalRetail + totalTipAllCC + tpTotal + inlineNTTotal + inlineRetailTotal + inlineGCTotal + spTotal, color: "#fff", bg: "#0D4F4F", bold: true },
                 ].map(s => (
                   <div key={s.label} style={{ background: s.bg, borderRadius: 8, padding: "8px 6px", textAlign: "center" }}>
                     <div style={{ fontSize: 9, color: s.color === "#fff" ? "#B2EBF2" : "#888", marginBottom: 3, whiteSpace: "pre-line", lineHeight: 1.3 }}>{s.label}</div>
@@ -1723,7 +1729,7 @@ export default function SpaDailySheet() {
           {/* Same-day ticket purchase */}
           {sameDayAppts.length > 0 && (
             <div style={{ background: "#E8F5E9", borderRadius: 12, padding: 12, marginBottom: 12, borderLeft: "4px solid #2E7D32" }}>
-              <div style={{ fontSize: 12, fontWeight: 700, color: "#2E7D32", marginBottom: 8 }}>🟢 当日購入チケット {sameDayAppts.length}件</div>
+              <div style={{ fontSize: 12, fontWeight: 700, color: "#2E7D32", marginBottom: 8 }}>🟢 Same-Day Ticket Purchases: {sameDayAppts.length}</div>
               {sameDayAppts.map(a => {
                 const pkgTip = Number(a.packageTip ?? a.tip ?? 0);
                 const pkgSvc = Number(a.packagePrice||0);
@@ -1737,16 +1743,16 @@ export default function SpaDailySheet() {
                 <div key={a.id} onClick={() => openApptForEdit(a)} style={{ background: "#fff", borderRadius: 8, padding: "8px 12px", marginBottom: 6, cursor: "pointer" }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 6 }}>
                     <span style={{ fontWeight: 700 }}>{a.clientName}</span>
-                    <span style={{ fontSize: 12, color: "#2E7D32" }}>{a.ticketMenu} {a.ticketCurrent > 0 ? `${a.ticketCurrent}/${a.ticketTotal}回目` : `購入のみ（${a.ticketTotal}回コース）`}</span>
-                    <span style={{ fontSize: 12, color: "#888" }}>{a.therapist}{a.cavTherapist ? ` ＋ ${a.cavTherapist}(機械)` : ""}</span>
+                    <span style={{ fontSize: 12, color: "#2E7D32" }}>{a.ticketMenu} {a.ticketCurrent > 0 ? `session ${a.ticketCurrent}/${a.ticketTotal}` : `purchase only (${a.ticketTotal}-session course)`}</span>
+                    <span style={{ fontSize: 12, color: "#888" }}>{a.therapist}{a.cavTherapist ? ` + ${a.cavTherapist} (machine)` : ""}</span>
                   </div>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 4 }}>
-                    <span style={{ fontSize: 11, color: "#2E7D32" }}>💰 {a.packageSplitPayment ? `💵$${a.packageCashPortion||0}＋💳$${a.packageCardPortion||0}` : `$${pkgSvc}${a.paymentType==="card"?"💳":"💵"}`} / チップ ${pkgTip}{a.tipPaymentType==="card"?"💳":"💵"}{extraSvc > 0 && <span style={{ color: "#F57F17" }}> +${extraSvc}{a.extraPricePaymentType==="card"?"💳":"💵"}</span>}{extra > 0 && <span style={{ color: "#F57F17" }}> +${extra}💝{a.extraTipPaymentType==="card"?"💳":"💵"}</span>}</span>
-                    <span style={{ fontWeight: 800, color: "#0D4F4F", fontSize: 14 }}>合計 ${pkgSvc + pkgTip + extra + extraSvc}</span>
+                    <span style={{ fontSize: 11, color: "#2E7D32" }}>💰 {a.packageSplitPayment ? `💵$${a.packageCashPortion||0}＋💳$${a.packageCardPortion||0}` : `$${pkgSvc}${a.paymentType==="card"?"💳":"💵"}`} / Tip ${pkgTip}{a.tipPaymentType==="card"?"💳":"💵"}{extraSvc > 0 && <span style={{ color: "#F57F17" }}> +${extraSvc}{a.extraPricePaymentType==="card"?"💳":"💵"}</span>}{extra > 0 && <span style={{ color: "#F57F17" }}> +${extra}💝{a.extraTipPaymentType==="card"?"💳":"💵"}</span>}</span>
+                    <span style={{ fontWeight: 800, color: "#0D4F4F", fontSize: 14 }}>Total ${pkgSvc + pkgTip + extra + extraSvc}</span>
                   </div>
                   {gc > 0 && (
                     <div style={{ marginTop: 4, fontSize: 10, color: NON_REVENUE_COLOR }}>
-                      🔵 ギフトカード残高 ${gcSvc + gcTip} 使用（本日の売上には含まれません。実質の本日売上 ${total}）
+                      🔵 Used ${gcSvc + gcTip} of gift card balance (not counted in today's sales — today's actual sales: ${total})
                     </div>
                   )}
                 </div>
@@ -1758,7 +1764,7 @@ export default function SpaDailySheet() {
           {/* Ticket (paid already) */}
           {pureTicketAppts.length > 0 && (
             <div style={{ background: "#E3F2FD", borderRadius: 12, padding: 12, marginBottom: 12, borderLeft: "4px solid #1565C0" }}>
-              <div style={{ fontSize: 12, fontWeight: 700, color: "#1565C0", marginBottom: 8 }}>🔵 領収済み（チケット消化）{pureTicketAppts.length}件</div>
+              <div style={{ fontSize: 12, fontWeight: 700, color: "#1565C0", marginBottom: 8 }}>🔵 Already Paid (Ticket Redemption): {pureTicketAppts.length}</div>
               {pureTicketAppts.map(a => {
                 const svc = r2(Number(a.price||0) + Number(a.cavPrice||0));
                 const tip = r2(Number(a.tip||0) + Number(a.cavTip||0) + Number(a.extraTip||0));
@@ -1768,11 +1774,11 @@ export default function SpaDailySheet() {
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 6 }}>
                       <span style={{ fontWeight: 700 }}>{a.clientName}</span>
                       <span style={{ fontSize: 12, color: "#1565C0" }}>{a.ticketMenu} {a.ticketCurrent}/{a.ticketTotal}</span>
-                      <span style={{ fontSize: 12, color: "#888" }}>{a.therapist}{a.cavTherapist ? ` ＋ ${a.cavTherapist}(機械)` : ""}</span>
+                      <span style={{ fontSize: 12, color: "#888" }}>{a.therapist}{a.cavTherapist ? ` + ${a.cavTherapist} (machine)` : ""}</span>
                     </div>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 4, flexWrap: "wrap", gap: 4 }}>
-                      <span style={{ fontSize: 11, color: "#1565C0" }}>施術 ${svc} / チップ ${Number(a.tip||0)+Number(a.cavTip||0)}{extraSvc > 0 && <span style={{ color: "#F57F17" }}> +${extraSvc}{a.extraPricePaymentType==="card"?"💳":"💵"}</span>}{a.extraTip > 0 && <span style={{ color: "#F57F17" }}> +${a.extraTip}💝{a.extraTipPaymentType==="card"?"💳":"💵"}</span>}</span>
-                      <span style={{ fontWeight: 800, color: "#0D4F4F", fontSize: 14 }}>合計 ${svc + tip + extraSvc}</span>
+                      <span style={{ fontSize: 11, color: "#1565C0" }}>Treatment ${svc} / Tip ${Number(a.tip||0)+Number(a.cavTip||0)}{extraSvc > 0 && <span style={{ color: "#F57F17" }}> +${extraSvc}{a.extraPricePaymentType==="card"?"💳":"💵"}</span>}{a.extraTip > 0 && <span style={{ color: "#F57F17" }}> +${a.extraTip}💝{a.extraTipPaymentType==="card"?"💳":"💵"}</span>}</span>
+                      <span style={{ fontWeight: 800, color: "#0D4F4F", fontSize: 14 }}>Total ${svc + tip + extraSvc}</span>
                     </div>
                   </div>
                 );
@@ -1783,7 +1789,7 @@ export default function SpaDailySheet() {
           {/* GC消化 (pre-purchased GC used today) */}
           {gcAppts.length > 0 && (
             <div style={{ background: "#FFFDE7", borderRadius: 12, padding: 12, marginBottom: 12, borderLeft: "4px solid #F59E0B" }}>
-              <div style={{ fontSize: 12, fontWeight: 700, color: "#B45309", marginBottom: 8 }}>🎁 領収済み（GC消化）{gcAppts.length}件</div>
+              <div style={{ fontSize: 12, fontWeight: 700, color: "#B45309", marginBottom: 8 }}>🎁 Already Paid (Gift Card Redemption): {gcAppts.length}</div>
               {gcAppts.map(a => {
                 const svc = r2(Number(a.price||0) + Number(a.cavPrice||0));
                 const tip = r2(Number(a.tip||0) + Number(a.cavTip||0));
@@ -1791,12 +1797,12 @@ export default function SpaDailySheet() {
                   <div key={a.id} onClick={() => openApptForEdit(a)} style={{ background: "#fff", borderRadius: 8, padding: "8px 12px", marginBottom: 6, cursor: "pointer" }}>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 6 }}>
                       <span style={{ fontWeight: 700 }}>{a.clientName}</span>
-                      <span style={{ fontSize: 12, color: "#B45309" }}>{a.serviceName || `${a.duration}分`}</span>
-                      <span style={{ fontSize: 12, color: "#888" }}>{a.therapist}{a.cavTherapist ? ` ＋ ${a.cavTherapist}(機械)` : ""}</span>
+                      <span style={{ fontSize: 12, color: "#B45309" }}>{a.serviceName || `${a.duration}min`}</span>
+                      <span style={{ fontSize: 12, color: "#888" }}>{a.therapist}{a.cavTherapist ? ` + ${a.cavTherapist} (machine)` : ""}</span>
                     </div>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 4 }}>
-                      <span style={{ fontSize: 11, color: "#B45309" }}>施術 ${svc} / チップ ${tip}</span>
-                      <span style={{ fontWeight: 800, color: "#0D4F4F", fontSize: 14 }}>合計 ${svc + tip}</span>
+                      <span style={{ fontSize: 11, color: "#B45309" }}>Treatment ${svc} / Tip ${tip}</span>
+                      <span style={{ fontWeight: 800, color: "#0D4F4F", fontSize: 14 }}>Total ${svc + tip}</span>
                     </div>
                   </div>
                 );
@@ -1807,7 +1813,7 @@ export default function SpaDailySheet() {
           {/* PR無料 (comped treatments for influencers etc.) */}
           {promoAppts.length > 0 && (
             <div style={{ background: "#E3F2FD", borderRadius: 12, padding: 12, marginBottom: 12, borderLeft: "4px solid #1565C0" }}>
-              <div style={{ fontSize: 12, fontWeight: 700, color: "#1565C0", marginBottom: 8 }}>📸 PR無料（施術売上には計上されません）{promoAppts.length}件</div>
+              <div style={{ fontSize: 12, fontWeight: 700, color: "#1565C0", marginBottom: 8 }}>📸 Complimentary PR (not counted in treatment sales): {promoAppts.length}</div>
               {promoAppts.map(a => {
                 const svc = r2(Number(a.price||0) + Number(a.cavPrice||0));
                 const tip = r2(Number(a.tip||0) + Number(a.cavTip||0));
@@ -1815,12 +1821,12 @@ export default function SpaDailySheet() {
                   <div key={a.id} onClick={() => openApptForEdit(a)} style={{ background: "#fff", borderRadius: 8, padding: "8px 12px", marginBottom: 6, cursor: "pointer" }}>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 6 }}>
                       <span style={{ fontWeight: 700 }}>{a.clientName}</span>
-                      <span style={{ fontSize: 12, color: "#1565C0" }}>{a.serviceName || `${a.duration}分`}</span>
-                      <span style={{ fontSize: 12, color: "#888" }}>{a.therapist}{a.cavTherapist ? ` ＋ ${a.cavTherapist}(機械)` : ""}</span>
+                      <span style={{ fontSize: 12, color: "#1565C0" }}>{a.serviceName || `${a.duration}min`}</span>
+                      <span style={{ fontSize: 12, color: "#888" }}>{a.therapist}{a.cavTherapist ? ` + ${a.cavTherapist} (machine)` : ""}</span>
                     </div>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 4 }}>
-                      <span style={{ fontSize: 11, color: "#1565C0" }}>施術 ${svc} / チップ ${tip}</span>
-                      <span style={{ fontWeight: 800, color: "#0D4F4F", fontSize: 14 }}>合計 ${svc + tip}</span>
+                      <span style={{ fontSize: 11, color: "#1565C0" }}>Treatment ${svc} / Tip ${tip}</span>
+                      <span style={{ fontWeight: 800, color: "#0D4F4F", fontSize: 14 }}>Total ${svc + tip}</span>
                     </div>
                     {a.notes && <div style={{ fontSize: 11, color: "#888", marginTop: 2 }}>📝 {a.notes}</div>}
                   </div>
@@ -1829,9 +1835,9 @@ export default function SpaDailySheet() {
             </div>
           )}
 
-          {/* 顧客タイプ & 紹介元 */}
+          {/* Customer type & referral source */}
           <div style={{ background: "#fff", borderRadius: 12, padding: 16, marginBottom: 14, boxShadow: "0 1px 4px rgba(0,0,0,0.08)" }}>
-            <div style={{ fontWeight: 700, marginBottom: 10, color: "#0D4F4F" }}>顧客タイプ別</div>
+            <div style={{ fontWeight: 700, marginBottom: 10, color: "#0D4F4F" }}>By Customer Type</div>
             <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 12 }}>
               {CUSTOMER_TYPES.map(ct => {
                 const colors = { RL:"#4CAF50", RT:"#2196F3", NL:"#FF9800", NT:"#9C27B0" };
@@ -1845,7 +1851,7 @@ export default function SpaDailySheet() {
             </div>
             {appointments.filter(a => !a.isCavSlot && (a.customerType === "NT" || a.customerType === "NL") && a.referralSource).length > 0 && (
               <>
-                <div style={{ fontWeight: 700, marginBottom: 8, color: "#9C27B0", fontSize: 13 }}>📍 新規きっかけ</div>
+                <div style={{ fontWeight: 700, marginBottom: 8, color: "#9C27B0", fontSize: 13 }}>📍 New Customer Source</div>
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                   {REFERRAL_SOURCES.map(src => {
                     const count = appointments.filter(a => !a.isCavSlot && a.referralSource === src).length;
@@ -1853,7 +1859,7 @@ export default function SpaDailySheet() {
                     return (
                       <div key={src} style={{ background: "#F3E5F5", borderRadius: 8, padding: "6px 12px", textAlign: "center" }}>
                         <div style={{ fontSize: 18, fontWeight: 800, color: "#9C27B0" }}>{count}</div>
-                        <div style={{ fontSize: 11, color: "#6A1B9A" }}>{src}</div>
+                        <div style={{ fontSize: 11, color: "#6A1B9A" }}>{REFERRAL_LABELS[src] || src}</div>
                       </div>
                     );
                   })}
@@ -1862,14 +1868,14 @@ export default function SpaDailySheet() {
             )}
           </div>
 
-          {/* セラピスト別 */}
+          {/* By Therapist */}
           <div style={{ background: "#fff", borderRadius: 12, padding: 16, boxShadow: "0 1px 4px rgba(0,0,0,0.08)", overflowX: "auto" }}>
-            <div style={{ fontWeight: 700, marginBottom: 12, color: "#0D4F4F" }}>セラピスト別</div>
+            <div style={{ fontWeight: 700, marginBottom: 12, color: "#0D4F4F" }}>By Therapist</div>
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
               <thead>
                 <tr style={{ borderBottom: "2px solid #E0E0E0", background: "#F9F9F9" }}>
-                  {["名前","人数",...CUSTOMER_TYPES,"チケット新規件数","チケット新規金額"].map(h => (
-                    <th key={h} style={{ padding: "6px 8px", textAlign: h==="名前"?"left":"center", color: "#888", fontWeight: 600, whiteSpace: "nowrap" }}>{h}</th>
+                  {["Name","Clients",...CUSTOMER_TYPES,"New Tickets Sold","New Ticket Amount"].map(h => (
+                    <th key={h} style={{ padding: "6px 8px", textAlign: h==="Name"?"left":"center", color: "#888", fontWeight: 600, whiteSpace: "nowrap" }}>{h}</th>
                   ))}
                 </tr>
               </thead>
@@ -1959,7 +1965,7 @@ function ApptCard({ appt, onClick, allAppointments }) {
     const tipIcon = appt.tipPaymentType === "card" ? "💳" : appt.tipPaymentType === "cash" ? "💵" : "";
     return (
       <div onClick={onClick} style={{ background: bg, border: `2px solid ${borderColor}`, borderRadius: 8, padding: "5px 8px", marginBottom: 3, cursor: "pointer", opacity: 0.9 }}>
-        <div style={{ fontSize: 11, fontWeight: 700, color: "#6A1B9A" }}>⚡ 機械 {appt.isTicket ? "🎟️" : ""}</div>
+        <div style={{ fontSize: 11, fontWeight: 700, color: "#6A1B9A" }}>⚡ Machine {appt.isTicket ? "🎟️" : ""}</div>
         <div style={{ fontSize: 11, color: "#555" }}>
           {appt.clientName} <span style={{ color: "#888", fontSize: 10 }}>({appt.startTime}〜)</span>
         </div>
@@ -1974,7 +1980,7 @@ function ApptCard({ appt, onClick, allAppointments }) {
           </div>
         )}
         {dep > 0 && !isWeightLossService(parent?.serviceName) && (
-          <div style={{ color: "#2E7D32", fontSize: 9 }}>💰デポジット按分込み</div>
+          <div style={{ color: "#2E7D32", fontSize: 9 }}>💰Deposit split included</div>
         )}
       </div>
     );
@@ -1983,7 +1989,7 @@ function ApptCard({ appt, onClick, allAppointments }) {
   return (
     <div onClick={onClick} style={{ background: bg, border: `2px solid ${borderColor}`, borderRadius: 8, padding: "6px 8px", marginBottom: 3, cursor: "pointer" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-        <span style={{ fontSize: 12, fontWeight: 700, lineHeight: 1.3 }}>{appt.clientName || "（未設定）"}</span>
+        <span style={{ fontSize: 12, fontWeight: 700, lineHeight: 1.3 }}>{appt.clientName || "(not set)"}</span>
         <span style={{ fontSize: 10, fontWeight: 700, color: "#fff", background: typeColors[appt.customerType]||"#888", padding: "1px 5px", borderRadius: 8, marginLeft: 4, whiteSpace: "nowrap" }}>
           {appt.customerType}
         </span>
@@ -2037,17 +2043,17 @@ function ApptCard({ appt, onClick, allAppointments }) {
         const tipText = !isRedemption && !isSameDay && appt.tipSplitPayment
           ? `💵$${appt.tipCashPortion||0}＋💳$${appt.tipCardPortion||0}` : `${dispTip}${tipIcon}`;
 
-        const courseName = isTicket ? (appt.serviceName || appt.ticketMenu) : (appt.serviceName || `${appt.duration}分`);
+        const courseName = isTicket ? (appt.serviceName || appt.ticketMenu) : (appt.serviceName || `${appt.duration}min`);
         const sessionSuffix = isRedemption && appt.ticketCurrent > 0 ? ` ${appt.ticketCurrent}/${appt.ticketTotal}`
-          : isSameDay ? ` ×${appt.ticketTotal}回` : "";
+          : isSameDay ? ` x${appt.ticketTotal}` : "";
 
         const gc = (!isGiftCard && !isPromo) ? Number(appt.giftCardUsed||0) : 0;
 
         return (
           <div style={{ fontSize: 11, marginTop: 2 }}>
             <div style={{ color: isGiftCard ? "#B45309" : isPromo ? "#1565C0" : "#222", fontWeight: 700, lineHeight: 1.4 }}>
-              {isGiftCard && <span style={{ fontSize: 10, background: "#F59E0B", color: "#fff", padding: "1px 5px", borderRadius: 6, marginRight: 4 }}>🎁GC消化</span>}
-              {isPromo && <span style={{ fontSize: 10, background: "#1565C0", color: "#fff", padding: "1px 5px", borderRadius: 6, marginRight: 4 }}>📸PR無料</span>}
+              {isGiftCard && <span style={{ fontSize: 10, background: "#F59E0B", color: "#fff", padding: "1px 5px", borderRadius: 6, marginRight: 4 }}>🎁GC Redemption</span>}
+              {isPromo && <span style={{ fontSize: 10, background: "#1565C0", color: "#fff", padding: "1px 5px", borderRadius: 6, marginRight: 4 }}>📸Complimentary PR</span>}
               {courseName}{sessionSuffix}
               {(appt.extraServiceNames || []).map(n => ` + ${n}`).join("")}
             </div>
@@ -2076,15 +2082,15 @@ function ApptCard({ appt, onClick, allAppointments }) {
               <div style={{ color: "#6A1B9A", fontSize: 10 }}>with {appt.cavTherapist}</div>
             )}
             {dep > 0 && (
-              <div style={{ color: "#2E7D32", fontSize: 10 }}>💰デポジット${dep} 支払済み（本日受取額には含まず）{depDate ? ` ${depDate}` : ""}</div>
+              <div style={{ color: "#2E7D32", fontSize: 10 }}>💰Deposit ${dep} paid (not included in today's total received){depDate ? ` ${depDate}` : ""}</div>
             )}
             {gc > 0 && (
-              <div style={{ color: "#2E7D32", fontSize: 10 }}>GC使用 ${gc}</div>
+              <div style={{ color: "#2E7D32", fontSize: 10 }}>GC used ${gc}</div>
             )}
             {(appt.addons || []).length > 0 && (
               <div style={{ display: "flex", flexDirection: "column", gap: 3, marginTop: 3 }}>
                 {(appt.addons || []).map(addon => {
-                  const label = addon.serviceName || addon.name || "オプション";
+                  const label = addon.serviceName || addon.name || "Add-on";
                   const aSvc = Number(addon.price||0);
                   const aTip = Number(addon.tip||0);
                   const aTotal = r2(aSvc + aTip);
@@ -2141,7 +2147,7 @@ function ApptCard({ appt, onClick, allAppointments }) {
               const uniformType = items.every(it => it.paymentType === items[0].paymentType) ? items[0].paymentType : null;
               const icon = uniformType === "card" ? "💳" : uniformType === "cash" ? "💵" : "";
               return (
-                <div key={tagId} style={{ fontSize: 10, color: REVENUE_COLOR, fontWeight: 700 }}>物販 ${total}{icon}</div>
+                <div key={tagId} style={{ fontSize: 10, color: REVENUE_COLOR, fontWeight: 700 }}>Retail ${total}{icon}</div>
               );
             }
             if (tagId === "giftCard") {
@@ -2161,30 +2167,30 @@ function ApptCard({ appt, onClick, allAppointments }) {
 }
 
 const APPT_ERROR_LABELS = {
-  clientName: "お客様名",
-  serviceName: "コース名／施術メニュー",
-  therapist: "セラピスト（ボディ）",
-  startTime: "開始時間",
-  customerType: "顧客タイプ（RL/RT/NL/NT）",
-  referralSource: "どこで知りましたか（新規のきっかけ）",
-  price: "施術料金",
-  packagePrice: "パッケージ代金",
-  ticketMenu: "施術メニュー・時間",
-  ticketTotal: "コース回数（3回／5回）",
-  priceVersionChosen: "料金バージョン（新料金／旧料金）",
-  ticketCurrent: "今日は何回目か",
-  paymentType: "施術 支払方法",
-  tipPaymentType: "チップ 支払方法",
-  packagePaymentType: "パッケージ代金 支払方法",
-  packageTipPaymentType: "当日チップ 支払方法",
-  extraPricePaymentType: "追加施術料 支払方法",
-  extraTipPaymentType: "エクストラチップ 支払方法",
-  newTicketPaymentType: "チケット新規購入 支払方法",
-  newTicketTipPaymentType: "チケット新規購入チップ 支払方法",
-  retailPurchasePaymentType: "物販購入 支払方法",
-  giftCardPurchasePaymentType: "ギフトカード購入 支払方法",
-  depositPaidDate: "デポジット 支払われた日",
-  packageDepositDate: "デポジット 支払われた日",
+  clientName: "Client Name",
+  serviceName: "Course / Treatment Menu",
+  therapist: "Therapist (Body)",
+  startTime: "Start Time",
+  customerType: "Customer Type (RL/RT/NL/NT)",
+  referralSource: "How did they hear about us (new customer)",
+  price: "Treatment Price",
+  packagePrice: "Package Price",
+  ticketMenu: "Treatment Menu / Duration",
+  ticketTotal: "Sessions in course (3 / 5)",
+  priceVersionChosen: "Price Version (new / old)",
+  ticketCurrent: "Which session number today",
+  paymentType: "Treatment Payment Method",
+  tipPaymentType: "Tip Payment Method",
+  packagePaymentType: "Package Price Payment Method",
+  packageTipPaymentType: "Same-Day Tip Payment Method",
+  extraPricePaymentType: "Extra Treatment Fee Payment Method",
+  extraTipPaymentType: "Extra Tip Payment Method",
+  newTicketPaymentType: "New Ticket Purchase Payment Method",
+  newTicketTipPaymentType: "New Ticket Purchase Tip Payment Method",
+  retailPurchasePaymentType: "Retail Purchase Payment Method",
+  giftCardPurchasePaymentType: "Gift Card Purchase Payment Method",
+  depositPaidDate: "Deposit Paid Date",
+  packageDepositDate: "Deposit Paid Date",
 };
 
 function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
@@ -2264,9 +2270,9 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
 
   const ErrorBanner = () => errors.length === 0 ? null : (
     <div style={{ background: "#FFEBEE", border: "2px solid #C62828", borderRadius: 10, padding: "10px 14px", marginBottom: 12 }}>
-      <div style={{ fontWeight: 800, fontSize: 13, color: "#C62828", marginBottom: 4 }}>⚠️ 保存できません — 未入力・未選択の項目があります</div>
+      <div style={{ fontWeight: 800, fontSize: 13, color: "#C62828", marginBottom: 4 }}>⚠️ Can't save — some required fields are missing</div>
       <div style={{ fontSize: 12, color: "#B71C1C" }}>
-        {errors.map(e => APPT_ERROR_LABELS[e]).join("　／　")}
+        {errors.map(e => APPT_ERROR_LABELS[e]).join(" / ")}
       </div>
     </div>
   );
@@ -2304,7 +2310,7 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
   const applyNewTicketMenuPrice = (menu, total) => {
     const group = MENU_OPTIONS.find(m => menu.startsWith(m.prefix));
     const durLabel = menu.split("-")[1];
-    const packageName = group ? `${group.group} ${durLabel}分 ×${total}回` : "";
+    const packageName = group ? `${group.group} ${durLabel}min x${total}` : "";
     const pkg = TICKET_PACKAGE_PRICES[menu];
     setForm(f => ({
       ...f,
@@ -2379,25 +2385,25 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
   return (
     <Modal onClose={onClose}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-        <h2 style={{ margin: 0, fontSize: 18, color: "#0D4F4F" }}>✏️ 予約編集</h2>
+        <h2 style={{ margin: 0, fontSize: 18, color: "#0D4F4F" }}>✏️ Edit Appointment</h2>
         <button onClick={onClose} style={{ border: "none", background: "none", fontSize: 22, cursor: "pointer", color: "#888" }}>✕</button>
       </div>
 
       {clientDeposits.length > 0 && (
         <div style={{ background: "#FFF3E0", borderRadius: 10, padding: "10px 14px", marginBottom: 12, border: "2px solid #FF9800" }}>
-          <div style={{ fontWeight: 800, fontSize: 13, color: "#E65100" }}>💰 デポジット／ギフト先払いあり！</div>
+          <div style={{ fontWeight: 800, fontSize: 13, color: "#E65100" }}>💰 Has a deposit / gift prepayment!</div>
           {clientDeposits.map((d, i) => (
             <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, fontSize: 12, color: "#BF360C", marginTop: 4 }}>
               <div>
                 {d.type === "giftcard" ? "🎁 " : "💰 "}
-                <strong>{d.sheetDate}</strong> — ${d.amount}{Number(d.tip) > 0 ? `（＋チップ$${d.tip}）` : ""} ({d.paymentType === "cash" ? "現金" : "カード"})
-                {d.appointmentDate ? ` → 来店予定：${d.appointmentDate}${d.appointmentTime ? ` ${d.appointmentTime}` : ""}` : ""}
+                <strong>{d.sheetDate}</strong> — ${d.amount}{Number(d.tip) > 0 ? ` (+ Tip $${d.tip})` : ""} ({d.paymentType === "cash" ? "Cash" : "Card"})
+                {d.appointmentDate ? ` → Scheduled visit: ${d.appointmentDate}${d.appointmentTime ? ` ${d.appointmentTime}` : ""}` : ""}
                 {d.notes ? ` — ${d.notes}` : ""}
               </div>
               {d.type === "deposit" && (
                 <button onClick={() => setForm(f => ({ ...f, depositApplied: Number(d.amount) || 0, depositPaidDate: d.sheetDate }))}
                   style={{ flexShrink: 0, padding: "4px 10px", borderRadius: 8, border: "none", background: "#E65100", color: "#fff", fontWeight: 700, cursor: "pointer", fontSize: 11 }}>
-                  この内容を使う
+                  Use This
                 </button>
               )}
             </div>
@@ -2408,11 +2414,11 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
       <ErrorBanner />
 
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-        <Field label="顧客タイプ" error={errors.includes("customerType")}>
+        <Field label="Customer Type" error={errors.includes("customerType")}>
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
             {CUSTOMER_TYPES.map(ct => {
               const colors = { RL:"#4CAF50", RT:"#2196F3", NL:"#FF9800", NT:"#9C27B0" };
-              const labels = { RL:"リピ・ローカル", RT:"リピ・トラベラー", NL:"ニュー・ローカル", NT:"ニュー・トラベラー" };
+              const labels = { RL:"Returning Local", RT:"Returning Traveler", NL:"New Local", NT:"New Traveler" };
               return (
                 <button key={ct} onClick={() => set("customerType", ct)}
                   style={{ flex: 1, minWidth: 90, padding: "7px 4px", borderRadius: 8, border: `2px solid ${form.customerType===ct?colors[ct]:(errors.includes("customerType")?"#C62828":"#DDD")}`, background: form.customerType===ct?colors[ct]:"#fff", cursor: "pointer", fontWeight: 700, fontSize: 11, color: form.customerType===ct?"#fff":"#888" }}>
@@ -2425,7 +2431,7 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
 
         {/* How they found us — shown for NT and NL */}
         {(form.customerType === "NT" || form.customerType === "NL") && (
-          <Field label={form.customerType === "NT" ? "📍 どこで知りましたか？（NT）" : "📍 どこで知りましたか？（NL）"} error={errors.includes("referralSource")}>
+          <Field label={form.customerType === "NT" ? "📍 How did they hear about us? (NT)" : "📍 How did they hear about us? (NL)"} error={errors.includes("referralSource")}>
             <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
               {REFERRAL_SOURCES.map(src => (
                 <button key={src} onClick={() => set("referralSource", form.referralSource === src ? "" : src)}
@@ -2435,17 +2441,17 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                     cursor: "pointer", fontWeight: 600, fontSize: 12,
                     color: form.referralSource === src ? "#fff" : "#666"
                   }}>
-                  {src}
+                  {REFERRAL_LABELS[src] || src}
                 </button>
               ))}
             </div>
           </Field>
         )}
 
-        <Field label="お客様名" error={errors.includes("clientName")}>
-          <input value={form.clientName} onChange={e => set("clientName", e.target.value)} style={{ ...inputStyle, ...(errors.includes("clientName") ? { borderColor: "#C62828", borderWidth: 2 } : {}) }} placeholder="お客様名" />
+        <Field label="Client Name" error={errors.includes("clientName")}>
+          <input value={form.clientName} onChange={e => set("clientName", e.target.value)} style={{ ...inputStyle, ...(errors.includes("clientName") ? { borderColor: "#C62828", borderWidth: 2 } : {}) }} placeholder="Client Name" />
         </Field>
-        <Field label="コース名" error={errors.includes("serviceName")}>
+        <Field label="Course Name" error={errors.includes("serviceName")}>
           <select value={SQUARE_SERVICES.find(s => s.name === form.serviceName) ? form.serviceName : ""} onChange={e => {
             const name = e.target.value;
             // Clear any body/cav minute split left over from a previously-selected course —
@@ -2454,26 +2460,26 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
             const svc = SQUARE_SERVICES.find(s => s.name === name);
             setForm(f => ({ ...f, serviceName: name, bodyMins: undefined, cavMins: undefined, ...(svc ? { duration: svc.duration } : {}) }));
           }} style={{ ...inputStyle, color: "#1a1a1a", fontWeight: 600, ...(errors.includes("serviceName") ? { borderColor: "#C62828", borderWidth: 2 } : {}) }}>
-            <option value="">コースを選択</option>
+            <option value="">Select a course</option>
             {SQUARE_SERVICES.map(s => (
               <option key={s.name} value={s.name}>{s.name}</option>
             ))}
           </select>
-          {/* Square同期の名前がリストにない場合は自由入力できる */}
+          {/* Free-text entry when the Square-synced name isn't in the list */}
           {!SQUARE_SERVICES.find(s => s.name === form.serviceName) && (
-            <input type="text" value={form.serviceName || ""} placeholder="コース名を入力"
+            <input type="text" value={form.serviceName || ""} placeholder="Enter course name"
               onChange={e => set("serviceName", e.target.value)}
               style={{ ...inputStyle, marginTop: 4 }} />
           )}
           {form.serviceName && (
             <div style={{ fontSize: 11, color: "#0D4F4F", marginTop: 4, fontWeight: 600 }}>
-              ✅ {form.serviceName} ({form.duration}分)
+              ✅ {form.serviceName} ({form.duration}min)
             </div>
           )}
 
           {/* Extra menu(s) done by the SAME therapist in the same visit — name only, no separate
-              price/payment tracking (that combined amount goes straight into 施術合計・チップ合計
-              below). Use オプション追加 instead when a DIFFERENT therapist is involved. */}
+              price/payment tracking (that combined amount goes straight into the treatment/tip
+              totals below). Use the Add-on section instead when a DIFFERENT therapist is involved. */}
           {(form.extraServiceNames || []).map((name, idx) => (
             <div key={idx} style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 6 }}>
               <div style={{ flex: 1, fontSize: 12, fontWeight: 600, color: "#0D4F4F", background: "#EAF6F4", borderRadius: 8, padding: "6px 10px" }}>
@@ -2488,7 +2494,7 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
             if (!name) return;
             set("extraServiceNames", [...(form.extraServiceNames || []), name]);
           }} style={{ ...inputStyle, marginTop: 6, fontSize: 12, color: "#888" }}>
-            <option value="">＋ 同じセラピストのメニューを追加</option>
+            <option value="">+ Add a menu item for the same therapist</option>
             {ADDON_PRESETS.map(p => <option key={p} value={p}>{p}</option>)}
             {SQUARE_SERVICES.map(s => (
               <option key={s.name} value={s.name}>{s.name}</option>
@@ -2496,10 +2502,10 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
           </select>
         </Field>
 
-        {/* ── オプション追加（別担当者の追加施術・前回の未消化分キャビなど） ── */}
+        {/* ── Add-on (a different therapist's extra treatment, previous unused cav time, etc.) ── */}
         <div>
           {/* Service picker — selecting immediately adds the row (same one-step pattern as
-              the same-therapist メニュー追加 dropdown above) */}
+              the same-therapist menu-add dropdown above) */}
           <div style={{ marginBottom: 8 }}>
             <select value="" onChange={e => {
               const name = e.target.value;
@@ -2516,7 +2522,7 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                 ticketCurrent: null,
               }]);
             }} style={{ ...inputStyle, fontSize: 12, color: "#888" }}>
-              <option value="">＋ 別のセラピストのメニューを追加</option>
+              <option value="">+ Add a menu item for a different therapist</option>
               {ADDON_PRESETS.map(p => <option key={p} value={p}>{p}</option>)}
               {SQUARE_SERVICES.map(s => <option key={s.name} value={s.name}>{s.name}</option>)}
             </select>
@@ -2535,7 +2541,7 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
                       <input value={addon.serviceName||""} onChange={e => upd({ serviceName: e.target.value })}
                         style={{ ...inputStyle, flex: 1, fontSize: 12, fontWeight: 700, color: "#0D4F4F" }}
-                        placeholder="サービス名を入力（例：前回キャビ未消化分 2/3回目）" />
+                        placeholder="Enter service name (e.g. Previous unused cav time, session 2/3)" />
                       <button onClick={() => set("addons", form.addons.filter((_,i) => i !== idx))}
                         style={{ border: "none", background: "none", cursor: "pointer", fontSize: 16, color: "#AAA", marginLeft: 6, flexShrink: 0 }}>✕</button>
                     </div>
@@ -2543,16 +2549,16 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                     {/* Revenue vs. ticket-consumption toggle */}
                     <div style={{ marginBottom: 6 }}>
                       <div style={{ fontSize: 10, color: addon.countsAsRevenue === null ? "#C62828" : "#888", marginBottom: 3, fontWeight: addon.countsAsRevenue === null ? 700 : 400 }}>
-                        この分の扱い{addon.countsAsRevenue === null && " ⚠️ 未選択"}
+                        How to treat this{addon.countsAsRevenue === null && " ⚠️ Not selected"}
                       </div>
                       <div style={{ display: "flex", gap: 6 }}>
                         <button onClick={() => upd({ countsAsRevenue: true, ticketCurrent: null })}
                           style={{ flex: 1, padding: "6px 4px", borderRadius: 8, border: `2px solid ${addon.countsAsRevenue === true ? REVENUE_COLOR : "#DDD"}`, background: addon.countsAsRevenue === true ? "#FFEBEE" : "#fff", cursor: "pointer", fontWeight: 700, fontSize: 11, color: addon.countsAsRevenue === true ? REVENUE_COLOR : "#888" }}>
-                          💰 都度払い（新規支払い）
+                          💰 Pay-as-you-go (new payment)
                         </button>
                         <button onClick={() => upd({ countsAsRevenue: false })}
                           style={{ flex: 1, padding: "6px 4px", borderRadius: 8, border: `2px solid ${addon.countsAsRevenue === false ? NON_REVENUE_COLOR : "#DDD"}`, background: addon.countsAsRevenue === false ? "#E3F2FD" : "#fff", cursor: "pointer", fontWeight: 700, fontSize: 11, color: addon.countsAsRevenue === false ? NON_REVENUE_COLOR : "#888" }}>
-                          🎫 チケット消化（前回未消化分など）
+                          🎫 Ticket Redemption (previous unused session, etc.)
                         </button>
                       </div>
                     </div>
@@ -2560,12 +2566,12 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                     {/* Session number — only when this addon is itself a ticket redemption */}
                     {addon.countsAsRevenue === false && form.isTicket && (
                       <div style={{ marginBottom: 6 }}>
-                        <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>何回目の消化？</div>
+                        <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>Which session is this?</div>
                         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                           {Array.from({ length: form.ticketTotal||3 }, (_,i) => i+1).map(n => (
                             <button key={n} onClick={() => upd({ ticketCurrent: n })}
                               style={{ padding: "5px 10px", borderRadius: 8, border: `2px solid ${addon.ticketCurrent===n?"#0D4F4F":"#DDD"}`, background: addon.ticketCurrent===n?"#0D4F4F":"#fff", cursor: "pointer", fontWeight: 700, fontSize: 11, color: addon.ticketCurrent===n?"#fff":"#888" }}>
-                              {n}/{form.ticketTotal||3}回目
+                              {n}/{form.ticketTotal||3}
                             </button>
                           ))}
                         </div>
@@ -2574,10 +2580,10 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
 
                     {/* Therapist */}
                     <div style={{ marginBottom: 6 }}>
-                      <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>担当セラピスト</div>
+                      <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>Therapist</div>
                       <select value={addon.therapist||""} onChange={e => upd({ therapist: e.target.value })}
                         style={{ ...inputStyle, fontSize: 12 }}>
-                        <option value="">— 選択 —</option>
+                        <option value="">— Select —</option>
                         {THERAPISTS.map(t => <option key={t} value={t}>{t}</option>)}
                       </select>
                     </div>
@@ -2585,12 +2591,12 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                     {/* Price + Tip inputs */}
                     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 6 }}>
                       <div>
-                        <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>施術料 ($)</div>
+                        <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>Treatment Price ($)</div>
                         <input type="number" value={addon.price||""} onChange={e => upd({ price: e.target.value })}
                           style={{ ...inputStyle, fontSize: 12 }} placeholder="0" />
                       </div>
                       <div>
-                        <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>チップ ($)</div>
+                        <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>Tip ($)</div>
                         <input type="number" value={addon.tip||""} onChange={e => upd({ tip: e.target.value })}
                           style={{ ...inputStyle, fontSize: 12 }} placeholder="0" />
                       </div>
@@ -2599,7 +2605,7 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                     {/* Payment type — real money only when this is a new (revenue) payment, not a ticket redemption */}
                     {addon.countsAsRevenue !== false && (
                       <div style={{ marginBottom: tipAmt > 0 ? 6 : 0 }}>
-                        <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>支払方法（施術）</div>
+                        <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>Payment Method (Treatment)</div>
                         <PaymentToggle value={addon.paymentType} onChange={v => upd({ paymentType: v })} small />
                       </div>
                     )}
@@ -2607,7 +2613,7 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                     {/* Tip payment type */}
                     {tipAmt > 0 && addon.countsAsRevenue !== false && (
                       <div>
-                        <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>支払方法（チップ）</div>
+                        <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>Payment Method (Tip)</div>
                         <PaymentToggle value={addon.tipPaymentType} onChange={v => upd({ tipPaymentType: v })} small />
                       </div>
                     )}
@@ -2615,7 +2621,7 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                     {/* Sub-total */}
                     {(svcAmt + tipAmt) > 0 && (
                       <div style={{ marginTop: 6, textAlign: "right", fontSize: 11, color: "#0D4F4F", fontWeight: 700 }}>
-                        施術 ${svcAmt}{tipAmt > 0 ? ` ＋ チップ $${tipAmt}` : ""} ＝ <strong>${svcAmt + tipAmt}</strong>
+                        Treatment ${svcAmt}{tipAmt > 0 ? ` + Tip $${tipAmt}` : ""} = <strong>${svcAmt + tipAmt}</strong>
                       </div>
                     )}
                   </div>
@@ -2625,7 +2631,7 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
               {/* Grand addon total */}
               {(form.addons||[]).some(a => Number(a.price||0) + Number(a.tip||0) > 0) && (
                 <div style={{ background: "#E0F2F1", borderRadius: 8, padding: "8px 12px", textAlign: "right" }}>
-                  <span style={{ fontSize: 12, color: "#00695C" }}>オプション合計　</span>
+                  <span style={{ fontSize: 12, color: "#00695C" }}>Add-on Total　</span>
                   <strong style={{ fontSize: 14, color: "#004D40" }}>
                     ${(form.addons||[]).reduce((s,a) => s + Number(a.price||0) + Number(a.tip||0), 0)}
                   </strong>
@@ -2638,34 +2644,34 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
         {/* Ticket toggle */}
         <div style={{ display: "flex", gap: 4 }}>
           <button onClick={() => setForm(f => ({...f, isTicket: false, isSameDayTicket: false, isGiftCard: false, isPromo: false}))} style={{ flex: 1, padding: "8px 4px", borderRadius: 8, border: `2px solid ${!form.isTicket && !form.isGiftCard && !form.isPromo ? "#C62828" : "#DDD"}`, background: !form.isTicket && !form.isGiftCard && !form.isPromo ? "#FFEBEE" : "#fff", cursor: "pointer", fontWeight: 700, color: !form.isTicket && !form.isGiftCard && !form.isPromo ? "#C62828" : "#888", fontSize: 11 }}>
-            🔴 通常施術
+            🔴 Regular Treatment
           </button>
           <button onClick={() => { setForm(f => ({...f, isTicket: true, isSameDayTicket: false, isGiftCard: false, isPromo: false})); autoDetectAndApplyTicket(); }} style={{ flex: 1, padding: "8px 4px", borderRadius: 8, border: `2px solid ${form.isTicket && !form.isSameDayTicket ? "#1565C0" : "#DDD"}`, background: form.isTicket && !form.isSameDayTicket ? "#E3F2FD" : "#fff", cursor: "pointer", fontWeight: 700, color: form.isTicket && !form.isSameDayTicket ? "#1565C0" : "#888", fontSize: 11 }}>
-            🔵 チケット消化
+            🔵 Ticket Redemption
           </button>
           <button onClick={() => { setForm(f => ({...f, isTicket: true, isSameDayTicket: true, useToday: true, ticketCurrent: 1, isGiftCard: false, isPromo: false})); autoDetectAndApplyTicket(); }} style={{ flex: 1, padding: "8px 4px", borderRadius: 8, border: `2px solid ${form.isSameDayTicket ? "#2E7D32" : "#DDD"}`, background: form.isSameDayTicket ? "#E8F5E9" : "#fff", cursor: "pointer", fontWeight: 700, color: form.isSameDayTicket ? "#2E7D32" : "#888", fontSize: 11 }}>
-            🟢 当日購入
+            🟢 Same-Day Purchase
           </button>
           <button onClick={() => setForm(f => ({...f, isPromo: true, isGiftCard: false, isTicket: false, isSameDayTicket: false}))} style={{ flex: 1, padding: "8px 4px", borderRadius: 8, border: `2px solid ${form.isPromo ? "#1565C0" : "#DDD"}`, background: form.isPromo ? "#E3F2FD" : "#fff", cursor: "pointer", fontWeight: 700, color: form.isPromo ? "#1565C0" : "#888", fontSize: 11 }}>
-            📸 PR無料
+            📸 Complimentary PR
           </button>
         </div>
         {form.isGiftCard && (
           <div style={{ background: "#FFFDE7", border: "1.5px solid #F59E0B", borderRadius: 8, padding: "8px 10px", fontSize: 11, color: "#92400E" }}>
-            ⚠️ この予約は過去に「GC消化」として登録されています。ギフトカードの一部だけ使った場合や、チップを現金・カードで受け取った場合は、下の「🔴 通常施術」を押してから「🎁 ギフトカード使用」で金額を入力し直してください。
+            ⚠️ This appointment was previously recorded as "GC Redemption". If only part of the gift card was used, or if a tip was received in cash/card, click "🔴 Regular Treatment" below and re-enter the amounts under "🎁 Gift Card Used".
           </div>
         )}
 
         {/* Ticket options */}
         {form.isTicket && (
           <div style={{ background: "#EEF4FF", borderRadius: 10, padding: 12 }}>
-            <div style={{ fontWeight: 700, fontSize: 13, color: "#1565C0", marginBottom: 10 }}>🎟️ チケット設定</div>
+            <div style={{ fontWeight: 700, fontSize: 13, color: "#1565C0", marginBottom: 10 }}>🎟️ Ticket Settings</div>
 
             {/* Cav therapist — shown first; selecting triggers full auto-fill */}
             {isBodyOnly(form.therapist) && (!form.isSameDayTicket || form.useToday !== false) && (
               <div style={{ background: "#F3E5F5", borderRadius: 8, padding: 10, marginBottom: 10, border: `2px solid ${form.cavTherapist ? "#6A1B9A" : "#CE93D8"}` }}>
                 <div style={{ fontSize: 11, fontWeight: 700, color: "#6A1B9A", marginBottom: 6 }}>
-                  ⚡ 機械担当セラピスト
+                  ⚡ Machine Therapist
                 </div>
                 <select value={form.cavTherapist || ""} onChange={e => {
                   const cav = e.target.value;
@@ -2700,31 +2706,31 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                     set("cavTherapist", cav);
                   }
                 }} style={{ ...inputStyle, borderColor: form.cavTherapist ? "#6A1B9A" : "#DDD" }}>
-                  <option value="">なし（機械なし）</option>
+                  <option value="">None (no machine)</option>
                   {CAV_CAPABLE.filter(t => t !== form.therapist).map(t => <option key={t} value={t}>{t}</option>)}
                 </select>
                 {form.cavTherapist ? (
                   <div style={{ fontSize: 11, color: "#6A1B9A", marginTop: 4, fontWeight: 600 }}>
-                    ✅ {form.therapist}（ボディ）＋ {form.cavTherapist}（機械）<br />
-                    → 保存すると <strong>{form.cavTherapist}</strong> のラインに施術料が自動で追加されます
+                    ✅ {form.therapist} (Body) + {form.cavTherapist} (Machine)<br />
+                    → Saving will automatically add the treatment fee to <strong>{form.cavTherapist}</strong>'s line
                   </div>
                 ) : (
                   <div style={{ fontSize: 11, color: "#999", marginTop: 4 }}>
-                    機械担当がいる場合は選んでください → 自動で振り分けが入ります
+                    Select if a machine therapist is involved → the split will be applied automatically
                   </div>
                 )}
               </div>
             )}
             {isDualLicense(form.therapist) && (!form.isSameDayTicket || form.useToday !== false) && (
               <div style={{ fontSize: 11, background: "#E8F5E9", color: "#2E7D32", padding: "6px 10px", borderRadius: 8, marginBottom: 10 }}>
-                ✅ {form.therapist}はボディ＋機械両対応 → 合計金額で1本入力
+                ✅ {form.therapist} is dual-licensed (Body + Machine) → enter the total as a single amount
               </div>
             )}
 
-            {/* IP同額ショートカット — Facial/Glow系サービスでIP 90minチケット使用時 */}
+            {/* IP-equivalent shortcut — for Facial/Glow-type services when using an IP 90min ticket */}
             {form.serviceName && ["facial","glow","procell","channeling","hifu","sculpt"].some(k => form.serviceName.toLowerCase().includes(k)) && (
               <div style={{ background: "#FFF3E0", borderRadius: 8, padding: 8, marginBottom: 8, border: "1px solid #FFCC80" }}>
-                <div style={{ fontSize: 11, color: "#E65100", fontWeight: 700, marginBottom: 6 }}>💡 Improving Posture 90分チケット同額オプション</div>
+                <div style={{ fontSize: 11, color: "#E65100", fontWeight: 700, marginBottom: 6 }}>💡 Improving Posture 90min ticket equivalent option</div>
                 <button onClick={() => {
                   const menu = `IP-90-${form.ticketTotal || 3}`;
                   applyTicketPrices(menu, form.ticketTotal || 3, form.priceVersion || "new", form.cavTherapist, form.therapist);
@@ -2735,13 +2741,13 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                   cursor: "pointer", fontWeight: 700, fontSize: 12,
                   color: form.ticketMenu?.startsWith("IP-90") ? "#E65100" : "#888"
                 }}>
-                  {form.ticketMenu?.startsWith("IP-90") ? "✅ IP 90分チケット使用中" : "🔄 Improving Posture 90分チケット使用（同額）"}
+                  {form.ticketMenu?.startsWith("IP-90") ? "✅ Using IP 90min ticket" : "🔄 Use Improving Posture 90min ticket (equivalent)"}
                 </button>
               </div>
             )}
 
             {/* Treatment menu selector */}
-            <Field label="施術メニュー" error={errors.includes("ticketMenu")}>
+            <Field label="Treatment Menu" error={errors.includes("ticketMenu")}>
               <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 4 }}>
                 {MENU_OPTIONS.map(({ group, prefix }) => {
                   const selected = form.ticketMenu?.startsWith(prefix);
@@ -2768,7 +2774,7 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
               const group = MENU_OPTIONS.find(m => m.prefix === prefix);
               const currentDur = Number(form.ticketMenu.split("-")[1]);
               return group ? (
-                <Field label="時間">
+                <Field label="Duration">
                   <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 4 }}>
                     {group.durations.map(dur => (
                       <button key={dur} onClick={() => {
@@ -2780,7 +2786,7 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                         background: currentDur === dur ? "#0D4F4F" : "#fff",
                         cursor: "pointer", fontWeight: 700, fontSize: 12,
                         color: currentDur === dur ? "#fff" : "#888"
-                      }}>{dur}分</button>
+                      }}>{dur}min</button>
                     ))}
                   </div>
                 </Field>
@@ -2788,9 +2794,9 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
             })()}
 
             {/* Price version */}
-            <Field label="料金バージョン" error={errors.includes("priceVersionChosen")}>
+            <Field label="Price Version" error={errors.includes("priceVersionChosen")}>
               <div style={{ display: "flex", gap: 8 }}>
-                {[["new","🆕 新料金（2月以降）"],["old","📋 旧料金（2月以前）"]].map(([v,label]) => (
+                {[["new","🆕 New Price (Feb onward)"],["old","📋 Old Price (before Feb)"]].map(([v,label]) => (
                   <button key={v} onClick={() => { setForm(f => ({ ...f, priceVersion: v, priceVersionChosen: true })); if(form.ticketMenu) applyTicketPrices(form.ticketMenu, form.ticketTotal, v, form.cavTherapist, form.therapist); }}
                     style={{ flex: 1, padding: "8px 4px", borderRadius: 8, border: `2px solid ${form.priceVersion===v && form.priceVersionChosen?"#1565C0":(errors.includes("priceVersionChosen")?"#C62828":"#DDD")}`, background: form.priceVersion===v && form.priceVersionChosen?"#BBDEFB":"#fff", cursor: "pointer", fontWeight: 700, fontSize: 11, color: form.priceVersion===v && form.priceVersionChosen?"#1565C0":"#888" }}>
                     {label}
@@ -2800,7 +2806,7 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
             </Field>
 
             {/* Total sessions */}
-            <Field label="コース回数" error={errors.includes("ticketTotal")}>
+            <Field label="Sessions in Course" error={errors.includes("ticketTotal")}>
               <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
                 {[3,5].map(n => (
                   <button key={n} onClick={() => {
@@ -2810,7 +2816,7 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                       applyTicketPrices(`${parts[0]}-${parts[1]}-${n}`, n, form.priceVersion||"new", form.cavTherapist, form.therapist);
                     }
                   }} style={{ flex: 1, padding: "8px", borderRadius: 8, border: `2px solid ${form.ticketTotal===n && form.ticketTotalChosen?"#1565C0":(errors.includes("ticketTotal")?"#C62828":"#DDD")}`, background: form.ticketTotal===n && form.ticketTotalChosen?"#1565C0":"#fff", cursor: "pointer", fontWeight: 700, color: form.ticketTotal===n && form.ticketTotalChosen?"#fff":"#888" }}>
-                    {n}回コース
+                    {n}-session course
                   </button>
                 ))}
               </div>
@@ -2818,25 +2824,25 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
 
             {/* Current session — different UI for same-day purchase */}
             {form.isSameDayTicket ? (
-              <Field label="今日使いますか？">
+              <Field label="Use it today?">
                 <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
                   <button onClick={() => setForm(f => ({...f, useToday: true, ticketCurrent: 1}))}
                     style={{ flex: 1, padding: "8px 4px", borderRadius: 8, border: `2px solid ${form.useToday !== false ? "#2E7D32" : "#DDD"}`, background: form.useToday !== false ? "#E8F5E9" : "#fff", cursor: "pointer", fontWeight: 700, color: form.useToday !== false ? "#2E7D32" : "#888", fontSize: 12 }}>
-                    ✅ 今日使う（1回目）
+                    ✅ Use today (session 1)
                   </button>
                   <button onClick={() => setForm(f => ({...f, useToday: false, ticketCurrent: 0, price: 0, tip: 0, cavPrice: 0, cavTip: 0}))}
                     style={{ flex: 1, padding: "8px 4px", borderRadius: 8, border: `2px solid ${form.useToday === false ? "#888" : "#DDD"}`, background: form.useToday === false ? "#F5F5F5" : "#fff", cursor: "pointer", fontWeight: 700, color: form.useToday === false ? "#555" : "#888", fontSize: 12 }}>
-                    ⭕ 次回から使う
+                    ⭕ Use starting next visit
                   </button>
                 </div>
               </Field>
             ) : (
-              <Field label="今日は何回目？" error={errors.includes("ticketCurrent")}>
+              <Field label="Which session is today?" error={errors.includes("ticketCurrent")}>
                 <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 4 }}>
                   {Array.from({ length: form.ticketTotal||3 }, (_,i) => i+1).map(n => (
                     <button key={n} onClick={() => set("ticketCurrent", n)}
                       style={{ padding: "6px 14px", borderRadius: 8, border: `2px solid ${form.ticketCurrent===n?"#0D4F4F":(errors.includes("ticketCurrent")?"#C62828":"#DDD")}`, background: form.ticketCurrent===n?"#0D4F4F":"#fff", cursor: "pointer", fontWeight: 700, color: form.ticketCurrent===n?"#fff":"#888" }}>
-                      {n}/{form.ticketTotal||3}回目
+                      {n}/{form.ticketTotal||3}
                     </button>
                   ))}
                 </div>
@@ -2844,57 +2850,58 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
             )}
 
 
-            {/* Prices — only when using today or チケット消化 */}
+            {/* Prices — only when using today or redeeming a ticket */}
             {form.ticketMenu && (!form.isSameDayTicket || form.useToday !== false) && (
               <div style={{ marginTop: 8, background: "#fff", borderRadius: 8, padding: 10 }}>
                 <div style={{ fontSize: 11, color: "#888", marginBottom: 6 }}>
-                  {showSplitPrices ? `💡 ${form.therapist}（ボディ）＋ ${form.cavTherapist}（機械）振り分け` : `💡 ${form.therapist} 合計金額`}
-                  {form.isSameDayTicket && <span style={{ color: "#2E7D32" }}> ※スタッフ給与参照用</span>}
-                  {!form.isSameDayTicket && <span style={{ color: "#bbb" }}> ※変更可</span>}
+                  {showSplitPrices ? `💡 ${form.therapist} (Body) + ${form.cavTherapist} (Machine) split` : `💡 ${form.therapist} Total Amount`}
+                  {form.isSameDayTicket && <span style={{ color: "#2E7D32" }}> ※For staff payroll reference</span>}
+                  {!form.isSameDayTicket && <span style={{ color: "#bbb" }}> ※Editable</span>}
                 </div>
                 {showSplitPrices ? (
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-                    <Field label={`${form.therapist} 施術 ($)`} error={errors.includes("price")}><input type="number" value={form.price || ""} onChange={e => set("price", e.target.value)} style={{ ...inputStyle, ...(errors.includes("price") ? { borderColor: "#C62828", borderWidth: 2 } : {}) }} /></Field>
-                    <Field label={`${form.therapist} チップ ($)`}><input type="number" value={form.tip || ""} onChange={e => set("tip", e.target.value)} style={inputStyle} /></Field>
-                    <Field label={`${form.cavTherapist} 施術 ($)`} error={errors.includes("price")}><input type="number" value={form.cavPrice || ""} onChange={e => set("cavPrice", e.target.value)} style={{ ...inputStyle, ...(errors.includes("price") ? { borderColor: "#C62828", borderWidth: 2 } : {}) }} /></Field>
-                    <Field label={`${form.cavTherapist} チップ ($)`}><input type="number" value={form.cavTip || ""} onChange={e => set("cavTip", e.target.value)} style={inputStyle} /></Field>
+                    <Field label={`${form.therapist} Treatment ($)`} error={errors.includes("price")}><input type="number" value={form.price || ""} onChange={e => set("price", e.target.value)} style={{ ...inputStyle, ...(errors.includes("price") ? { borderColor: "#C62828", borderWidth: 2 } : {}) }} /></Field>
+                    <Field label={`${form.therapist} Tip ($)`}><input type="number" value={form.tip || ""} onChange={e => set("tip", e.target.value)} style={inputStyle} /></Field>
+                    <Field label={`${form.cavTherapist} Treatment ($)`} error={errors.includes("price")}><input type="number" value={form.cavPrice || ""} onChange={e => set("cavPrice", e.target.value)} style={{ ...inputStyle, ...(errors.includes("price") ? { borderColor: "#C62828", borderWidth: 2 } : {}) }} /></Field>
+                    <Field label={`${form.cavTherapist} Tip ($)`}><input type="number" value={form.cavTip || ""} onChange={e => set("cavTip", e.target.value)} style={inputStyle} /></Field>
                   </div>
                 ) : (
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-                    <Field label="施術 合計 ($)" error={errors.includes("price")}><input type="number" value={form.price || ""} onChange={e => set("price", e.target.value)} style={{ ...inputStyle, ...(errors.includes("price") ? { borderColor: "#C62828", borderWidth: 2 } : {}) }} /></Field>
-                    <Field label="チップ 合計 ($)"><input type="number" value={form.tip || ""} onChange={e => set("tip", e.target.value)} style={inputStyle} /></Field>
+                    <Field label="Treatment Total ($)" error={errors.includes("price")}><input type="number" value={form.price || ""} onChange={e => set("price", e.target.value)} style={{ ...inputStyle, ...(errors.includes("price") ? { borderColor: "#C62828", borderWidth: 2 } : {}) }} /></Field>
+                    <Field label="Tip Total ($)"><input type="number" value={form.tip || ""} onChange={e => set("tip", e.target.value)} style={inputStyle} /></Field>
                   </div>
                 )}
               </div>
             )}
 
-            {/* Extra service fee + tip — available for both チケット消化 and 当日購入. Needed
-                because チケット消化's main 施術/チップ fields are a payroll-reference value only
-                (the session was already paid for) and aren't counted as today's revenue — an
-                add-on service actually paid for today (e.g. a same-therapist "追加マッサージ") has
-                to go here instead, or it silently never shows up as real money received. */}
+            {/* Extra service fee + tip — available for both ticket redemption and same-day
+                purchase. Needed because redemption's main treatment/tip fields are a payroll-
+                reference value only (the session was already paid for) and aren't counted as
+                today's revenue — an add-on service actually paid for today (e.g. a same-therapist
+                "additional massage") has to go here instead, or it silently never shows up as
+                real money received. */}
             {(!form.isSameDayTicket || form.useToday !== false) && (
               <div style={{ marginTop: 10, background: "#FFF8E1", borderRadius: 8, padding: 10, border: "1px solid #FFE082" }}>
-                <div style={{ fontWeight: 700, fontSize: 12, color: "#F57F17", marginBottom: 8 }}>💝 エクストラ（任意）— 本日追加でお支払いがあった分</div>
+                <div style={{ fontWeight: 700, fontSize: 12, color: "#F57F17", marginBottom: 8 }}>💝 Extra (optional) — additional payment received today</div>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-                  <Field label="追加施術料 ($)">
-                    <input type="number" value={form.extraPrice || ""} onChange={e => set("extraPrice", e.target.value)} style={inputStyle} placeholder="例: 27" />
+                  <Field label="Extra Treatment Fee ($)">
+                    <input type="number" value={form.extraPrice || ""} onChange={e => set("extraPrice", e.target.value)} style={inputStyle} placeholder="e.g. 27" />
                   </Field>
-                  <Field label="追加チップ ($)">
-                    <input type="number" value={form.extraTip || ""} onChange={e => set("extraTip", e.target.value)} style={inputStyle} placeholder="例: 20" />
+                  <Field label="Extra Tip ($)">
+                    <input type="number" value={form.extraTip || ""} onChange={e => set("extraTip", e.target.value)} style={inputStyle} placeholder="e.g. 20" />
                   </Field>
                 </div>
                 {(Number(form.extraPrice||0) > 0) && (
                   <div style={{ marginTop: 8 }}>
-                    <Field label="追加施術料 支払方法" error={errors.includes("extraPricePaymentType")}><PaymentToggle value={form.extraPricePaymentType} onChange={v => set("extraPricePaymentType", v)} /></Field>
+                    <Field label="Extra Treatment Fee Payment Method" error={errors.includes("extraPricePaymentType")}><PaymentToggle value={form.extraPricePaymentType} onChange={v => set("extraPricePaymentType", v)} /></Field>
                   </div>
                 )}
                 {(form.extraTip > 0) && (
                   <div style={{ marginTop: 8 }}>
-                    <Field label="チップ支払方法" error={errors.includes("extraTipPaymentType")}><PaymentToggle value={form.extraTipPaymentType} onChange={v => set("extraTipPaymentType", v)} /></Field>
+                    <Field label="Tip Payment Method" error={errors.includes("extraTipPaymentType")}><PaymentToggle value={form.extraTipPaymentType} onChange={v => set("extraTipPaymentType", v)} /></Field>
                   </div>
                 )}
-                <div style={{ fontSize: 11, color: "#888", marginTop: 6 }}>物販は下の物販セクションへ</div>
+                <div style={{ fontSize: 11, color: "#888", marginTop: 6 }}>For retail purchases, use the Retail section below</div>
               </div>
             )}
 
@@ -2907,11 +2914,11 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
               return (
                 <div style={{ marginTop: 10, background: "#0D4F4F", borderRadius: 8, padding: "10px 14px", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
                   <div style={{ fontSize: 11, color: "#B2EBF2" }}>
-                    施術 <strong style={{ color: "#fff" }}>${svc}</strong>　チップ <strong style={{ color: "#fff" }}>${tip}</strong>
-                    {extra > 0 && <span>　エクストラ <strong style={{ color: "#FFE082" }}>${extra}{form.extraTipPaymentType==="card"?"💳":"💵"}</strong></span>}
+                    Treatment <strong style={{ color: "#fff" }}>${svc}</strong>　Tip <strong style={{ color: "#fff" }}>${tip}</strong>
+                    {extra > 0 && <span>　Extra <strong style={{ color: "#FFE082" }}>${extra}{form.extraTipPaymentType==="card"?"💳":"💵"}</strong></span>}
                   </div>
                   <div style={{ textAlign: "right" }}>
-                    <span style={{ color: "#B2EBF2", fontSize: 11 }}>合計　</span>
+                    <span style={{ color: "#B2EBF2", fontSize: 11 }}>Total　</span>
                     <span style={{ color: "#fff", fontSize: 22, fontWeight: 800 }}>${svc + tip + extra}</span>
                   </div>
                 </div>
@@ -2922,22 +2929,22 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
             {form.isSameDayTicket && (
               <div style={{ marginTop: 10, background: "#E8F5E9", borderRadius: 8, padding: 10, border: "1px solid #A5D6A7" }}>
                 <div style={{ fontWeight: 700, fontSize: 12, color: "#2E7D32", marginBottom: 8 }}>
-                  💰 当日購入 — パッケージ代金（売上計上）
-                  {form.useToday === false && <span style={{ color: "#888", fontWeight: 400 }}>（次回から使用）</span>}
+                  💰 Same-Day Purchase — Package Price (counted as revenue)
+                  {form.useToday === false && <span style={{ color: "#888", fontWeight: 400 }}>(to be used starting next visit)</span>}
                 </div>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-                  <Field label="パッケージ代金 ($)" error={errors.includes("packagePrice")}>
-                    <input type="number" value={form.packagePrice || ""} onChange={e => set("packagePrice", e.target.value)} style={{ ...inputStyle, ...(errors.includes("packagePrice") ? { borderColor: "#C62828", borderWidth: 2 } : {}) }} placeholder="例: 432" disabled={form.packageSplitPayment} />
+                  <Field label="Package Price ($)" error={errors.includes("packagePrice")}>
+                    <input type="number" value={form.packagePrice || ""} onChange={e => set("packagePrice", e.target.value)} style={{ ...inputStyle, ...(errors.includes("packagePrice") ? { borderColor: "#C62828", borderWidth: 2 } : {}) }} placeholder="e.g. 432" disabled={form.packageSplitPayment} />
                   </Field>
-                  <Field label={form.useToday === false ? "チップ ($)" : "当日チップ ($)"}>
-                    <input type="number" value={form.packageTip || ""} onChange={e => set("packageTip", e.target.value)} style={inputStyle} placeholder="例: 91" />
+                  <Field label={form.useToday === false ? "Tip ($)" : "Same-Day Tip ($)"}>
+                    <input type="number" value={form.packageTip || ""} onChange={e => set("packageTip", e.target.value)} style={inputStyle} placeholder="e.g. 91" />
                   </Field>
                 </div>
 
                 {/* Deposit note — packagePrice above is typed in by hand already net of any deposit; this only records that a deposit existed and when it was paid (allocation is already fixed by hand, no auto-calc) */}
                 <div style={{ marginTop: 8, background: "#fff", borderRadius: 10, padding: 12, border: "1.5px solid #A5D6A7" }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                    <span style={{ fontWeight: 700, fontSize: 13, color: "#2E7D32" }}>💰 デポジットあり</span>
+                    <span style={{ fontWeight: 700, fontSize: 13, color: "#2E7D32" }}>💰 Has a Deposit</span>
                     <button onClick={() => set("packageDepositAmount", Number(form.packageDepositAmount) > 0 ? 0 : 20)}
                       style={{ padding: "4px 12px", borderRadius: 8, border: "none", background: Number(form.packageDepositAmount) > 0 ? "#2E7D32" : "#C8E6C9", color: "#fff", fontWeight: 700, cursor: "pointer", fontSize: 12 }}>
                       {Number(form.packageDepositAmount) > 0 ? "ON ✓" : "OFF"}
@@ -2946,14 +2953,14 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                   {Number(form.packageDepositAmount) > 0 && (
                     <div style={{ marginTop: 8, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
                       <div>
-                        <div style={{ fontSize: 10, color: "#2E7D32", marginBottom: 4 }}>デポジット金額 ($)</div>
+                        <div style={{ fontSize: 10, color: "#2E7D32", marginBottom: 4 }}>Deposit Amount ($)</div>
                         <input type="number" value={form.packageDepositAmount || ""}
                           onFocus={e => e.target.select()}
                           onChange={e => set("packageDepositAmount", e.target.value)}
-                          style={{ ...inputStyle, borderColor: "#81C784" }} placeholder="例：20" />
+                          style={{ ...inputStyle, borderColor: "#81C784" }} placeholder="e.g. 20" />
                       </div>
                       <div>
-                        <div style={{ fontSize: 10, color: "#2E7D32", marginBottom: 4 }}>支払われた日{errors.includes("packageDepositDate") && " ⚠️"}</div>
+                        <div style={{ fontSize: 10, color: "#2E7D32", marginBottom: 4 }}>Date Paid{errors.includes("packageDepositDate") && " ⚠️"}</div>
                         <input type="date" value={form.packageDepositDate || ""}
                           onChange={e => set("packageDepositDate", e.target.value)}
                           style={{ ...inputStyle, borderColor: errors.includes("packageDepositDate") ? "#C62828" : "#81C784", borderWidth: errors.includes("packageDepositDate") ? 2 : 1 }} />
@@ -2965,7 +2972,7 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                 {/* Gift Card Usage — e.g. a previously-purchased balance covering part of this package */}
                 <div style={{ background: "#E0F2F1", borderRadius: 10, padding: 12, marginTop: 8 }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                    <span style={{ fontWeight: 700, fontSize: 13, color: "#00796B" }}>🎁 ギフトカード使用（既存残高）</span>
+                    <span style={{ fontWeight: 700, fontSize: 13, color: "#00796B" }}>🎁 Gift Card Used (existing balance)</span>
                     <button onClick={() => set("giftCardUsed", form.giftCardUsed === 0 ? (Number(form.packagePrice) || "") : 0)}
                       style={{ padding: "4px 12px", borderRadius: 8, border: "none", background: form.giftCardUsed !== 0 ? "#00796B" : "#B2DFDB", color: "#fff", fontWeight: 700, cursor: "pointer", fontSize: 12 }}>
                       {form.giftCardUsed !== 0 ? "ON ✓" : "OFF"}
@@ -2973,10 +2980,10 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                   </div>
                   {(Number(form.giftCardUsed) > 0 || form.giftCardUsed === "") && (
                     <div style={{ marginTop: 8 }}>
-                      <div style={{ fontSize: 10, color: "#00796B", marginBottom: 4 }}>使用金額 ($)</div>
+                      <div style={{ fontSize: 10, color: "#00796B", marginBottom: 4 }}>Amount Used ($)</div>
                       <input type="number" value={form.giftCardUsed === "" ? "" : form.giftCardUsed}
                         onChange={e => set("giftCardUsed", e.target.value)}
-                        style={{ ...inputStyle, borderColor: "#80CBC4" }} placeholder="例：89" />
+                        style={{ ...inputStyle, borderColor: "#80CBC4" }} placeholder="e.g. 89" />
                       {(() => {
                         const gc = Number(form.giftCardUsed || 0);
                         const svc = Number(form.packagePrice || 0);
@@ -2987,12 +2994,12 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                         return (
                           <div style={{ marginTop: 6, fontSize: 12, color: "#00796B" }}>
                             <div style={{ color: "#555", marginBottom: 2 }}>
-                              パッケージ${svc}{tip > 0 ? ` ＋ チップ$${tip}` : ""} ＝ <strong>${total}</strong>
+                              Package ${svc}{tip > 0 ? ` + Tip $${tip}` : ""} = <strong>${total}</strong>
                             </div>
-                            🎁 GC(既存残高) <strong>${Math.min(gc, total)}</strong>(本日の売上には計上されません)
+                            🎁 GC (existing balance) <strong>${Math.min(gc, total)}</strong> (not counted in today's sales)
                             {remainder > 0
-                              ? <> ＋ 残り <strong>${remainder}</strong>を現金・カードで受取</>
-                              : <span style={{ color: "#2E7D32" }}> → 全額ギフトカード</span>}
+                              ? <> + remaining <strong>${remainder}</strong> received in cash/card</>
+                              : <span style={{ color: "#2E7D32" }}> → Fully covered by gift card</span>}
                           </div>
                         );
                       })()}
@@ -3001,34 +3008,34 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                 </div>
 
                 <div style={{ marginTop: 10, background: "#fff", borderRadius: 8, padding: 10, border: "1.5px solid #A5D6A7" }}>
-                  <div style={{ fontWeight: 700, fontSize: 12, color: "#2E7D32", marginBottom: 8 }}>💰 お会計</div>
+                  <div style={{ fontWeight: 700, fontSize: 12, color: "#2E7D32", marginBottom: 8 }}>💰 Payment</div>
                   <button onClick={() => set("packageSplitPayment", !form.packageSplitPayment)}
                     style={{ marginBottom: 8, padding: "6px 12px", borderRadius: 8, border: `2px solid ${form.packageSplitPayment ? "#2E7D32" : "#DDD"}`, background: form.packageSplitPayment ? "#E8F5E9" : "#fff", cursor: "pointer", fontWeight: 700, fontSize: 12, color: form.packageSplitPayment ? "#2E7D32" : "#888" }}>
-                    {form.packageSplitPayment ? "☑" : "☐"} 施術代金を現金・カードに分ける
+                    {form.packageSplitPayment ? "☑" : "☐"} Split treatment payment between cash and card
                   </button>
                   {form.packageSplitPayment ? (
                     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 }}>
                       <div>
-                        <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>施術キャッシュ ($)</div>
+                        <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>Treatment Cash ($)</div>
                         <input type="number" value={form.packageCashPortion || ""} onChange={e => {
                           const raw = e.target.value;
                           setForm(f => ({ ...f, packageCashPortion: raw, packagePrice: (Number(raw) || 0) + Number(f.packageCardPortion||0) }));
-                        }} style={inputStyle} placeholder="例：300" />
+                        }} style={inputStyle} placeholder="e.g. 300" />
                       </div>
                       <div>
-                        <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>施術クレジット ($)</div>
+                        <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>Treatment Card ($)</div>
                         <input type="number" value={form.packageCardPortion || ""} onChange={e => {
                           const raw = e.target.value;
                           setForm(f => ({ ...f, packageCardPortion: raw, packagePrice: Number(f.packageCashPortion||0) + (Number(raw) || 0) }));
-                        }} style={inputStyle} placeholder="例：132" />
+                        }} style={inputStyle} placeholder="e.g. 132" />
                       </div>
                     </div>
                   ) : (
                     <div style={{ marginBottom: 8 }}>
-                      <Field label="施術 支払方法" error={errors.includes("packagePaymentType")}><PaymentToggle value={form.paymentType} onChange={v => set("paymentType", v)} /></Field>
+                      <Field label="Treatment Payment Method" error={errors.includes("packagePaymentType")}><PaymentToggle value={form.paymentType} onChange={v => set("paymentType", v)} /></Field>
                     </div>
                   )}
-                  <Field label="チップ 支払方法" error={errors.includes("packageTipPaymentType")}><PaymentToggle value={form.tipPaymentType} onChange={v => set("tipPaymentType", v)} /></Field>
+                  <Field label="Tip Payment Method" error={errors.includes("packageTipPaymentType")}><PaymentToggle value={form.tipPaymentType} onChange={v => set("tipPaymentType", v)} /></Field>
                 </div>
               </div>
             )}
@@ -3040,7 +3047,7 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
           <>
             {/* Cav therapist picker for regular service */}
             {!isCavCapable(form.therapist) && (
-              <Field label="機械担当セラピスト（任意）">
+              <Field label="Machine Therapist (optional)">
                 <select value={form.cavTherapist} onChange={e => {
                   const cav = e.target.value;
                   // Recalculate the split immediately using whatever total was already typed —
@@ -3076,16 +3083,16 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                     set("cavTherapist", cav);
                   }
                 }} style={inputStyle}>
-                  <option value="">なし（機械なし）</option>
+                  <option value="">None (no machine)</option>
                   {CAV_CAPABLE.filter(t => t !== form.therapist).map(t => <option key={t} value={t}>{t}</option>)}
                 </select>
               </Field>
             )}
 
-            {/* Gift Card Usage — hidden for GC消化 (entire appointment IS the GC) and PR無料 */}
+            {/* Gift Card Usage — hidden for GC redemption (entire appointment IS the GC) and complimentary PR */}
             {!form.isGiftCard && !form.isPromo && <div style={{ background: "#E0F2F1", borderRadius: 10, padding: 12 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <span style={{ fontWeight: 700, fontSize: 13, color: "#00796B" }}>🎁 ギフトカード使用</span>
+                <span style={{ fontWeight: 700, fontSize: 13, color: "#00796B" }}>🎁 Gift Card Used</span>
                 <button onClick={() => set("giftCardUsed", form.giftCardUsed === 0 ? ((Number(form.price)||0) + (Number(form.cavPrice)||0) || "") : 0)}
                   style={{ padding: "4px 12px", borderRadius: 8, border: "none", background: form.giftCardUsed !== 0 ? "#00796B" : "#B2DFDB", color: "#fff", fontWeight: 700, cursor: "pointer", fontSize: 12 }}>
                   {form.giftCardUsed !== 0 ? "ON ✓" : "OFF"}
@@ -3093,19 +3100,19 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
               </div>
               {(Number(form.giftCardUsed) > 0 || form.giftCardUsed === "") && (
                 <div style={{ marginTop: 8 }}>
-                  <div style={{ fontSize: 10, color: "#00796B", marginBottom: 4 }}>使用金額 ($)</div>
+                  <div style={{ fontSize: 10, color: "#00796B", marginBottom: 4 }}>Amount Used ($)</div>
                   <input type="number" value={form.giftCardUsed === "" ? "" : form.giftCardUsed}
                     onChange={e => set("giftCardUsed", e.target.value)}
-                    style={{ ...inputStyle, borderColor: "#80CBC4" }} placeholder="例：150" />
+                    style={{ ...inputStyle, borderColor: "#80CBC4" }} placeholder="e.g. 150" />
                 </div>
               )}
             </div>}
 
-            {/* デポジット使用 */}
+            {/* Deposit Used */}
             {!form.isGiftCard && !form.isPromo && (
               <div style={{ background: "#E8F5E9", borderRadius: 10, padding: 12, border: "1.5px solid #A5D6A7" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <span style={{ fontWeight: 700, fontSize: 13, color: "#2E7D32" }}>💰 デポジット使用</span>
+                  <span style={{ fontWeight: 700, fontSize: 13, color: "#2E7D32" }}>💰 Deposit Used</span>
                   <button onClick={() => set("depositApplied", Number(form.depositApplied) > 0 ? 0 : 20)}
                     style={{ padding: "4px 12px", borderRadius: 8, border: "none", background: Number(form.depositApplied) > 0 ? "#2E7D32" : "#C8E6C9", color: "#fff", fontWeight: 700, cursor: "pointer", fontSize: 12 }}>
                     {Number(form.depositApplied) > 0 ? "ON ✓" : "OFF"}
@@ -3114,14 +3121,14 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                 {Number(form.depositApplied) > 0 && (
                   <div style={{ marginTop: 8, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
                     <div>
-                      <div style={{ fontSize: 10, color: "#2E7D32", marginBottom: 4 }}>デポジット金額 ($)</div>
+                      <div style={{ fontSize: 10, color: "#2E7D32", marginBottom: 4 }}>Deposit Amount ($)</div>
                       <input type="number" value={form.depositApplied || ""}
                         onFocus={e => e.target.select()}
                         onChange={e => set("depositApplied", e.target.value)}
-                        style={{ ...inputStyle, borderColor: "#81C784" }} placeholder="例：20" />
+                        style={{ ...inputStyle, borderColor: "#81C784" }} placeholder="e.g. 20" />
                     </div>
                     <div>
-                      <div style={{ fontSize: 10, color: "#2E7D32", marginBottom: 4 }}>支払われた日{errors.includes("depositPaidDate") && " ⚠️"}</div>
+                      <div style={{ fontSize: 10, color: "#2E7D32", marginBottom: 4 }}>Date Paid{errors.includes("depositPaidDate") && " ⚠️"}</div>
                       <input type="date" value={form.depositPaidDate || ""}
                         onChange={e => set("depositPaidDate", e.target.value)}
                         style={{ ...inputStyle, borderColor: errors.includes("depositPaidDate") ? "#C62828" : "#81C784", borderWidth: errors.includes("depositPaidDate") ? 2 : 1 }} />
@@ -3134,11 +3141,11 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
             {/* Total service + tip input */}
             <div style={{ background: "#F9F9F9", borderRadius: 10, padding: 12 }}>
               <div style={{ fontWeight: 700, fontSize: 13, color: "#333", marginBottom: 10 }}>
-                💆 施術料金・チップ（合計入力）
-                {Number(form.depositApplied) > 0 && <span style={{ fontSize: 11, color: "#2E7D32", fontWeight: 600, marginLeft: 8 }}>← もらった金額を入力</span>}
+                💆 Treatment Price / Tip (enter total)
+                {Number(form.depositApplied) > 0 && <span style={{ fontSize: 11, color: "#2E7D32", fontWeight: 600, marginLeft: 8 }}>← Enter the amount actually received</span>}
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-                <Field label="施術合計 ($)" error={errors.includes("price")}>
+                <Field label="Treatment Total ($)" error={errors.includes("price")}>
                   <input type="number" value={form.totalServiceInput || form.price || ""}
                     onFocus={e => e.target.select()}
                     onChange={e => {
@@ -3166,9 +3173,9 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                       // next re-render before the digits after the dot are typed.
                       set("totalServiceInput", e.target.value);
                     }}
-                    style={{ ...inputStyle, ...(errors.includes("price") ? { borderColor: "#C62828", borderWidth: 2 } : {}) }} placeholder="例: 158" />
+                    style={{ ...inputStyle, ...(errors.includes("price") ? { borderColor: "#C62828", borderWidth: 2 } : {}) }} placeholder="e.g. 158" />
                 </Field>
-                <Field label="チップ合計 ($)">
+                <Field label="Tip Total ($)">
                   <input type="number" value={form.totalTipInput || form.tip || ""}
                     onFocus={e => e.target.select()}
                     onChange={e => {
@@ -3196,11 +3203,11 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                           set("cavTip", 0);
                         }
                       }
-                      // Same fix as 施術合計: keep the raw typed text so a trailing "." mid-decimal
+                      // Same fix as Treatment Total: keep the raw typed text so a trailing "." mid-decimal
                       // isn't wiped out by the controlled re-render before it's fully typed.
                       set("totalTipInput", e.target.value);
                     }}
-                    style={inputStyle} placeholder="例: 30" />
+                    style={inputStyle} placeholder="e.g. 30" />
                 </Field>
               </div>
 
@@ -3214,15 +3221,15 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                   return (
                     <div style={{ marginTop: 10, background: "#78350F", borderRadius: 8, padding: "10px 14px", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
                       <div style={{ fontSize: 11, color: "#FDE68A" }}>
-                        🎁 施術 <strong style={{ color: "#fff" }}>${svc}</strong>　チップ <strong style={{ color: "#fff" }}>${tip}</strong>
+                        🎁 Treatment <strong style={{ color: "#fff" }}>${svc}</strong>　Tip <strong style={{ color: "#fff" }}>${tip}</strong>
                         {form.cavTherapist && !isDualLicense(form.therapist) && (
                           <span style={{ fontSize: 10, color: "#FDE68A", display: "block" }}>
-                            {form.therapist} ${form.price||0}{Number(form.tip||0) > 0 ? ` +チップ$${form.tip}` : ""} / {form.cavTherapist} ${form.cavPrice||0}{Number(form.cavTip||0) > 0 ? ` +チップ$${form.cavTip}` : ""}
+                            {form.therapist} ${form.price||0}{Number(form.tip||0) > 0 ? ` +Tip $${form.tip}` : ""} / {form.cavTherapist} ${form.cavPrice||0}{Number(form.cavTip||0) > 0 ? ` +Tip $${form.cavTip}` : ""}
                           </span>
                         )}
                       </div>
                       <div style={{ textAlign: "right" }}>
-                        <span style={{ color: "#FDE68A", fontSize: 11 }}>GC消化合計　</span>
+                        <span style={{ color: "#FDE68A", fontSize: 11 }}>GC Redemption Total　</span>
                         <span style={{ color: "#fff", fontSize: 22, fontWeight: 800 }}>${svc + tip}</span>
                       </div>
                     </div>
@@ -3232,15 +3239,15 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                   return (
                     <div style={{ marginTop: 10, background: "#0D47A1", borderRadius: 8, padding: "10px 14px", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
                       <div style={{ fontSize: 11, color: "#BBDEFB" }}>
-                        📸 施術 <strong style={{ color: "#fff" }}>${svc}</strong>　チップ <strong style={{ color: "#fff" }}>${tip}</strong>
+                        📸 Treatment <strong style={{ color: "#fff" }}>${svc}</strong>　Tip <strong style={{ color: "#fff" }}>${tip}</strong>
                         {form.cavTherapist && !isDualLicense(form.therapist) && (
                           <span style={{ fontSize: 10, color: "#BBDEFB", display: "block" }}>
-                            {form.therapist} ${form.price||0}{Number(form.tip||0) > 0 ? ` +チップ$${form.tip}` : ""} / {form.cavTherapist} ${form.cavPrice||0}{Number(form.cavTip||0) > 0 ? ` +チップ$${form.cavTip}` : ""}
+                            {form.therapist} ${form.price||0}{Number(form.tip||0) > 0 ? ` +Tip $${form.tip}` : ""} / {form.cavTherapist} ${form.cavPrice||0}{Number(form.cavTip||0) > 0 ? ` +Tip $${form.cavTip}` : ""}
                           </span>
                         )}
                       </div>
                       <div style={{ textAlign: "right" }}>
-                        <span style={{ color: "#BBDEFB", fontSize: 11 }}>PR無料合計　</span>
+                        <span style={{ color: "#BBDEFB", fontSize: 11 }}>Complimentary PR Total　</span>
                         <span style={{ color: "#fff", fontSize: 22, fontWeight: 800 }}>${svc + tip}</span>
                       </div>
                     </div>
@@ -3282,15 +3289,15 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                   <div style={{ marginTop: 10, background: "#0D4F4F", borderRadius: 8, padding: "10px 14px" }}>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
                       <div style={{ fontSize: 12, color: "#B2EBF2" }}>
-                        施術 <strong style={{ color: "#fff" }}>${svc}{gcSvc >= svc && svc > 0 ? "🎁" : form.paymentType==="card"?"💳":"💵"}</strong>　チップ <strong style={{ color: "#fff" }}>${tip}{gcTip >= tip && tip > 0 ? "🎁" : form.tipPaymentType==="card"?"💳":"💵"}</strong>
+                        Treatment <strong style={{ color: "#fff" }}>${svc}{gcSvc >= svc && svc > 0 ? "🎁" : form.paymentType==="card"?"💳":"💵"}</strong>　Tip <strong style={{ color: "#fff" }}>${tip}{gcTip >= tip && tip > 0 ? "🎁" : form.tipPaymentType==="card"?"💳":"💵"}</strong>
                         {gc > 0 && (
                           <span style={{ fontSize: 10, color: "#80CBC4", display: "block" }}>
-                            🎁 ギフトカードで${gcSvc + gcTip}消化済み（本日の売上には含まれません）
+                            🎁 ${gcSvc + gcTip} covered by gift card (not counted in today's sales)
                           </span>
                         )}
                       </div>
                       <div style={{ textAlign: "right" }}>
-                        <span style={{ color: "#B2EBF2", fontSize: 11 }}>{gc > 0 ? "本日の受取　" : "もらった金額　"}</span>
+                        <span style={{ color: "#B2EBF2", fontSize: 11 }}>{gc > 0 ? "Received Today　" : "Amount Received　"}</span>
                         <span style={{ color: "#fff", fontSize: 22, fontWeight: 800 }}>${gc > 0 ? receivedToday : r2(svc + tip)}</span>
                       </div>
                     </div>
@@ -3298,13 +3305,13 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                       <div style={{ marginTop: 10, display: "flex", gap: 8, flexWrap: "wrap" }}>
                         <div style={{ flex: 1, minWidth: 130, background: "rgba(255,255,255,0.14)", borderRadius: 6, padding: "6px 10px" }}>
                           <div style={{ fontSize: 13, fontWeight: 800, color: "#fff" }}>{form.therapist}</div>
-                          <div style={{ fontSize: 13, color: "#E0F7FA" }}>施術 ${bodySvcShown}　チップ ${bodyTipShown}</div>
-                          <div style={{ fontSize: 13, color: "#fff", fontWeight: 700 }}>合計 ${r2(bodySvcShown + bodyTipShown)}</div>
+                          <div style={{ fontSize: 13, color: "#E0F7FA" }}>Treatment ${bodySvcShown}　Tip ${bodyTipShown}</div>
+                          <div style={{ fontSize: 13, color: "#fff", fontWeight: 700 }}>Total ${r2(bodySvcShown + bodyTipShown)}</div>
                         </div>
                         <div style={{ flex: 1, minWidth: 130, background: "rgba(255,255,255,0.14)", borderRadius: 6, padding: "6px 10px" }}>
-                          <div style={{ fontSize: 13, fontWeight: 800, color: "#fff" }}>{form.cavTherapist}（機械）</div>
-                          <div style={{ fontSize: 13, color: "#E0F7FA" }}>施術 ${cavSvcShown}　チップ ${cavTipShown}</div>
-                          <div style={{ fontSize: 13, color: "#fff", fontWeight: 700 }}>合計 ${r2(cavSvcShown + cavTipShown)}</div>
+                          <div style={{ fontSize: 13, fontWeight: 800, color: "#fff" }}>{form.cavTherapist} (Machine)</div>
+                          <div style={{ fontSize: 13, color: "#E0F7FA" }}>Treatment ${cavSvcShown}　Tip ${cavTipShown}</div>
+                          <div style={{ fontSize: 13, color: "#fff", fontWeight: 700 }}>Total ${r2(cavSvcShown + cavTipShown)}</div>
                         </div>
                       </div>
                     )}
@@ -3314,8 +3321,8 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                     {!form.cavTherapist && dep > 0 && (
                       <div style={{ marginTop: 10, background: "rgba(255,255,255,0.14)", borderRadius: 6, padding: "6px 10px" }}>
                         <div style={{ fontSize: 13, fontWeight: 800, color: "#fff" }}>{form.therapist}</div>
-                        <div style={{ fontSize: 13, color: "#E0F7FA" }}>施術 ${bodyPayroll}　チップ ${bodyTipShown}</div>
-                        <div style={{ fontSize: 13, color: "#fff", fontWeight: 700 }}>合計 ${r2(bodyPayroll + bodyTipShown)}</div>
+                        <div style={{ fontSize: 13, color: "#E0F7FA" }}>Treatment ${bodyPayroll}　Tip ${bodyTipShown}</div>
+                        <div style={{ fontSize: 13, color: "#fff", fontWeight: 700 }}>Total ${r2(bodyPayroll + bodyTipShown)}</div>
                       </div>
                     )}
                   </div>
@@ -3331,30 +3338,30 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                 if (svc === 0) return null;
                 return (
                   <div style={{ marginTop: 10, background: "#F0F4FF", borderRadius: 10, padding: "10px 12px" }}>
-                    <Field label={gc > 0 && !svcCovered ? "施術（差額）支払方法" : "施術 支払方法"} error={!svcCovered && errors.includes("paymentType")}>
+                    <Field label={gc > 0 && !svcCovered ? "Treatment (remaining balance) Payment Method" : "Treatment Payment Method"} error={!svcCovered && errors.includes("paymentType")}>
                       {svcCovered ? (
-                        <div style={{ fontSize: 12, color: "#00796B", fontWeight: 700, padding: "10px 0" }}>🎁 ギフトカード払い済み</div>
+                        <div style={{ fontSize: 12, color: "#00796B", fontWeight: 700, padding: "10px 0" }}>🎁 Paid with gift card</div>
                       ) : (
                         <>
                           <button onClick={() => set("svcSplitPayment", !form.svcSplitPayment)}
                             style={{ marginBottom: 8, padding: "6px 12px", borderRadius: 8, border: `2px solid ${form.svcSplitPayment ? "#2E7D32" : "#DDD"}`, background: form.svcSplitPayment ? "#E8F5E9" : "#fff", cursor: "pointer", fontWeight: 700, fontSize: 12, color: form.svcSplitPayment ? "#2E7D32" : "#888" }}>
-                            {form.svcSplitPayment ? "☑" : "☐"} 現金・カードに分けて支払い
+                            {form.svcSplitPayment ? "☑" : "☐"} Split payment between cash and card
                           </button>
                           {form.svcSplitPayment ? (
                             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
                               <div>
-                                <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>💵 現金 ($)</div>
+                                <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>💵 Cash ($)</div>
                                 <input type="number" value={form.svcCashPortion || ""} onChange={e => {
                                   const raw = e.target.value;
                                   setForm(f => ({ ...f, svcCashPortion: raw, svcCardPortion: Math.max(0, Number(f.price || 0) - (Number(raw) || 0)) }));
-                                }} style={inputStyle} placeholder="例：50" />
+                                }} style={inputStyle} placeholder="e.g. 50" />
                               </div>
                               <div>
-                                <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>💳 カード ($)</div>
+                                <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>💳 Card ($)</div>
                                 <input type="number" value={form.svcCardPortion || ""} onChange={e => {
                                   const raw = e.target.value;
                                   setForm(f => ({ ...f, svcCardPortion: raw, svcCashPortion: Math.max(0, Number(f.price || 0) - (Number(raw) || 0)) }));
-                                }} style={inputStyle} placeholder="例：50" />
+                                }} style={inputStyle} placeholder="e.g. 50" />
                               </div>
                             </div>
                           ) : (
@@ -3377,30 +3384,30 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                 const tipCovered = gc > 0 && tip > 0 && gcTip >= tip;
                 return (
                   <div style={{ marginTop: 8 }}>
-                    <Field label="チップ 支払方法" error={!tipCovered && errors.includes("tipPaymentType")}>
+                    <Field label="Tip Payment Method" error={!tipCovered && errors.includes("tipPaymentType")}>
                       {tipCovered ? (
-                        <div style={{ fontSize: 12, color: "#00796B", fontWeight: 700, padding: "6px 0" }}>🎁 ギフトカード払い済み</div>
+                        <div style={{ fontSize: 12, color: "#00796B", fontWeight: 700, padding: "6px 0" }}>🎁 Paid with gift card</div>
                       ) : (
                         <>
                           <button onClick={() => set("tipSplitPayment", !form.tipSplitPayment)}
                             style={{ marginBottom: 8, padding: "6px 12px", borderRadius: 8, border: `2px solid ${form.tipSplitPayment ? "#2E7D32" : "#DDD"}`, background: form.tipSplitPayment ? "#E8F5E9" : "#fff", cursor: "pointer", fontWeight: 700, fontSize: 12, color: form.tipSplitPayment ? "#2E7D32" : "#888" }}>
-                            {form.tipSplitPayment ? "☑" : "☐"} 現金・カードに分けて支払い
+                            {form.tipSplitPayment ? "☑" : "☐"} Split payment between cash and card
                           </button>
                           {form.tipSplitPayment ? (
                             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
                               <div>
-                                <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>💵 現金 ($)</div>
+                                <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>💵 Cash ($)</div>
                                 <input type="number" value={form.tipCashPortion || ""} onChange={e => {
                                   const raw = e.target.value;
                                   setForm(f => ({ ...f, tipCashPortion: raw, tipCardPortion: Math.max(0, Number(f.tip || 0) - (Number(raw) || 0)) }));
-                                }} style={inputStyle} placeholder="例：10" />
+                                }} style={inputStyle} placeholder="e.g. 10" />
                               </div>
                               <div>
-                                <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>💳 カード ($)</div>
+                                <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>💳 Card ($)</div>
                                 <input type="number" value={form.tipCardPortion || ""} onChange={e => {
                                   const raw = e.target.value;
                                   setForm(f => ({ ...f, tipCardPortion: raw, tipCashPortion: Math.max(0, Number(f.tip || 0) - (Number(raw) || 0)) }));
-                                }} style={inputStyle} placeholder="例：20" />
+                                }} style={inputStyle} placeholder="e.g. 20" />
                               </div>
                             </div>
                           ) : (
@@ -3437,7 +3444,7 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                       const tip = Math.round((tipTotal - cavTip) * 100) / 100;
                       setForm(f => ({ ...f, price, cavPrice, tip, cavTip }));
                     }} style={{ padding: "5px 10px", borderRadius: 6, border: "none", background: "#E65100", color: "#fff", fontWeight: 700, fontSize: 11, cursor: "pointer" }}>
-                      🔄 Weight Lossのルールで再計算する（{priceStale ? "現在$116になっていません" : "デポジット変更後にチップ％がずれています"}）
+                      🔄 Recalculate using Weight Loss rules ({priceStale ? "not currently $116" : "tip % is off after the deposit changed"})
                     </button>
                   </div>
                 );
@@ -3467,7 +3474,7 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                       const tip = Math.round((tipTotal - cavTip) * 100) / 100;
                       setForm(f => ({ ...f, price, cavPrice, tip, cavTip }));
                     }} style={{ padding: "5px 10px", borderRadius: 6, border: "none", background: "#E65100", color: "#fff", fontWeight: 700, fontSize: 11, cursor: "pointer" }}>
-                      🔄 分数比率（{bodyMins}分／{cavMins}分）で再計算する（{priceStale ? "施術料金" : "チップ"}がずれています）
+                      🔄 Recalculate using the minute ratio ({bodyMins}min / {cavMins}min) ({priceStale ? "treatment price" : "tip"} is off)
                     </button>
                   </div>
                 );
@@ -3478,9 +3485,9 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                   else, where minutes actually drive the $ split. */}
               {form.cavTherapist && !isRegularWeightLoss && (
                 <div style={{ marginTop: 10, background: "#EEF4FF", borderRadius: 8, padding: 10 }}>
-                  <div style={{ fontSize: 12, fontWeight: 700, color: "#1565C0", marginBottom: 8 }}>⏱️ 担当分数を入力 → 自動振り分け</div>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: "#1565C0", marginBottom: 8 }}>⏱️ Enter each therapist's minutes → auto-split</div>
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-                    <Field label={`${form.therapist} 担当（分）`}>
+                    <Field label={`${form.therapist} (min)`}>
                       <input type="number" value={form.bodyMins || ""}
                         onChange={e => {
                           const bodyMins = Number(e.target.value);
@@ -3505,9 +3512,9 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                             cavTip,
                           }));
                         }}
-                        style={inputStyle} placeholder={`例: ${form.duration - (isRegularWeightLoss ? 40 : 15)}`} />
+                        style={inputStyle} placeholder={`e.g. ${form.duration - (isRegularWeightLoss ? 40 : 15)}`} />
                     </Field>
-                    <Field label={`${form.cavTherapist} 担当（分）`}>
+                    <Field label={`${form.cavTherapist} (min)`}>
                       <input type="number" value={form.cavMins || ""}
                         onChange={e => {
                           const cavMins = Number(e.target.value);
@@ -3532,7 +3539,7 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                             cavTip,
                           }));
                         }}
-                        style={inputStyle} placeholder={isRegularWeightLoss ? "例: 40" : "例: 15"} />
+                        style={inputStyle} placeholder={isRegularWeightLoss ? "e.g. 40" : "e.g. 15"} />
                     </Field>
                   </div>
 
@@ -3541,19 +3548,19 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
 
             </div>
 
-            {/* GC消化 banner — replaces payment type selectors */}
+            {/* Gift Card Redemption banner — replaces payment type selectors */}
             {form.isGiftCard && (
               <div style={{ background: "#FFFDE7", borderRadius: 10, padding: 12, border: "2px solid #F59E0B", marginTop: 0 }}>
-                <div style={{ fontWeight: 800, fontSize: 13, color: "#B45309" }}>🎁 GC消化 — 全額ギフトカードにて領収済</div>
-                <div style={{ fontSize: 11, color: "#92400E", marginTop: 4 }}>事前購入のギフトカードを使用。本日の売上には計上されません。</div>
+                <div style={{ fontWeight: 800, fontSize: 13, color: "#B45309" }}>🎁 GC Redemption — Paid in full with gift card</div>
+                <div style={{ fontSize: 11, color: "#92400E", marginTop: 4 }}>Uses a previously-purchased gift card. Not counted in today's sales.</div>
               </div>
             )}
 
-            {/* PR無料 banner — replaces payment type selectors */}
+            {/* Complimentary PR banner — replaces payment type selectors */}
             {form.isPromo && (
               <div style={{ background: "#E3F2FD", borderRadius: 10, padding: 12, border: "2px solid #1565C0", marginTop: 0 }}>
-                <div style={{ fontWeight: 800, fontSize: 13, color: "#1565C0" }}>📸 PR無料 — インスタグラマーなど無料施術</div>
-                <div style={{ fontSize: 11, color: "#0D47A1", marginTop: 4 }}>お客様からは料金をいただいていません。本日の売上には計上されませんが、スタッフの施術実績（給料計算用）には入力した金額が反映されます。</div>
+                <div style={{ fontWeight: 800, fontSize: 13, color: "#1565C0" }}>📸 Complimentary PR — free treatment for influencers, etc.</div>
+                <div style={{ fontSize: 11, color: "#0D47A1", marginTop: 4 }}>No payment was received from the client. Not counted in today's sales, but the entered amount is still reflected in the therapist's treatment record for payroll purposes.</div>
               </div>
             )}
 
@@ -3561,7 +3568,7 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
           </>
         )}
 
-        {/* ── 当日の追加購入 ── */}
+        {/* ── Same-Day Additional Purchase ── */}
         {(() => {
           const tags = form.purchaseTags || [];
           const hasTag = id => tags.includes(id);
@@ -3579,7 +3586,7 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
           return (
             <div style={{ border: "2px solid #F06292", borderRadius: 12, overflow: "hidden" }}>
               <div style={{ background: "#FCE4EC", padding: "8px 12px", fontSize: 11, fontWeight: 700, color: "#880E4F" }}>
-                📌 当日の追加購入（タップでON/OFF）
+                📌 Same-Day Additional Purchase (tap to toggle)
               </div>
               {/* Tag toggle buttons */}
               <div style={{ display: "flex", flexWrap: "wrap", gap: 6, padding: "10px 12px", background: "#FFF" }}>
@@ -3596,13 +3603,13 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                 ))}
               </div>
 
-              {/* 🎟️ チケット新規購入 fields */}
+              {/* 🎟️ New Ticket Purchase fields */}
               {hasTag("newTicket") && (
                 <div style={{ background: "#FFEBEE", padding: "10px 12px", borderTop: "1px solid #FFCDD2", display: "flex", flexDirection: "column", gap: 8 }}>
-                  <div style={{ fontSize: 11, fontWeight: 700, color: "#B71C1C" }}>🎟️ チケット新規購入 — 詳細</div>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: "#B71C1C" }}>🎟️ New Ticket Purchase — Details</div>
 
                   <div>
-                    <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>コース</div>
+                    <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>Course</div>
                     <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                       {MENU_OPTIONS.map(({ group, prefix }) => {
                         const selected = form.newTicketMenu?.startsWith(prefix);
@@ -3628,7 +3635,7 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                     const currentDur = Number(form.newTicketMenu.split("-")[1]);
                     return group ? (
                       <div>
-                        <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>時間</div>
+                        <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>Duration</div>
                         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                           {group.durations.map(dur => (
                             <button key={dur} onClick={() => applyNewTicketMenuPrice(`${prefix}-${dur}-${form.newTicketTotal || 3}`, form.newTicketTotal || 3)}
@@ -3638,7 +3645,7 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                                 background: currentDur === dur ? "#B71C1C" : "#fff",
                                 cursor: "pointer", fontWeight: 700, fontSize: 11,
                                 color: currentDur === dur ? "#fff" : "#888"
-                              }}>{dur}分</button>
+                              }}>{dur}min</button>
                           ))}
                         </div>
                       </div>
@@ -3646,7 +3653,7 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                   })()}
 
                   <div>
-                    <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>コース回数</div>
+                    <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>Number of Sessions</div>
                     <div style={{ display: "flex", gap: 8 }}>
                       {[3,5].map(n => (
                         <button key={n} onClick={() => {
@@ -3656,7 +3663,7 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                             applyNewTicketMenuPrice(`${parts[0]}-${parts[1]}-${n}`, n);
                           }
                         }} style={{ flex: 1, padding: "7px", borderRadius: 8, border: `2px solid ${form.newTicketTotal===n?"#B71C1C":"#DDD"}`, background: form.newTicketTotal===n?"#B71C1C":"#fff", cursor: "pointer", fontWeight: 700, fontSize: 12, color: form.newTicketTotal===n?"#fff":"#888" }}>
-                          {n}回コース
+                          {n}-session package
                         </button>
                       ))}
                     </div>
@@ -3664,63 +3671,63 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
 
                   <div style={{ display: "flex", gap: 8 }}>
                     <div style={{ flex: 1 }}>
-                      <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>施術料 ($)（自動入力・修正可）</div>
+                      <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>Treatment Price ($) (auto-filled, editable)</div>
                       <input type="number" value={form.newTicketAmount || ""} onChange={e => set("newTicketAmount", e.target.value)}
-                        style={{ ...inputStyle, borderColor: "#EF9A9A" }} placeholder="例：719" disabled={form.newTicketSplitPayment} />
+                        style={{ ...inputStyle, borderColor: "#EF9A9A" }} placeholder="e.g. 719" disabled={form.newTicketSplitPayment} />
                     </div>
                     <div style={{ flex: 1 }}>
-                      <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>チップ ($)</div>
+                      <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>Tip ($)</div>
                       <input type="number" value={form.newTicketTip || ""} onChange={e => set("newTicketTip", e.target.value)}
-                        style={{ ...inputStyle, borderColor: "#EF9A9A" }} placeholder="例：46" />
+                        style={{ ...inputStyle, borderColor: "#EF9A9A" }} placeholder="e.g. 46" />
                     </div>
                   </div>
                   <div>
                     <button onClick={() => set("newTicketSplitPayment", !form.newTicketSplitPayment)}
                       style={{ padding: "6px 12px", borderRadius: 8, border: `2px solid ${form.newTicketSplitPayment ? "#B71C1C" : "#DDD"}`, background: form.newTicketSplitPayment ? "#FFEBEE" : "#fff", cursor: "pointer", fontWeight: 700, fontSize: 12, color: form.newTicketSplitPayment ? "#B71C1C" : "#888" }}>
-                      {form.newTicketSplitPayment ? "☑" : "☐"} 現金・カードに分けて支払い
+                      {form.newTicketSplitPayment ? "☑" : "☐"} Split payment between cash and card
                     </button>
                   </div>
                   {form.newTicketSplitPayment ? (
                     <div>
-                      <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>施術料の内訳（現金＋カード＝施術料の合計になるように）</div>
+                      <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>Treatment price breakdown (cash + card = total treatment price)</div>
                       <div style={{ display: "flex", gap: 8 }}>
                         <div style={{ flex: 1 }}>
-                          <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>💵 現金 ($)</div>
+                          <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>💵 Cash ($)</div>
                           <input type="number" value={form.newTicketCashPortion || ""} onChange={e => {
                             const raw = e.target.value;
                             setForm(f => ({ ...f, newTicketCashPortion: raw, newTicketAmount: (Number(raw) || 0) + Number(f.newTicketCardPortion||0) }));
-                          }} style={{ ...inputStyle, borderColor: "#EF9A9A" }} placeholder="例：500" />
+                          }} style={{ ...inputStyle, borderColor: "#EF9A9A" }} placeholder="e.g. 500" />
                         </div>
                         <div style={{ flex: 1 }}>
-                          <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>💳 カード ($)</div>
+                          <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>💳 Card ($)</div>
                           <input type="number" value={form.newTicketCardPortion || ""} onChange={e => {
                             const raw = e.target.value;
                             setForm(f => ({ ...f, newTicketCardPortion: raw, newTicketAmount: Number(f.newTicketCashPortion||0) + (Number(raw) || 0) }));
-                          }} style={{ ...inputStyle, borderColor: "#EF9A9A" }} placeholder="例：211" />
+                          }} style={{ ...inputStyle, borderColor: "#EF9A9A" }} placeholder="e.g. 211" />
                         </div>
                       </div>
                     </div>
                   ) : (
                     <div>
-                      <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>施術料の支払方法</div>
+                      <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>Treatment price payment method</div>
                       {payBtns("newTicketPaymentType", true, "#B71C1C")}
                     </div>
                   )}
                   {Number(form.newTicketTip) > 0 && (
                     <div>
-                      <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>チップの支払方法</div>
+                      <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>Tip payment method</div>
                       {payBtns("newTicketTipPaymentType", true, "#E65100")}
                     </div>
                   )}
                   {(Number(form.newTicketAmount) > 0 || Number(form.newTicketTip) > 0) && (
                     <div style={{ textAlign: "right", fontSize: 12, fontWeight: 700, color: "#B71C1C" }}>
-                      合計 ${(Number(form.newTicketAmount||0) + Number(form.newTicketTip||0)).toFixed(0)}
+                      Total ${(Number(form.newTicketAmount||0) + Number(form.newTicketTip||0)).toFixed(0)}
                     </div>
                   )}
                 </div>
               )}
 
-              {/* 🛍️ 物販購入 fields — supports multiple products in one visit (2nd/3rd item stored in extraRetailItems[]) */}
+              {/* 🛍️ Retail Purchase fields — supports multiple products in one visit (2nd/3rd item stored in extraRetailItems[]) */}
               {hasTag("retail") && (() => {
                 const items = [
                   { productName: form.retailProductName, amount: form.retailPurchaseAmount, paymentType: form.retailPurchasePaymentType, sellers: form.retailSellers },
@@ -3744,40 +3751,40 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                 };
                 return (
                   <div style={{ background: "#F3E5F5", padding: "10px 12px", borderTop: "1px solid #E1BEE7", display: "flex", flexDirection: "column", gap: 10 }}>
-                    <div style={{ fontSize: 11, fontWeight: 700, color: "#6A1B9A" }}>🛍️ 物販購入 — 詳細</div>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: "#6A1B9A" }}>🛍️ Retail Purchase — Details</div>
                     {items.map((item, idx) => (
                       <div key={idx} style={{ display: "flex", flexDirection: "column", gap: 8, ...(idx > 0 ? { borderTop: "1px dashed #CE93D8", paddingTop: 8 } : {}) }}>
                         {idx > 0 && (
                           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                            <span style={{ fontSize: 10, fontWeight: 700, color: "#6A1B9A" }}>商品 {idx + 1}</span>
-                            <button onClick={() => removeItem(idx)} style={{ border: "none", background: "none", cursor: "pointer", fontSize: 11, color: "#AAA" }}>✕ 削除</button>
+                            <span style={{ fontSize: 10, fontWeight: 700, color: "#6A1B9A" }}>Item {idx + 1}</span>
+                            <button onClick={() => removeItem(idx)} style={{ border: "none", background: "none", cursor: "pointer", fontSize: 11, color: "#AAA" }}>✕ Remove</button>
                           </div>
                         )}
                         <div>
-                          <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>商品名</div>
+                          <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>Product Name</div>
                           <select value={RETAIL_PRODUCTS.find(p => p.name === item.productName) ? item.productName : (item.productName ? "__other__" : "")} onChange={e => {
                             const val = e.target.value;
                             const prod = RETAIL_PRODUCTS.find(p => p.name === val);
                             updateItem(idx, { productName: val === "__other__" ? "" : val, amount: prod?.price > 0 ? prod.price : item.amount });
                           }} style={{ ...inputStyle, borderColor: "#CE93D8" }}>
-                            <option value="">— 商品を選択 —</option>
+                            <option value="">— Select a product —</option>
                             {RETAIL_PRODUCTS.map(p => (
-                              <option key={p.name} value={p.name}>{p.name}{p.price > 0 ? ` ($${p.price})` : ""}</option>
+                              <option key={p.name} value={p.name}>{RETAIL_PRODUCT_LABELS[p.name] || p.name}{p.price > 0 ? ` ($${p.price})` : ""}</option>
                             ))}
-                            <option value="__other__">その他</option>
+                            <option value="__other__">Other</option>
                           </select>
                           {(!RETAIL_PRODUCTS.find(p => p.name === item.productName)) && (
-                            <input type="text" value={item.productName || ""} placeholder="商品名を入力" style={{ ...inputStyle, borderColor: "#CE93D8", marginTop: 4 }}
+                            <input type="text" value={item.productName || ""} placeholder="Enter product name" style={{ ...inputStyle, borderColor: "#CE93D8", marginTop: 4 }}
                               onChange={e => updateItem(idx, { productName: e.target.value })} />
                           )}
                         </div>
                         <div>
-                          <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>金額 ($)</div>
+                          <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>Amount ($)</div>
                           <input type="number" value={item.amount || ""} onChange={e => updateItem(idx, { amount: e.target.value })}
-                            style={{ ...inputStyle, borderColor: "#CE93D8" }} placeholder="例：30" />
+                            style={{ ...inputStyle, borderColor: "#CE93D8" }} placeholder="e.g. 30" />
                         </div>
                         <div>
-                          <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>支払方法</div>
+                          <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>Payment Method</div>
                           <div style={{ display: "flex", gap: 5 }}>
                             {[["cash","💵 Cash"],["card","💳 Card"]].map(([v,l]) => (
                               <button key={v} onClick={() => updateItem(idx, { paymentType: v })}
@@ -3789,7 +3796,7 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                         </div>
                         {(() => {
                           // Seller amounts represent each person's share of the *tax-excluded* commission
-                          // base (same convention as the standalone 物販 modal) — staff still work out
+                          // base (same convention as the standalone Retail modal) — staff still work out
                           // their own 10%/4% commission from that base and type the dollar figure in.
                           const afterTaxTotal = Math.round(Number(item.amount || 0) * (1 - RETAIL_TAX_RATE) * 100) / 100;
                           // Defaults to just the body therapist getting the full (tax-excluded) amount —
@@ -3803,7 +3810,7 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                           return (
                             <div>
                               <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>
-                                誰と分けるか（最大3名まで・税抜金額${afterTaxTotal}を分けます）{afterTaxTotal > 0 && Math.abs(sellersTotal - afterTaxTotal) > 0.15 ? " ⚠️ 合計が税抜金額と大きくずれています" : ""}
+                                Split between (up to 3 people, splitting the tax-excluded amount of ${afterTaxTotal}){afterTaxTotal > 0 && Math.abs(sellersTotal - afterTaxTotal) > 0.15 ? " ⚠️ The total is significantly off from the tax-excluded amount" : ""}
                               </div>
                               <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                                 {afterTaxTotal > 0 && (
@@ -3811,17 +3818,17 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                                     const each = Math.round((afterTaxTotal / sellers.length) * 100) / 100;
                                     updateItem(idx, { sellers: sellers.map(sel => ({ ...sel, amount: each })) });
                                   }} style={{ padding: "5px 10px", borderRadius: 8, border: "2px solid #6A1B9A", background: "#fff", color: "#6A1B9A", fontWeight: 700, cursor: "pointer", fontSize: 11, alignSelf: "flex-start" }}>
-                                    ⚖️ 税抜金額を{sellers.length > 1 ? `${sellers.length}人で均等に分ける` : "自動入力"}
+                                    ⚖️ {sellers.length > 1 ? `Split the tax-excluded amount evenly ${sellers.length} ways` : "Auto-fill the tax-excluded amount"}
                                   </button>
                                 )}
                                 {sellers.map((sel, sidx) => (
                                   <div key={sidx} style={{ display: "flex", gap: 6, alignItems: "center" }}>
                                     <select value={sel.therapist} onChange={e => updSeller(sidx, { therapist: e.target.value })} style={{ ...inputStyle, flex: 2, borderColor: "#CE93D8" }}>
-                                      <option value="">— 選択 —</option>
+                                      <option value="">— Select —</option>
                                       {THERAPISTS.map(t => <option key={t} value={t}>{t}</option>)}
                                     </select>
                                     <input type="number" value={sel.amount || ""} onChange={e => updSeller(sidx, { amount: e.target.value })}
-                                      style={{ ...inputStyle, flex: 1, borderColor: "#CE93D8" }} placeholder="金額" />
+                                      style={{ ...inputStyle, flex: 1, borderColor: "#CE93D8" }} placeholder="Amount" />
                                     {sellers.length > 1 && (
                                       <button onClick={() => updateItem(idx, { sellers: sellers.filter((_, i) => i !== sidx) })}
                                         style={{ border: "none", background: "none", cursor: "pointer", fontSize: 16, color: "#AAA" }}>✕</button>
@@ -3831,7 +3838,7 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                                 {sellers.length < 3 && (
                                   <button onClick={() => updateItem(idx, { sellers: [...sellers, { therapist: "", amount: 0 }] })}
                                     style={{ padding: "5px 10px", borderRadius: 8, border: "2px solid #6A1B9A", background: "#F3E5F5", color: "#6A1B9A", fontWeight: 700, cursor: "pointer", fontSize: 11, alignSelf: "flex-start" }}>
-                                    ＋ 販売者を追加
+                                    ＋ Add a seller
                                   </button>
                                 )}
                               </div>
@@ -3842,23 +3849,23 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                     ))}
                     <button onClick={() => set("extraRetailItems", [...(form.extraRetailItems || []), { productName: "", amount: 0, paymentType: "", sellers: [] }])}
                       style={{ padding: "7px 12px", borderRadius: 8, border: "2px dashed #6A1B9A", background: "#fff", color: "#6A1B9A", fontWeight: 700, cursor: "pointer", fontSize: 12 }}>
-                      ＋ 商品を追加（2つ目・3つ目...）
+                      ＋ Add product (2nd, 3rd, ...)
                     </button>
                   </div>
                 );
               })()}
 
-              {/* 🎁 ギフトカード購入 fields */}
+              {/* 🎁 Gift Card Purchase fields */}
               {hasTag("giftCard") && (
                 <div style={{ background: "#E0F2F1", padding: "10px 12px", borderTop: "1px solid #B2DFDB", display: "flex", flexDirection: "column", gap: 8 }}>
-                  <div style={{ fontSize: 11, fontWeight: 700, color: "#00796B" }}>🎁 ギフトカード購入 — 詳細</div>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: "#00796B" }}>🎁 Gift Card Purchase — Details</div>
                   <div>
-                    <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>金額 ($)</div>
+                    <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>Amount ($)</div>
                     <input type="number" value={form.giftCardPurchaseAmount || ""} onChange={e => set("giftCardPurchaseAmount", e.target.value)}
-                      style={{ ...inputStyle, borderColor: "#80CBC4" }} placeholder="例：100" />
+                      style={{ ...inputStyle, borderColor: "#80CBC4" }} placeholder="e.g. 100" />
                   </div>
                   <div>
-                    <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>支払方法</div>
+                    <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>Payment Method</div>
                     {payBtns("giftCardPurchasePaymentType", true, "#00796B")}
                   </div>
                 </div>
@@ -3867,15 +3874,15 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
           );
         })()}
 
-        <Field label="メモ">
-          <input value={form.notes} onChange={e => set("notes", e.target.value)} style={inputStyle} placeholder="備考など" />
+        <Field label="Memo">
+          <input value={form.notes} onChange={e => set("notes", e.target.value)} style={inputStyle} placeholder="Additional notes" />
         </Field>
       </div>
 
       <ErrorBanner />
 
       <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
-        <button onClick={handleSave} style={{ flex: 1, padding: "12px", borderRadius: 10, border: "none", background: "#0D4F4F", color: "#fff", fontWeight: 700, fontSize: 15, cursor: "pointer" }}>💾 保存</button>
+        <button onClick={handleSave} style={{ flex: 1, padding: "12px", borderRadius: 10, border: "none", background: "#0D4F4F", color: "#fff", fontWeight: 700, fontSize: 15, cursor: "pointer" }}>💾 Save</button>
         {appt.id && <button onClick={onDelete} style={{ padding: "12px 16px", borderRadius: 10, border: "none", background: "#FFEBEE", color: "#C62828", fontWeight: 700, cursor: "pointer" }}>🗑️</button>}
       </div>
     </Modal>
@@ -3902,30 +3909,30 @@ function RetailModal({ retail, onSave, onClose }) {
   return (
     <Modal onClose={onClose}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-        <h2 style={{ margin: 0, fontSize: 18, color: "#6A1B9A" }}>🛍️ 物販</h2>
+        <h2 style={{ margin: 0, fontSize: 18, color: "#6A1B9A" }}>🛍️ Retail</h2>
         <button onClick={onClose} style={{ border: "none", background: "none", fontSize: 22, cursor: "pointer" }}>✕</button>
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-        <Field label="商品名">
+        <Field label="Product Name">
           <select value={RETAIL_PRODUCTS.find(p => p.name === form.item) ? form.item : (form.item ? "__other__" : "")}
             onChange={e => {
               const val = e.target.value;
               const prod = RETAIL_PRODUCTS.find(p => p.name === val);
               setForm(f => ({ ...f, item: val === "__other__" ? "" : val, price: prod?.price > 0 ? prod.price : f.price }));
             }} style={inputStyle}>
-            <option value="">— 商品を選択 —</option>
+            <option value="">— Select a product —</option>
             {RETAIL_PRODUCTS.map(p => (
-              <option key={p.name} value={p.name}>{p.name}{p.price > 0 ? ` ($${p.price})` : ""}</option>
+              <option key={p.name} value={p.name}>{RETAIL_PRODUCT_LABELS[p.name] || p.name}{p.price > 0 ? ` ($${p.price})` : ""}</option>
             ))}
-            <option value="__other__">その他（カスタム入力）</option>
+            <option value="__other__">Other (custom entry)</option>
           </select>
           {(!RETAIL_PRODUCTS.find(p => p.name === form.item)) && (
-            <input type="text" value={form.item || ""} placeholder="商品名を入力" style={{ ...inputStyle, marginTop: 4 }}
+            <input type="text" value={form.item || ""} placeholder="Enter product name" style={{ ...inputStyle, marginTop: 4 }}
               onChange={e => set("item", e.target.value)} />
           )}
         </Field>
-        <Field label="金額 ($)"><input type="number" value={form.price || ""} onChange={e => set("price", e.target.value)} style={inputStyle} /></Field>
-        <Field label={`販売者（最大3名まで・税抜金額$${afterTaxTotal}を分けます）${Number(form.price) > 0 && Math.abs(sellersTotal - afterTaxTotal) > 0.15 ? " ⚠️ 合計が税抜金額と大きくずれています" : ""}`}>
+        <Field label="Amount ($)"><input type="number" value={form.price || ""} onChange={e => set("price", e.target.value)} style={inputStyle} /></Field>
+        <Field label={`Split between (up to 3 people, splitting the tax-excluded amount of $${afterTaxTotal})${Number(form.price) > 0 && Math.abs(sellersTotal - afterTaxTotal) > 0.15 ? " ⚠️ The total is significantly off from the tax-excluded amount" : ""}`}>
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {Number(form.price) > 0 && (
               <button onClick={() => {
@@ -3933,17 +3940,17 @@ function RetailModal({ retail, onSave, onClose }) {
                 const each = Math.round((afterTaxTotal / sellers.length) * 100) / 100;
                 set("sellers", sellers.map(sel => ({ ...sel, amount: each })));
               }} style={{ padding: "6px 12px", borderRadius: 8, border: "2px solid #6A1B9A", background: "#fff", color: "#6A1B9A", fontWeight: 700, cursor: "pointer", fontSize: 12, alignSelf: "flex-start" }}>
-                ⚖️ 税抜金額を{sellers.length > 1 ? `${sellers.length}人で均等に分ける` : "自動入力"}
+                ⚖️ {sellers.length > 1 ? `Split the tax-excluded amount evenly ${sellers.length} ways` : "Auto-fill the tax-excluded amount"}
               </button>
             )}
             {sellers.map((sel, idx) => (
               <div key={idx} style={{ display: "flex", gap: 6, alignItems: "center" }}>
                 <select value={sel.therapist} onChange={e => updSeller(idx, { therapist: e.target.value })} style={{ ...inputStyle, flex: 2 }}>
-                  <option value="">— 選択 —</option>
+                  <option value="">— Select —</option>
                   {THERAPISTS.map(t => <option key={t} value={t}>{t}</option>)}
                 </select>
                 <input type="number" value={sel.amount || ""} onChange={e => updSeller(idx, { amount: e.target.value })}
-                  style={{ ...inputStyle, flex: 1 }} placeholder="金額" />
+                  style={{ ...inputStyle, flex: 1 }} placeholder="Amount" />
                 {sellers.length > 1 && (
                   <button onClick={() => set("sellers", sellers.filter((_, i) => i !== idx))}
                     style={{ border: "none", background: "none", cursor: "pointer", fontSize: 16, color: "#AAA" }}>✕</button>
@@ -3953,14 +3960,14 @@ function RetailModal({ retail, onSave, onClose }) {
             {sellers.length < 3 && (
               <button onClick={() => set("sellers", [...sellers, { therapist: "", amount: 0 }])}
                 style={{ padding: "6px 12px", borderRadius: 8, border: "2px solid #6A1B9A", background: "#F3E5F5", color: "#6A1B9A", fontWeight: 700, cursor: "pointer", fontSize: 12, alignSelf: "flex-start" }}>
-                ＋ 販売者を追加
+                ＋ Add a seller
               </button>
             )}
           </div>
         </Field>
-        <Field label="支払方法" error={paymentError && !form.paymentType}><PaymentToggle value={form.paymentType} onChange={v => { set("paymentType", v); setPaymentError(false); }} /></Field>
+        <Field label="Payment Method" error={paymentError && !form.paymentType}><PaymentToggle value={form.paymentType} onChange={v => { set("paymentType", v); setPaymentError(false); }} /></Field>
       </div>
-      <button onClick={handleSave} style={{ width: "100%", marginTop: 16, padding: "12px", borderRadius: 10, border: "none", background: "#6A1B9A", color: "#fff", fontWeight: 700, fontSize: 15, cursor: "pointer" }}>💾 保存</button>
+      <button onClick={handleSave} style={{ width: "100%", marginTop: 16, padding: "12px", borderRadius: 10, border: "none", background: "#6A1B9A", color: "#fff", fontWeight: 700, fontSize: 15, cursor: "pointer" }}>💾 Save</button>
     </Modal>
   );
 }
@@ -3971,7 +3978,7 @@ function DepositModal({ deposit, onSave, onDelete, onClose }) {
   const isDeposit = form.type === "deposit";
   const isGiftCard = form.type === "giftcard";
   const isCancellation = form.type === "cancellation";
-  const payTypes = [["cash","💵 現金"],["card","💳 カード"]];
+  const payTypes = [["cash","💵 Cash"],["card","💳 Card"]];
   const [errors, setErrors] = useState([]);
   const handleSave = () => {
     const errs = [];
@@ -3983,37 +3990,37 @@ function DepositModal({ deposit, onSave, onDelete, onClose }) {
   return (
     <Modal onClose={onClose}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-        <h2 style={{ margin: 0, fontSize: 18, color: "#1565C0" }}>{isCancellation ? "❌ キャンセル料" : isGiftCard ? "🎁 ギフトカード" : "💰 デポジット"}</h2>
+        <h2 style={{ margin: 0, fontSize: 18, color: "#1565C0" }}>{isCancellation ? "❌ Cancellation Fee" : isGiftCard ? "🎁 Gift Card" : "💰 Deposit"}</h2>
         <button onClick={onClose} style={{ border: "none", background: "none", fontSize: 22, cursor: "pointer" }}>✕</button>
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-        <Field label="種類">
+        <Field label="Type">
           <div style={{ display: "flex", gap: 8 }}>
-            {[["deposit","💰 デポジット"],["giftcard","🎁 ギフトカード"],["cancellation","❌ キャンセル料"]].map(([val,label]) => (
+            {[["deposit","💰 Deposit"],["giftcard","🎁 Gift Card"],["cancellation","❌ Cancellation Fee"]].map(([val,label]) => (
               <button key={val} onClick={() => set("type", val)} style={{ flex: 1, padding: "10px", borderRadius: 8, border: `2px solid ${form.type===val?"#1565C0":"#DDD"}`, background: form.type===val?"#E3F2FD":"#fff", cursor: "pointer", fontWeight: 700, color: form.type===val?"#1565C0":"#888" }}>{label}</button>
             ))}
           </div>
         </Field>
-        <Field label="お客様名"><input value={form.clientName} onChange={e => set("clientName", e.target.value)} style={inputStyle} placeholder="例：田中様" /></Field>
+        <Field label="Client Name"><input value={form.clientName} onChange={e => set("clientName", e.target.value)} style={inputStyle} placeholder="e.g. Tanaka" /></Field>
         {!isCancellation && (
-          <Field label={`来店予定日時（任意${isGiftCard ? "・全額ギフトで先払いの場合など" : ""}）`}>
+          <Field label={`Scheduled Visit Date/Time (optional${isGiftCard ? " — e.g. if fully prepaid by gift card" : ""})`}>
             <div style={{ display: "flex", gap: 8 }}>
               <input type="date" value={form.appointmentDate || ""} onChange={e => set("appointmentDate", e.target.value)} style={{ ...inputStyle, flex: 1 }} />
               <input type="time" value={form.appointmentTime || ""} onChange={e => set("appointmentTime", e.target.value)} style={{ ...inputStyle, width: 100 }} />
             </div>
             {form.appointmentDate && form.clientName && (
               <div style={{ fontSize: 11, color: "#1565C0", marginTop: 4 }}>
-                {new Date(form.appointmentDate + "T00:00").toLocaleDateString("ja-JP", { month: "long", day: "numeric" })}
-                {form.appointmentTime && ` ${form.appointmentTime}`}の{form.clientName}様の{isGiftCard ? "ギフト先払い" : "デポジット"}
-                　※日付は後から変更できます（予定が変わったらここを編集）
+                {isGiftCard ? "Gift prepayment" : "Deposit"} for {form.clientName} on {new Date(form.appointmentDate + "T00:00").toLocaleDateString("en-US", { month: "long", day: "numeric" })}
+                {form.appointmentTime && ` ${form.appointmentTime}`}
+                　※The date can be changed later (edit here if the plan changes)
               </div>
             )}
           </Field>
         )}
-        <Field label={isCancellation ? "キャンセル料 ($)" : "金額 ($)"}><input type="number" value={form.amount || ""} onChange={e => set("amount", e.target.value)} style={inputStyle} /></Field>
+        <Field label={isCancellation ? "Cancellation Fee ($)" : "Amount ($)"}><input type="number" value={form.amount || ""} onChange={e => set("amount", e.target.value)} style={inputStyle} /></Field>
         <div style={{ background: "#F0F4FF", borderRadius: 10, padding: "10px 12px" }}>
-          <div style={{ fontWeight: 700, fontSize: 12, color: "#1565C0", marginBottom: 8 }}>💳 支払い方法（施術・チップ別々に設定可）</div>
-          <Field label={isCancellation ? "キャンセル料 支払方法" : isDeposit ? "デポジット 支払方法" : "金額 支払方法"} error={errors.includes("paymentType")}>
+          <div style={{ fontWeight: 700, fontSize: 12, color: "#1565C0", marginBottom: 8 }}>💳 Payment Method (treatment and tip can be set separately)</div>
+          <Field label={isCancellation ? "Cancellation Fee Payment Method" : isDeposit ? "Deposit Payment Method" : "Amount Payment Method"} error={errors.includes("paymentType")}>
             <div style={{ display: "flex", gap: 6 }}>
               {payTypes.map(([val, label]) => (
                 <button key={val} onClick={() => { set("paymentType", val); setErrors(errors.filter(e => e !== "paymentType")); }}
@@ -4024,13 +4031,13 @@ function DepositModal({ deposit, onSave, onDelete, onClose }) {
             </div>
           </Field>
           <div style={{ marginTop: 8 }}>
-            <Field label="チップ ($)（任意）">
-              <input type="number" value={form.tip || ""} onChange={e => set("tip", e.target.value)} style={inputStyle} placeholder="チップなしは空欄" />
+            <Field label="Tip ($) (optional)">
+              <input type="number" value={form.tip || ""} onChange={e => set("tip", e.target.value)} style={inputStyle} placeholder="Leave blank if no tip" />
             </Field>
           </div>
           {Number(form.tip) > 0 && (
             <div style={{ marginTop: 8 }}>
-              <Field label="チップ 支払方法" error={errors.includes("tipPaymentType")}>
+              <Field label="Tip Payment Method" error={errors.includes("tipPaymentType")}>
                 <div style={{ display: "flex", gap: 6 }}>
                   {payTypes.map(([val, label]) => (
                     <button key={val} onClick={() => { set("tipPaymentType", val); setErrors(errors.filter(e => e !== "tipPaymentType")); }}
@@ -4043,10 +4050,10 @@ function DepositModal({ deposit, onSave, onDelete, onClose }) {
             </div>
           )}
         </div>
-        <Field label="メモ"><input value={form.notes} onChange={e => set("notes", e.target.value)} style={inputStyle} /></Field>
+        <Field label="Memo"><input value={form.notes} onChange={e => set("notes", e.target.value)} style={inputStyle} /></Field>
       </div>
       <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
-        <button onClick={handleSave} style={{ flex: 1, padding: "12px", borderRadius: 10, border: "none", background: "#1565C0", color: "#fff", fontWeight: 700, fontSize: 15, cursor: "pointer" }}>💾 保存</button>
+        <button onClick={handleSave} style={{ flex: 1, padding: "12px", borderRadius: 10, border: "none", background: "#1565C0", color: "#fff", fontWeight: 700, fontSize: 15, cursor: "pointer" }}>💾 Save</button>
         <button onClick={onDelete} style={{ padding: "12px 16px", borderRadius: 10, border: "none", background: "#FFEBEE", color: "#C62828", fontWeight: 700, cursor: "pointer" }}>🗑️</button>
       </div>
     </Modal>
@@ -4071,7 +4078,7 @@ function TicketPurchaseModal({ tp, onSave, onDelete, onClose }) {
   const applyMenuPrice = (menu, total) => {
     const group = MENU_OPTIONS.find(m => menu.startsWith(m.prefix));
     const durLabel = menu.split("-")[1];
-    const packageName = group ? `${group.group} ${durLabel}分 ×${total}回` : form.packageName;
+    const packageName = group ? `${group.group} ${durLabel}min x${total}` : form.packageName;
     const pkg = TICKET_PACKAGE_PRICES[menu];
     setForm(f => ({
       ...f,
@@ -4086,18 +4093,18 @@ function TicketPurchaseModal({ tp, onSave, onDelete, onClose }) {
   return (
     <Modal onClose={onClose}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-        <h2 style={{ margin: 0, fontSize: 18, color: "#B71C1C" }}>🎟️ チケット新規購入</h2>
+        <h2 style={{ margin: 0, fontSize: 18, color: "#B71C1C" }}>🎟️ New Ticket Purchase</h2>
         <button onClick={onClose} style={{ border: "none", background: "none", fontSize: 22, cursor: "pointer" }}>✕</button>
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-        <Field label="お客様名">
-          <input value={form.clientName} onChange={e => set("clientName", e.target.value)} style={inputStyle} placeholder="例：Mio" />
+        <Field label="Client Name">
+          <input value={form.clientName} onChange={e => set("clientName", e.target.value)} style={inputStyle} placeholder="e.g. Mio" />
         </Field>
 
         <div style={{ background: "#FFF5F5", borderRadius: 10, padding: 12 }}>
-          <div style={{ fontWeight: 700, fontSize: 12, color: "#B71C1C", marginBottom: 8 }}>🎟️ コース選択</div>
+          <div style={{ fontWeight: 700, fontSize: 12, color: "#B71C1C", marginBottom: 8 }}>🎟️ Course Selection</div>
 
-          <Field label="コース">
+          <Field label="Course">
             <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
               {MENU_OPTIONS.map(({ group, prefix }) => {
                 const selected = form.ticketMenu?.startsWith(prefix);
@@ -4122,7 +4129,7 @@ function TicketPurchaseModal({ tp, onSave, onDelete, onClose }) {
             const group = MENU_OPTIONS.find(m => m.prefix === prefix);
             const currentDur = Number(form.ticketMenu.split("-")[1]);
             return group ? (
-              <Field label="時間">
+              <Field label="Duration">
                 <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 4 }}>
                   {group.durations.map(dur => (
                     <button key={dur} onClick={() => applyMenuPrice(`${prefix}-${dur}-${form.ticketTotal || 3}`, form.ticketTotal || 3)}
@@ -4132,14 +4139,14 @@ function TicketPurchaseModal({ tp, onSave, onDelete, onClose }) {
                         background: currentDur === dur ? "#B71C1C" : "#fff",
                         cursor: "pointer", fontWeight: 700, fontSize: 12,
                         color: currentDur === dur ? "#fff" : "#888"
-                      }}>{dur}分</button>
+                      }}>{dur}min</button>
                   ))}
                 </div>
               </Field>
             ) : null;
           })()}
 
-          <Field label="コース回数">
+          <Field label="Number of Sessions">
             <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
               {[3,5].map(n => (
                 <button key={n} onClick={() => {
@@ -4149,49 +4156,49 @@ function TicketPurchaseModal({ tp, onSave, onDelete, onClose }) {
                     applyMenuPrice(`${parts[0]}-${parts[1]}-${n}`, n);
                   }
                 }} style={{ flex: 1, padding: "8px", borderRadius: 8, border: `2px solid ${form.ticketTotal===n?"#B71C1C":"#DDD"}`, background: form.ticketTotal===n?"#B71C1C":"#fff", cursor: "pointer", fontWeight: 700, color: form.ticketTotal===n?"#fff":"#888" }}>
-                  {n}回コース
+                  {n}-session package
                 </button>
               ))}
             </div>
           </Field>
         </div>
 
-        <Field label="パッケージ名（自動入力・修正可）">
-          <input value={form.packageName} onChange={e => set("packageName", e.target.value)} style={inputStyle} placeholder="例：Improving Posture 90分 ×3回" />
+        <Field label="Package Name (auto-filled, editable)">
+          <input value={form.packageName} onChange={e => set("packageName", e.target.value)} style={inputStyle} placeholder="e.g. Improving Posture 90min x3" />
         </Field>
-        <Field label="施術料 ($)">
-          <input type="number" value={form.amount || ""} onChange={e => set("amount", e.target.value)} style={inputStyle} placeholder="例：719" disabled={form.splitPayment} />
+        <Field label="Treatment Price ($)">
+          <input type="number" value={form.amount || ""} onChange={e => set("amount", e.target.value)} style={inputStyle} placeholder="e.g. 719" disabled={form.splitPayment} />
         </Field>
         <div>
           <button onClick={() => set("splitPayment", !form.splitPayment)}
             style={{ padding: "6px 12px", borderRadius: 8, border: `2px solid ${form.splitPayment ? "#B71C1C" : "#DDD"}`, background: form.splitPayment ? "#FFEBEE" : "#fff", cursor: "pointer", fontWeight: 700, fontSize: 12, color: form.splitPayment ? "#B71C1C" : "#888" }}>
-            {form.splitPayment ? "☑" : "☐"} 現金・カードに分けて支払い
+            {form.splitPayment ? "☑" : "☐"} Split payment between cash and card
           </button>
         </div>
         {form.splitPayment ? (
-          <Field label="内訳（現金＋カード＝施術料の合計になるように）">
+          <Field label="Breakdown (cash + card = total treatment price)">
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
               <div>
-                <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>💵 現金 ($)</div>
+                <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>💵 Cash ($)</div>
                 <input type="number" value={form.cashPortion || ""} onChange={e => {
                   const raw = e.target.value;
                   setForm(f => ({ ...f, cashPortion: raw, amount: (Number(raw) || 0) + Number(f.cardPortion||0) }));
-                }} style={inputStyle} placeholder="例：500" />
+                }} style={inputStyle} placeholder="e.g. 500" />
               </div>
               <div>
-                <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>💳 カード ($)</div>
+                <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>💳 Card ($)</div>
                 <input type="number" value={form.cardPortion || ""} onChange={e => {
                   const raw = e.target.value;
                   setForm(f => ({ ...f, cardPortion: raw, amount: Number(f.cashPortion||0) + (Number(raw) || 0) }));
-                }} style={inputStyle} placeholder="例：211" />
+                }} style={inputStyle} placeholder="e.g. 211" />
               </div>
             </div>
             <div style={{ marginTop: 6, fontSize: 12, color: "#B71C1C", fontWeight: 700 }}>
-              合計 ${Number(form.cashPortion||0) + Number(form.cardPortion||0)}
+              Total ${Number(form.cashPortion||0) + Number(form.cardPortion||0)}
             </div>
           </Field>
         ) : (
-          <Field label="支払方法" error={errors.includes("paymentType")}>
+          <Field label="Payment Method" error={errors.includes("paymentType")}>
             <div style={{ display: "flex", gap: 6 }}>
               {payTypes.map(([val, label]) => (
                 <button key={val} onClick={() => { set("paymentType", val); setErrors(errors.filter(e => e !== "paymentType")); }}
@@ -4202,11 +4209,11 @@ function TicketPurchaseModal({ tp, onSave, onDelete, onClose }) {
             </div>
           </Field>
         )}
-        <Field label="チップ ($)">
-          <input type="number" value={form.tip || ""} onChange={e => set("tip", e.target.value)} style={inputStyle} placeholder="例：46" />
+        <Field label="Tip ($)">
+          <input type="number" value={form.tip || ""} onChange={e => set("tip", e.target.value)} style={inputStyle} placeholder="e.g. 46" />
         </Field>
         {Number(form.tip) > 0 && (
-          <Field label="チップ支払方法" error={errors.includes("tipPaymentType")}>
+          <Field label="Tip Payment Method" error={errors.includes("tipPaymentType")}>
             <div style={{ display: "flex", gap: 6 }}>
               {payTypes.map(([val, label]) => (
                 <button key={val} onClick={() => { set("tipPaymentType", val); setErrors(errors.filter(e => e !== "tipPaymentType")); }}
@@ -4217,25 +4224,25 @@ function TicketPurchaseModal({ tp, onSave, onDelete, onClose }) {
             </div>
           </Field>
         )}
-        <Field label="メモ">
-          <input value={form.notes} onChange={e => set("notes", e.target.value)} style={inputStyle} placeholder="例：最終回使用後に購入" />
+        <Field label="Memo">
+          <input value={form.notes} onChange={e => set("notes", e.target.value)} style={inputStyle} placeholder="e.g. Purchased after final session used" />
         </Field>
         {/* Total preview */}
         {(Number(form.amount) > 0 || Number(form.tip) > 0) && (
           <div style={{ background: "#B71C1C", borderRadius: 8, padding: "10px 14px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <div style={{ fontSize: 11, color: "#FFCDD2" }}>
-              施術 <strong style={{ color: "#fff" }}>${Number(form.amount||0).toFixed(0)}</strong>
-              {Number(form.tip) > 0 && <span>　チップ <strong style={{ color: "#FFCC80" }}>${Number(form.tip||0).toFixed(0)}</strong></span>}
+              Treatment <strong style={{ color: "#fff" }}>${Number(form.amount||0).toFixed(0)}</strong>
+              {Number(form.tip) > 0 && <span>　Tip <strong style={{ color: "#FFCC80" }}>${Number(form.tip||0).toFixed(0)}</strong></span>}
             </div>
             <div>
-              <span style={{ color: "#FFCDD2", fontSize: 11 }}>合計　</span>
+              <span style={{ color: "#FFCDD2", fontSize: 11 }}>Total　</span>
               <span style={{ color: "#fff", fontSize: 20, fontWeight: 800 }}>${(Number(form.amount||0) + Number(form.tip||0)).toFixed(0)}</span>
             </div>
           </div>
         )}
       </div>
       <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
-        <button onClick={handleSave} style={{ flex: 1, padding: "12px", borderRadius: 10, border: "none", background: "#B71C1C", color: "#fff", fontWeight: 700, fontSize: 15, cursor: "pointer" }}>💾 保存</button>
+        <button onClick={handleSave} style={{ flex: 1, padding: "12px", borderRadius: 10, border: "none", background: "#B71C1C", color: "#fff", fontWeight: 700, fontSize: 15, cursor: "pointer" }}>💾 Save</button>
         <button onClick={onDelete} style={{ padding: "12px 16px", borderRadius: 10, border: "none", background: "#FFEBEE", color: "#C62828", fontWeight: 700, cursor: "pointer" }}>🗑️</button>
       </div>
     </Modal>
@@ -4278,13 +4285,13 @@ function StaffPurchaseModal({ sp, onSave, onDelete, onClose }) {
   return (
     <Modal onClose={onClose}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-        <h2 style={{ margin: 0, fontSize: 18, color: "#37474F" }}>👩‍💼 社販</h2>
+        <h2 style={{ margin: 0, fontSize: 18, color: "#37474F" }}>👩‍💼 Staff Purchase</h2>
         <button onClick={onClose} style={{ border: "none", background: "none", fontSize: 22, cursor: "pointer" }}>✕</button>
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-        <Field label="スタッフ名">
+        <Field label="Staff Name">
           <select value={form.staffName} onChange={e => set("staffName", e.target.value)} style={inputStyle}>
-            <option value="">— 選択 —</option>
+            <option value="">— Select —</option>
             {["Mami","Aya","Megumi","Hitomi","Maki","Yuka","Mai","Betsy"].map(t => (
               <option key={t} value={t}>{t}</option>
             ))}
@@ -4296,32 +4303,32 @@ function StaffPurchaseModal({ sp, onSave, onDelete, onClose }) {
             <div key={idx} style={{ display: "flex", flexDirection: "column", gap: 8, ...(idx > 0 ? { background: "#F5F5F5", borderRadius: 8, padding: 10, border: "1px dashed #CCC" } : {}) }}>
               {idx > 0 && (
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <span style={{ fontSize: 11, fontWeight: 700, color: "#37474F" }}>商品 {idx + 1}</span>
-                  <button onClick={() => removeItem(idx)} style={{ border: "none", background: "none", cursor: "pointer", fontSize: 11, color: "#AAA" }}>✕ 削除</button>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: "#37474F" }}>Item {idx + 1}</span>
+                  <button onClick={() => removeItem(idx)} style={{ border: "none", background: "none", cursor: "pointer", fontSize: 11, color: "#AAA" }}>✕ Remove</button>
                 </div>
               )}
-              <Field label="商品名 / 施術名">
+              <Field label="Product / Treatment Name">
                 <select value={isOtherProduct ? "__other__" : (item.productName || "")} onChange={e => {
                   const val = e.target.value;
                   if (val === "__other__") { updateItem(idx, { productName: "" }); return; }
                   const prod = RETAIL_PRODUCTS.find(p => p.name === val);
                   updateItem(idx, { productName: val, amount: prod?.price > 0 ? prod.price : item.amount });
                 }} style={inputStyle}>
-                  <option value="">— 商品/施術を選択 —</option>
+                  <option value="">— Select a product/treatment —</option>
                   {RETAIL_PRODUCTS.map(p => (
-                    <option key={p.name} value={p.name}>{p.name}{p.price > 0 ? ` ($${p.price})` : ""}</option>
+                    <option key={p.name} value={p.name}>{RETAIL_PRODUCT_LABELS[p.name] || p.name}{p.price > 0 ? ` ($${p.price})` : ""}</option>
                   ))}
-                  <option value="__other__">その他（施術名など直接入力）</option>
+                  <option value="__other__">Other (enter treatment name, etc. directly)</option>
                 </select>
                 {isOtherProduct && (
-                  <input type="text" value={item.productName || ""} placeholder="例：ProCell" style={{ ...inputStyle, marginTop: 4 }}
+                  <input type="text" value={item.productName || ""} placeholder="e.g. ProCell" style={{ ...inputStyle, marginTop: 4 }}
                     onChange={e => updateItem(idx, { productName: e.target.value })} />
                 )}
               </Field>
-              <Field label="金額 ($)"><input type="number" value={item.amount || ""} onChange={e => updateItem(idx, { amount: e.target.value })} style={inputStyle} /></Field>
-              <Field label="支払方法" error={paymentError && Number(item.amount || 0) > 0 && !item.paymentType}>
+              <Field label="Amount ($)"><input type="number" value={item.amount || ""} onChange={e => updateItem(idx, { amount: e.target.value })} style={inputStyle} /></Field>
+              <Field label="Payment Method" error={paymentError && Number(item.amount || 0) > 0 && !item.paymentType}>
                 <div style={{ display: "flex", gap: 6 }}>
-                  {[["cash","💵 現金"],["card","💳 カード"]].map(([val, label]) => (
+                  {[["cash","💵 Cash"],["card","💳 Card"]].map(([val, label]) => (
                     <button key={val} onClick={() => { updateItem(idx, { paymentType: val }); setPaymentError(false); }}
                       style={{ flex: 1, padding: "9px 4px", borderRadius: 8, border: `2px solid ${item.paymentType===val?"#37474F":"#DDD"}`, background: item.paymentType===val?"#ECEFF1":"#fff", cursor: "pointer", fontWeight: 700, fontSize: 12, color: item.paymentType===val?"#37474F":"#888" }}>
                       {label}
@@ -4333,15 +4340,15 @@ function StaffPurchaseModal({ sp, onSave, onDelete, onClose }) {
           );
         })}
         <button onClick={addItem} style={{ background: "none", border: "none", color: "#37474F", fontSize: 13, textAlign: "left", padding: "4px 0", cursor: "pointer", textDecoration: "underline" }}>
-          ＋ 商品を追加（2つ目・3つ目...）
+          ＋ Add product (2nd, 3rd, ...)
         </button>
         {total > 0 && (
-          <div style={{ textAlign: "right", fontSize: 13, fontWeight: 700, color: "#37474F" }}>合計 ${total}</div>
+          <div style={{ textAlign: "right", fontSize: 13, fontWeight: 700, color: "#37474F" }}>Total ${total}</div>
         )}
-        <Field label="メモ"><input value={form.notes} onChange={e => set("notes", e.target.value)} style={inputStyle} placeholder="任意" /></Field>
+        <Field label="Memo"><input value={form.notes} onChange={e => set("notes", e.target.value)} style={inputStyle} placeholder="Optional" /></Field>
       </div>
       <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
-        <button onClick={handleSave} style={{ flex: 1, padding: "12px", borderRadius: 10, border: "none", background: "#37474F", color: "#fff", fontWeight: 700, fontSize: 15, cursor: "pointer" }}>💾 保存</button>
+        <button onClick={handleSave} style={{ flex: 1, padding: "12px", borderRadius: 10, border: "none", background: "#37474F", color: "#fff", fontWeight: 700, fontSize: 15, cursor: "pointer" }}>💾 Save</button>
         <button onClick={onDelete} style={{ padding: "12px 16px", borderRadius: 10, border: "none", background: "#FFEBEE", color: "#C62828", fontWeight: 700, cursor: "pointer" }}>🗑️</button>
       </div>
     </Modal>
@@ -4359,30 +4366,30 @@ function RefundModal({ rf, onSave, onDelete, onClose }) {
   return (
     <Modal onClose={onClose}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-        <h2 style={{ margin: 0, fontSize: 18, color: "#5D4037" }}>🔙 返金（リファンド）</h2>
+        <h2 style={{ margin: 0, fontSize: 18, color: "#5D4037" }}>🔙 Refund</h2>
         <button onClick={onClose} style={{ border: "none", background: "none", fontSize: 22, cursor: "pointer" }}>✕</button>
       </div>
       <div style={{ fontSize: 11, color: "#888", marginBottom: 12, background: "#EFEBE9", borderRadius: 8, padding: "8px 10px" }}>
-        過去の来店分の返金を、日をまたいだ「本日」の売上からマイナスするための記録です。担当セラピストの給料振り分けはここでは変更されません（必要な場合は元の日をロック解除して直接修正してください）。
+        A record used to deduct a refund for a past visit from "today's" sales, across day boundaries. This does not change the therapist's payroll split — if that needs adjusting, unlock the original day and edit it directly.
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-        <Field label="お客様名">
-          <input value={form.clientName} onChange={e => set("clientName", e.target.value)} style={inputStyle} placeholder="例：田中様" />
+        <Field label="Client Name">
+          <input value={form.clientName} onChange={e => set("clientName", e.target.value)} style={inputStyle} placeholder="e.g. Tanaka" />
         </Field>
-        <Field label="来店日（任意）">
+        <Field label="Visit Date (optional)">
           <input type="date" value={form.originalDate || ""} onChange={e => set("originalDate", e.target.value)} style={inputStyle} />
         </Field>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-          <Field label="施術返金額 ($)">
-            <input type="number" value={form.serviceAmount || ""} onChange={e => set("serviceAmount", e.target.value)} style={inputStyle} placeholder="例：150" />
+          <Field label="Treatment Refund Amount ($)">
+            <input type="number" value={form.serviceAmount || ""} onChange={e => set("serviceAmount", e.target.value)} style={inputStyle} placeholder="e.g. 150" />
           </Field>
-          <Field label="チップ返金額 ($)">
-            <input type="number" value={form.tipAmount || ""} onChange={e => set("tipAmount", e.target.value)} style={inputStyle} placeholder="例：0" />
+          <Field label="Tip Refund Amount ($)">
+            <input type="number" value={form.tipAmount || ""} onChange={e => set("tipAmount", e.target.value)} style={inputStyle} placeholder="e.g. 0" />
           </Field>
         </div>
-        <Field label="返金方法" error={paymentError && !form.paymentType}>
+        <Field label="Refund Method" error={paymentError && !form.paymentType}>
           <div style={{ display: "flex", gap: 6 }}>
-            {[["cash","💵 現金"],["card","💳 カード"]].map(([val, label]) => (
+            {[["cash","💵 Cash"],["card","💳 Card"]].map(([val, label]) => (
               <button key={val} onClick={() => { set("paymentType", val); setPaymentError(false); }}
                 style={{ flex: 1, padding: "9px 4px", borderRadius: 8, border: `2px solid ${form.paymentType===val?"#5D4037":"#DDD"}`, background: form.paymentType===val?"#EFEBE9":"#fff", cursor: "pointer", fontWeight: 700, fontSize: 12, color: form.paymentType===val?"#5D4037":"#888" }}>
                 {label}
@@ -4392,14 +4399,14 @@ function RefundModal({ rf, onSave, onDelete, onClose }) {
         </Field>
         {(Number(form.serviceAmount) > 0 || Number(form.tipAmount) > 0) && (
           <div style={{ background: "#5D4037", borderRadius: 8, padding: "10px 14px", textAlign: "right" }}>
-            <span style={{ color: "#D7CCC8", fontSize: 11 }}>返金合計　</span>
+            <span style={{ color: "#D7CCC8", fontSize: 11 }}>Total Refund　</span>
             <span style={{ color: "#fff", fontSize: 22, fontWeight: 800 }}>-${Number(form.serviceAmount||0) + Number(form.tipAmount||0)}</span>
           </div>
         )}
-        <Field label="メモ"><input value={form.notes} onChange={e => set("notes", e.target.value)} style={inputStyle} placeholder="返金理由など" /></Field>
+        <Field label="Memo"><input value={form.notes} onChange={e => set("notes", e.target.value)} style={inputStyle} placeholder="Reason for refund, etc." /></Field>
       </div>
       <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
-        <button onClick={handleSave} style={{ flex: 1, padding: "12px", borderRadius: 10, border: "none", background: "#5D4037", color: "#fff", fontWeight: 700, fontSize: 15, cursor: "pointer" }}>💾 保存</button>
+        <button onClick={handleSave} style={{ flex: 1, padding: "12px", borderRadius: 10, border: "none", background: "#5D4037", color: "#fff", fontWeight: 700, fontSize: 15, cursor: "pointer" }}>💾 Save</button>
         {rf.id && <button onClick={onDelete} style={{ padding: "12px 16px", borderRadius: 10, border: "none", background: "#FFEBEE", color: "#C62828", fontWeight: 700, cursor: "pointer" }}>🗑️</button>}
       </div>
     </Modal>
@@ -4420,17 +4427,17 @@ function ForgottenTipModal({ ft, onSave, onDelete, onClose }) {
   return (
     <Modal onClose={onClose}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-        <h2 style={{ margin: 0, fontSize: 18, color: "#00695C" }}>🙏 打ち忘れ入力</h2>
+        <h2 style={{ margin: 0, fontSize: 18, color: "#00695C" }}>🙏 Forgotten Entry</h2>
         <button onClick={onClose} style={{ border: "none", background: "none", fontSize: 22, cursor: "pointer" }}>✕</button>
       </div>
       <div style={{ fontSize: 11, color: "#888", marginBottom: 12, background: "#E0F2F1", borderRadius: 8, padding: "8px 10px" }}>
-        過去の来店分でレジに打ち忘れた支払い（現金チップなど）を、日をまたいだ「本日」の売上に追加し、担当セラピストの本日分お給料にも計上するための記録です。来店日の予約は編集不要です（顧客タイプの件数には影響しません）。
+        A record for a payment (usually a cash tip) staff forgot to ring in for a past visit — adds it to "today's" sales across day boundaries, and to the therapist's payroll for today. No need to edit the appointment on the original visit date (it doesn't affect customer-type counts).
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-        <Field label="お客様名">
-          <input value={form.clientName} onChange={e => set("clientName", e.target.value)} style={inputStyle} placeholder="例：田中様" />
+        <Field label="Client Name">
+          <input value={form.clientName} onChange={e => set("clientName", e.target.value)} style={inputStyle} placeholder="e.g. Tanaka" />
         </Field>
-        <Field label="担当セラピスト" error={errors.includes("therapist")}>
+        <Field label="Therapist" error={errors.includes("therapist")}>
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
             {THERAPISTS.map(t => (
               <button key={t} onClick={() => { set("therapist", t); setErrors(e => e.filter(x => x !== "therapist")); }}
@@ -4440,20 +4447,20 @@ function ForgottenTipModal({ ft, onSave, onDelete, onClose }) {
             ))}
           </div>
         </Field>
-        <Field label="来店日（任意・実際に施術があった日）">
+        <Field label="Visit Date (optional — the date the treatment actually happened)">
           <input type="date" value={form.originalDate || ""} onChange={e => set("originalDate", e.target.value)} style={inputStyle} />
         </Field>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-          <Field label="打ち忘れ施術料 ($)">
-            <input type="number" value={form.serviceAmount || ""} onChange={e => set("serviceAmount", e.target.value)} style={inputStyle} placeholder="例：0" />
+          <Field label="Forgotten Treatment Amount ($)">
+            <input type="number" value={form.serviceAmount || ""} onChange={e => set("serviceAmount", e.target.value)} style={inputStyle} placeholder="e.g. 0" />
           </Field>
-          <Field label="打ち忘れチップ ($)">
-            <input type="number" value={form.tipAmount || ""} onChange={e => set("tipAmount", e.target.value)} style={inputStyle} placeholder="例：20" />
+          <Field label="Forgotten Tip ($)">
+            <input type="number" value={form.tipAmount || ""} onChange={e => set("tipAmount", e.target.value)} style={inputStyle} placeholder="e.g. 20" />
           </Field>
         </div>
-        <Field label="支払方法" error={errors.includes("paymentType")}>
+        <Field label="Payment Method" error={errors.includes("paymentType")}>
           <div style={{ display: "flex", gap: 6 }}>
-            {[["cash","💵 現金"],["card","💳 カード"]].map(([val, label]) => (
+            {[["cash","💵 Cash"],["card","💳 Card"]].map(([val, label]) => (
               <button key={val} onClick={() => { set("paymentType", val); setErrors(e => e.filter(x => x !== "paymentType")); }}
                 style={{ flex: 1, padding: "9px 4px", borderRadius: 8, border: `2px solid ${form.paymentType===val?"#00695C":"#DDD"}`, background: form.paymentType===val?"#E0F2F1":"#fff", cursor: "pointer", fontWeight: 700, fontSize: 12, color: form.paymentType===val?"#00695C":"#888" }}>
                 {label}
@@ -4463,14 +4470,14 @@ function ForgottenTipModal({ ft, onSave, onDelete, onClose }) {
         </Field>
         {(Number(form.serviceAmount) > 0 || Number(form.tipAmount) > 0) && (
           <div style={{ background: "#00695C", borderRadius: 8, padding: "10px 14px", textAlign: "right" }}>
-            <span style={{ color: "#B2DFDB", fontSize: 11 }}>本日追加合計　</span>
+            <span style={{ color: "#B2DFDB", fontSize: 11 }}>Total Added Today　</span>
             <span style={{ color: "#fff", fontSize: 22, fontWeight: 800 }}>+${Number(form.serviceAmount||0) + Number(form.tipAmount||0)}</span>
           </div>
         )}
-        <Field label="メモ"><input value={form.notes} onChange={e => set("notes", e.target.value)} style={inputStyle} placeholder="例：16日レジ打ち忘れ" /></Field>
+        <Field label="Memo"><input value={form.notes} onChange={e => set("notes", e.target.value)} style={inputStyle} placeholder="e.g. Forgot to ring in on the 16th" /></Field>
       </div>
       <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
-        <button onClick={handleSave} style={{ flex: 1, padding: "12px", borderRadius: 10, border: "none", background: "#00695C", color: "#fff", fontWeight: 700, fontSize: 15, cursor: "pointer" }}>💾 保存</button>
+        <button onClick={handleSave} style={{ flex: 1, padding: "12px", borderRadius: 10, border: "none", background: "#00695C", color: "#fff", fontWeight: 700, fontSize: 15, cursor: "pointer" }}>💾 Save</button>
         {ft.id && <button onClick={onDelete} style={{ padding: "12px 16px", borderRadius: 10, border: "none", background: "#FFEBEE", color: "#C62828", fontWeight: 700, cursor: "pointer" }}>🗑️</button>}
       </div>
     </Modal>
@@ -4482,7 +4489,7 @@ function SectionBox({ title, color, onAdd, disabled, children }) {
     <div style={{ marginTop: 20, background: "#fff", borderRadius: 12, padding: 16, boxShadow: "0 1px 4px rgba(0,0,0,0.08)" }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
         <span style={{ fontWeight: 700, color, fontSize: 15 }}>{title}</span>
-        <button onClick={onAdd} disabled={disabled} style={{ padding: "6px 14px", borderRadius: 8, background: disabled ? "#CCC" : color, color: "#fff", border: "none", cursor: disabled ? "not-allowed" : "pointer", fontSize: 13, fontWeight: 600 }}>+ 追加</button>
+        <button onClick={onAdd} disabled={disabled} style={{ padding: "6px 14px", borderRadius: 8, background: disabled ? "#CCC" : color, color: "#fff", border: "none", cursor: disabled ? "not-allowed" : "pointer", fontSize: 13, fontWeight: 600 }}>+ Add</button>
       </div>
       {children}
     </div>
@@ -4497,11 +4504,28 @@ function Modal({ onClose, children }) {
   );
 }
 
+// Native <input type="month"> renders its picker/label using the browser's UI language, not the
+// page's <html lang>, so on a browser set to Japanese it shows month names like "7月" regardless
+// of the app's own translation — this custom picker guarantees English month names everywhere.
+const MONTH_NAMES = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+function MonthPicker({ value, onChange, style }) {
+  const [y, m] = value.split("-").map(Number);
+  return (
+    <div style={{ display: "flex", gap: 6 }}>
+      <select value={m} onChange={e => onChange(`${y}-${String(e.target.value).padStart(2, "0")}`)} style={style}>
+        {MONTH_NAMES.map((name, i) => <option key={i} value={i + 1}>{name}</option>)}
+      </select>
+      <input type="number" value={y} onChange={e => onChange(`${e.target.value}-${String(m).padStart(2, "0")}`)}
+        style={{ ...style, width: 80 }} />
+    </div>
+  );
+}
+
 function Field({ label, children, error }) {
   return (
     <div>
       <label style={{ fontSize: 12, fontWeight: 600, color: error ? "#C62828" : "#555", display: "block", marginBottom: 5 }}>
-        {label}{error && <span style={{ marginLeft: 6, fontWeight: 800 }}>⚠️ 未入力・未選択</span>}
+        {label}{error && <span style={{ marginLeft: 6, fontWeight: 800 }}>⚠️ Required</span>}
       </label>
       {children}
     </div>
@@ -4676,7 +4700,7 @@ async function exportSalesReportXlsx(monthStr) {
   const wsData = [
     [`Dr.Body,Inc. Sales Report in ${monthName} ${y}`, "", "", "", "", "", "", "", "", "Please fill in the blue cells"],
     [],
-    ["Date", "Total Sales", "客数", "Cash", "", "", "", "Card", "", "", "", "Total tip", "Total sales and Tip"],
+    ["Date", "Total Sales", "Clients", "Cash", "", "", "", "Card", "", "", "", "Total tip", "Total sales and Tip"],
     ["", "", "", "Treatment", "Product", "Total Cash", "Tip", "Treatment", "Product", "Total Card", "Tip", "", ""],
   ];
 
@@ -4737,7 +4761,7 @@ async function exportSalesReportXlsx(monthStr) {
   const ctData = [
     [`Customer Type Summary — ${monthName} ${y}`],
     [],
-    ["Date", "RL", "RT", "NL", "NT", "Total", ...REFERRAL_SOURCES],
+    ["Date", "RL", "RT", "NL", "NT", "Total", ...REFERRAL_SOURCES.map(src => REFERRAL_LABELS[src] || src)],
   ];
   dailyData.forEach(row => {
     ctData.push([row.date, row.rl, row.rt, row.nl, row.nt, row.rl + row.rt + row.nl + row.nt, ...row.referrals]);
@@ -4762,18 +4786,18 @@ async function exportSalesReportXlsx(monthStr) {
   const tsData = [
     [`Ticket Sales Summary — ${monthName} ${y}`],
     [],
-    ["", "件数 Count", "金額 Amount"],
+    ["", "Count", "Amount"],
     ["Total", ...countAmt(ticketSaleEvents)],
     ["New customers (NL+NT)", ...countAmt(newSales)],
     ["Repeat customers (RL+RT)", ...countAmt(repeatSales)],
     [],
-    ["New customers by referral source", "件数 Count", "金額 Amount"],
+    ["New customers by referral source", "Count", "Amount"],
   ];
   REFERRAL_SOURCES.forEach(src => {
-    tsData.push([src, ...countAmt(newSales.filter(r => r.referralSource === src))]);
+    tsData.push([REFERRAL_LABELS[src] || src, ...countAmt(newSales.filter(r => r.referralSource === src))]);
   });
   tsData.push([]);
-  tsData.push(["By staff (ranked by New customers $ — who's converting new clients into ticket sales)", "件数 Count", "金額 Amount", "New customers $", "Repeat customers $", "Local visits (RL+NL)", "→ Converted to ticket", "Conversion %"]);
+  tsData.push(["By staff (ranked by New customers $ — who's converting new clients into ticket sales)", "Count", "Amount", "New customers $", "Repeat customers $", "Local visits (RL+NL)", "→ Converted to ticket", "Conversion %"]);
   // A visit worked by two therapists counts as 1 "件" for each, but the $ amount is split by share.
   const shareAmtFor = (t, list) => Math.round(list.reduce((s, r) => s + r.amount * r.therapists.find(th => th.name === t).share, 0) * 100) / 100;
   const byStaffRows = THERAPISTS.map(t => {
@@ -4865,8 +4889,8 @@ function PayrollTab() {
     // revenue with no way to tell why.
     const moneyNote = (a) => [
       (Number(a.depositApplied || 0) + Number(a.packageDepositAmount || 0)) > 0
-        ? `💰デポジット$${Number(a.depositApplied || 0) + Number(a.packageDepositAmount || 0)}分あり` : "",
-      Number(a.giftCardUsed || 0) > 0 ? `🎁ギフトカード$${Number(a.giftCardUsed)}分使用` : "",
+        ? `💰Includes $${Number(a.depositApplied || 0) + Number(a.packageDepositAmount || 0)} deposit` : "",
+      Number(a.giftCardUsed || 0) > 0 ? `🎁Used $${Number(a.giftCardUsed)} gift card` : "",
     ].filter(Boolean).join("　");
 
     allAppts.filter(a => !a.isCavSlot).forEach(a => {
@@ -4915,7 +4939,7 @@ function PayrollTab() {
         tip,
         paymentType: a.isGiftCard || a.isPromo ? "gc" : a.paymentType,
         tipPaymentType: a.isGiftCard || a.isPromo ? "gc" : a.tipPaymentType,
-        notes: [a.notes || "", moneyNote(a), a.isPromo ? "📸PR無料" : ""].filter(Boolean).join("　"),
+        notes: [a.notes || "", moneyNote(a), a.isPromo ? "📸Complimentary PR" : ""].filter(Boolean).join("　"),
       });
       byTherapist[t].totalService += svc;
       byTherapist[t].totalTip += tip;
@@ -4947,7 +4971,7 @@ function PayrollTab() {
             tipPaymentType: "",
             retail,
             retailProduct: item.productName || "",
-            notes: `🛍️ 物販${item.productName ? ` (${item.productName})` : ""}`,
+            notes: `🛍️ Retail${item.productName ? ` (${item.productName})` : ""}`,
           });
           byTherapist[t].totalRetail += retail;
           if (isCard) byTherapist[t].totalRetailCard += retail;
@@ -4977,7 +5001,7 @@ function PayrollTab() {
           tipPaymentType: "",
           retail,
           retailProduct: r.item || "",
-          notes: `🛍️ 物販(電話・ウォークイン)${r.item ? ` (${r.item})` : ""}`,
+          notes: `🛍️ Retail (phone/walk-in)${r.item ? ` (${r.item})` : ""}`,
         });
         byTherapist[t].totalRetail += retail;
         if (isCard) byTherapist[t].totalRetailCard += retail;
@@ -5003,7 +5027,7 @@ function PayrollTab() {
         tip,
         paymentType: ft.paymentType,
         tipPaymentType: ft.paymentType,
-        notes: `🙏 打ち忘れ${ft.originalDate ? `(${ft.originalDate}来店分)` : ""}${ft.notes ? ` ${ft.notes}` : ""}`,
+        notes: `🙏 Forgotten Entry${ft.originalDate ? ` (visit on ${ft.originalDate})` : ""}${ft.notes ? ` ${ft.notes}` : ""}`,
       });
       byTherapist[t].totalService += svc;
       byTherapist[t].totalTip += tip;
@@ -5034,7 +5058,7 @@ function PayrollTab() {
           tip,
           paymentType: a.isGiftCard ? "gc" : (addon.paymentType || "cash"),
           tipPaymentType: a.isGiftCard ? "gc" : (addon.tipPaymentType || "cash"),
-          notes: `➕ ${addon.serviceName || addon.name || "オプション"}${addon.ticketCurrent ? ` ${addon.ticketCurrent}/${a.ticketTotal||3}` : ""}`,
+          notes: `➕ ${addon.serviceName || addon.name || "Add-on"}${addon.ticketCurrent ? ` ${addon.ticketCurrent}/${a.ticketTotal||3}` : ""}`,
         });
         byTherapist[t].totalService += svc;
         byTherapist[t].totalTip += tip;
@@ -5085,7 +5109,7 @@ function PayrollTab() {
         tip,
         paymentType: a.paymentType,
         tipPaymentType: a.tipPaymentType,
-        notes: ["⚡ 機械", parent ? moneyNote(parent) : ""].filter(Boolean).join("　"),
+        notes: ["⚡ Machine", parent ? moneyNote(parent) : ""].filter(Boolean).join("　"),
       });
       byTherapist[t].totalService += svc;
       byTherapist[t].totalTip += tip;
@@ -5094,7 +5118,7 @@ function PayrollTab() {
     setPayrollData({ byTherapist, start, end });
     } catch (e) {
       console.error("Payroll load error:", e);
-      setLoadError("読み込みに失敗しました。ネット接続を確認してもう一度お試しください");
+      setLoadError("Failed to load. Please check your internet connection and try again");
     } finally {
       setLoading(false);
     }
@@ -5109,13 +5133,13 @@ function PayrollTab() {
       r.notes || "",
     ].filter(Boolean).join("　");
     const rows = [
-      ["日付", "お客様", ...(therapist === "Maki" ? ["分数"] : []), "施術", "チップ", "合計", "物販", "備考"],
+      ["Date", "Client", ...(therapist === "Maki" ? ["Minutes"] : []), "Treatment", "Tip", "Total", "Retail", "Remarks"],
       ...data.rows.map(r => [
         r.date, r.client, ...(therapist === "Maki" ? [r.duration || ""] : []), r.service || "",
         r.tip || "", r2(r.service + r.tip), r.retail || "", remarksFor(r)
       ]),
       [],
-      ["", "合計", ...(therapist === "Maki" ? [""] : []), data.totalService, data.totalTip, r2(data.totalService + data.totalTip), data.totalRetail, ""],
+      ["", "Total", ...(therapist === "Maki" ? [""] : []), data.totalService, data.totalTip, r2(data.totalService + data.totalTip), data.totalRetail, ""],
     ];
     const csv = rows.map(r => r.join(",")).join("\n");
     const bom = "\uFEFF";
@@ -5134,7 +5158,7 @@ function PayrollTab() {
       r.partner ? `with ${r.partner}` : "",
       r.notes || "",
     ].filter(Boolean).join("　");
-    const allRows = [["担当者", "日付", "お客様", "分数（まきのみ）", "施術", "チップ", "合計", "物販", "備考"]];
+    const allRows = [["Therapist", "Date", "Client", "Minutes (Maki only)", "Treatment", "Tip", "Total", "Retail", "Remarks"]];
     THERAPISTS.forEach(t => {
       const data = payrollData.byTherapist[t];
       if (!data || data.rows.length === 0) return;
@@ -5144,7 +5168,7 @@ function PayrollTab() {
           r.service || "", r.tip || "", r2(r.service + r.tip), r.retail || "", remarksForAll(r)
         ]);
       });
-      allRows.push([t, "", "小計", "", data.totalService, data.totalTip, r2(data.totalService + data.totalTip), data.totalRetail, ""]);
+      allRows.push([t, "", "Subtotal", "", data.totalService, data.totalTip, r2(data.totalService + data.totalTip), data.totalRetail, ""]);
       allRows.push([]);
     });
     const csv = allRows.map(r => r.join(",")).join("\n");
@@ -5152,7 +5176,7 @@ function PayrollTab() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `全員給料_${payrollData.start}_${payrollData.end}.csv`;
+    a.download = `AllStaffPayroll_${payrollData.start}_${payrollData.end}.csv`;
     a.click();
   };
 
@@ -5162,32 +5186,32 @@ function PayrollTab() {
     <div style={{ padding: 16 }}>
       {/* Sales Report Excel Export */}
       <div style={{ background: "linear-gradient(135deg,#E8F5E9,#C8E6C9)", borderRadius: 12, padding: 16, marginBottom: 16, border: "2px solid #4CAF50" }}>
-        <div style={{ fontWeight: 700, color: "#2E7D32", marginBottom: 8, fontSize: 15 }}>📊 Sales Report Excel出力</div>
-        <div style={{ fontSize: 12, color: "#555", marginBottom: 12 }}>月を選択してExcelをダウンロード（Dr.Body形式）</div>
+        <div style={{ fontWeight: 700, color: "#2E7D32", marginBottom: 8, fontSize: 15 }}>📊 Sales Report Excel Export</div>
+        <div style={{ fontSize: 12, color: "#555", marginBottom: 12 }}>Select a month and download the Excel report (Dr.Body format)</div>
         <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-          <input type="month" value={month} onChange={e => setMonth(e.target.value)}
+          <MonthPicker value={month} onChange={setMonth}
             style={{ padding: "8px 12px", borderRadius: 8, border: "1.5px solid #4CAF50", fontSize: 14 }} />
           <button onClick={async () => {
               setXlsxLoading(true);
               try { await exportSalesReportXlsx(month); }
-              catch (e) { console.error("Excel export error:", e); window.alert("Excel出力に失敗しました。ネット接続を確認してもう一度お試しください"); }
+              catch (e) { console.error("Excel export error:", e); window.alert("Excel export failed. Please check your internet connection and try again"); }
               finally { setXlsxLoading(false); }
             }} disabled={xlsxLoading}
             style={{ padding: "10px 20px", borderRadius: 10, border: "none", background: xlsxLoading ? "#666" : "#2E7D32", color: "#fff", fontWeight: 700, cursor: xlsxLoading ? "not-allowed" : "pointer", fontSize: 14 }}>
-            {xlsxLoading ? "⏳ 出力中..." : "⬇️ Excel ダウンロード"}
+            {xlsxLoading ? "⏳ Exporting..." : "⬇️ Download Excel"}
           </button>
         </div>
       </div>
       <div style={{ background: "#fff", borderRadius: 12, padding: 16, marginBottom: 16, boxShadow: "0 1px 4px rgba(0,0,0,0.08)" }}>
-        <div style={{ fontWeight: 700, color: "#0D4F4F", marginBottom: 12, fontSize: 15 }}>💴 給料集計期間</div>
+        <div style={{ fontWeight: 700, color: "#0D4F4F", marginBottom: 12, fontSize: 15 }}>💴 Payroll Period</div>
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 12 }}>
-          <Field label="月">
-            <input type="month" value={month} onChange={e => setMonth(e.target.value)}
+          <Field label="Month">
+            <MonthPicker value={month} onChange={setMonth}
               style={{ padding: "8px 12px", borderRadius: 8, border: "1.5px solid #DDD", fontSize: 14 }} />
           </Field>
-          <Field label="期間">
+          <Field label="Period">
             <div style={{ display: "flex", gap: 8 }}>
-              {[["first", `1〜15日`], ["second", `16〜末日`]].map(([val, label]) => (
+              {[["first", `1st-15th`], ["second", `16th-end of month`]].map(([val, label]) => (
                 <button key={val} onClick={() => setPeriod(val)}
                   style={{ padding: "8px 16px", borderRadius: 8, border: `2px solid ${period === val ? "#0D4F4F" : "#DDD"}`, background: period === val ? "#0D4F4F" : "#fff", color: period === val ? "#fff" : "#888", fontWeight: 700, cursor: "pointer", fontSize: 13 }}>
                   {label}
@@ -5196,17 +5220,17 @@ function PayrollTab() {
             </div>
           </Field>
         </div>
-        <div style={{ fontSize: 12, color: "#888", marginBottom: 12 }}>集計期間：{start} 〜 {end}</div>
+        <div style={{ fontSize: 12, color: "#888", marginBottom: 12 }}>Period: {start} – {end}</div>
         {loadError && <div style={{ color: "#C62828", fontSize: 13, marginBottom: 12 }}>{loadError}</div>}
         <div style={{ display: "flex", gap: 10 }}>
           <button onClick={loadPayroll} disabled={loading}
             style={{ padding: "10px 24px", borderRadius: 10, border: "none", background: "#0D4F4F", color: "#fff", fontWeight: 700, cursor: "pointer", fontSize: 14 }}>
-            {loading ? "読み込み中..." : "📊 集計する"}
+            {loading ? "Loading..." : "📊 Calculate"}
           </button>
           {payrollData && (
             <button onClick={downloadAllCSV}
               style={{ padding: "10px 20px", borderRadius: 10, border: "none", background: "#1565C0", color: "#fff", fontWeight: 700, cursor: "pointer", fontSize: 14 }}>
-              ⬇️ 全員CSV
+              ⬇️ All Staff CSV
             </button>
           )}
         </div>
@@ -5221,13 +5245,13 @@ function PayrollTab() {
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10, flexWrap: "wrap", gap: 8 }}>
               <div>
                 <span style={{ fontWeight: 800, fontSize: 16, color: "#0D4F4F" }}>{t}</span>
-                <span style={{ fontSize: 12, color: "#888", marginLeft: 10 }}>{data.rows.length}件</span>
+                <span style={{ fontSize: 12, color: "#888", marginLeft: 10 }}>{data.rows.length} visits</span>
               </div>
               <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-                <span style={{ fontWeight: 700, color: "#C62828", fontSize: 15 }}>施術 {formatCurrency(data.totalService)}</span>
-                <span style={{ fontWeight: 700, color: "#E65100", fontSize: 15 }}>チップ {formatCurrency(data.totalTip)}</span>
-                {data.totalRetail > 0 && <span style={{ fontWeight: 700, color: "#6A1B9A", fontSize: 15 }}>物販 {formatCurrency(data.totalRetail)}</span>}
-                <span style={{ fontWeight: 800, color: "#0D4F4F", fontSize: 15 }}>合計 {formatCurrency(data.totalService + data.totalTip + data.totalRetail)}</span>
+                <span style={{ fontWeight: 700, color: "#C62828", fontSize: 15 }}>Treatment {formatCurrency(data.totalService)}</span>
+                <span style={{ fontWeight: 700, color: "#E65100", fontSize: 15 }}>Tip {formatCurrency(data.totalTip)}</span>
+                {data.totalRetail > 0 && <span style={{ fontWeight: 700, color: "#6A1B9A", fontSize: 15 }}>Retail {formatCurrency(data.totalRetail)}</span>}
+                <span style={{ fontWeight: 800, color: "#0D4F4F", fontSize: 15 }}>Total {formatCurrency(data.totalService + data.totalTip + data.totalRetail)}</span>
                 <button onClick={() => downloadCSV(t)}
                   style={{ padding: "5px 12px", borderRadius: 8, border: "none", background: "#1565C0", color: "#fff", fontWeight: 700, cursor: "pointer", fontSize: 12 }}>
                   ⬇️ CSV
@@ -5240,7 +5264,7 @@ function PayrollTab() {
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
                 <thead>
                   <tr style={{ borderBottom: "2px solid #EEE", background: "#F9F9F9" }}>
-                    {["日付", "お客様", ...(t === "Maki" ? ["分数"] : []), "施術", "チップ", "合計", "物販", "備考"].map(h => (
+                    {["Date", "Client", ...(t === "Maki" ? ["Minutes"] : []), "Treatment", "Tip", "Total", "Retail", "Remarks"].map(h => (
                       <th key={h} style={{ padding: "6px 8px", textAlign: "left", color: "#888", fontWeight: 600, whiteSpace: "nowrap" }}>{h}</th>
                     ))}
                   </tr>
@@ -5250,7 +5274,7 @@ function PayrollTab() {
                     <tr key={i} style={{ borderBottom: "1px solid #F5F5F5", background: r.isGiftCard ? "#FFFDE7" : r.isPromo ? "#E3F2FD" : r.isTicket ? "#F0F7FF" : "white" }}>
                       <td style={{ padding: "6px 8px", whiteSpace: "nowrap", color: "#888" }}>{r.date.slice(5)}</td>
                       <td style={{ padding: "6px 8px", fontWeight: 600 }}>{r.client}</td>
-                      {t === "Maki" && <td style={{ padding: "6px 8px", textAlign: "center" }}>{r.duration}分</td>}
+                      {t === "Maki" && <td style={{ padding: "6px 8px", textAlign: "center" }}>{r.duration}min</td>}
                       <td style={{ padding: "6px 8px", color: "#C62828", fontWeight: 700 }}>{formatCurrency(r.service)}</td>
                       <td style={{ padding: "6px 8px", color: "#E65100", fontWeight: 700 }}>{r.tip > 0 ? formatCurrency(r.tip) : "—"}</td>
                       <td style={{ padding: "6px 8px", color: "#0D4F4F", fontWeight: 800 }}>{formatCurrency(r2(r.service + r.tip))}</td>
@@ -5265,7 +5289,7 @@ function PayrollTab() {
                 </tbody>
                 <tfoot>
                   <tr style={{ borderTop: "2px solid #EEE", background: "#FFF8E1" }}>
-                    <td colSpan={t === "Maki" ? 3 : 2} style={{ padding: "8px", fontWeight: 700, color: "#555" }}>合計</td>
+                    <td colSpan={t === "Maki" ? 3 : 2} style={{ padding: "8px", fontWeight: 700, color: "#555" }}>Total</td>
                     <td style={{ padding: "8px", fontWeight: 800, color: "#C62828" }}>{formatCurrency(data.totalService)}</td>
                     <td style={{ padding: "8px", fontWeight: 800, color: "#E65100" }}>{formatCurrency(data.totalTip)}</td>
                     <td style={{ padding: "8px", fontWeight: 800, color: "#0D4F4F" }}>{formatCurrency(r2(data.totalService + data.totalTip))}</td>
@@ -5281,7 +5305,7 @@ function PayrollTab() {
 
       {payrollData && THERAPISTS.every(t => !payrollData.byTherapist[t]?.rows?.length) && (
         <div style={{ textAlign: "center", color: "#AAA", padding: 40, fontSize: 14 }}>
-          この期間にデータがありません
+          No data for this period
         </div>
       )}
     </div>

@@ -30,18 +30,18 @@ function PasswordGate({ children }) {
     <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#F7F4EE', fontFamily: "'Inter','Helvetica Neue',sans-serif" }}>
       <form onSubmit={handleSubmit} style={{ background: '#fff', borderRadius: 16, padding: '32px 28px', width: 320, boxShadow: '0 4px 24px rgba(0,0,0,0.08)' }}>
         <div style={{ fontSize: 20, fontWeight: 800, color: '#0D4F4F', marginBottom: 4 }}>🌺 Spa Daily Sheet</div>
-        <div style={{ fontSize: 13, color: '#888', marginBottom: 20 }}>パスワードを入力してください</div>
+        <div style={{ fontSize: 13, color: '#888', marginBottom: 20 }}>Please enter the password</div>
         <input
           type="password"
           value={input}
           onChange={e => { setInput(e.target.value); setError(false) }}
           autoFocus
           style={{ width: '100%', padding: '10px 12px', borderRadius: 8, border: `2px solid ${error ? '#C62828' : '#DDD'}`, fontSize: 15, boxSizing: 'border-box' }}
-          placeholder="パスワード"
+          placeholder="Password"
         />
-        {error && <div style={{ color: '#C62828', fontSize: 12, marginTop: 6 }}>パスワードが違います</div>}
+        {error && <div style={{ color: '#C62828', fontSize: 12, marginTop: 6 }}>Incorrect password</div>}
         <button type="submit" style={{ width: '100%', marginTop: 16, padding: '11px', borderRadius: 8, border: 'none', background: '#0D4F4F', color: '#fff', fontWeight: 700, fontSize: 14, cursor: 'pointer' }}>
-          開く
+          Open
         </button>
       </form>
     </div>
