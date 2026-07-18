@@ -1,6 +1,6 @@
 import { defineConfig, loadEnv } from 'vite'
 import react from '@vitejs/plugin-react'
-import { getDay, setDay, getDaysInRange, getAllDayBlobs, setDays, checkAuth } from './api/_lib/dayDataStore.js'
+import { getDay, setDay, getDaysInRange, getAllDayBlobs, setDays, checkAuth, saveAutoBackup, listAutoBackups, restoreAutoBackup } from './api/_lib/dayDataStore.js'
 
 function readJsonBody(req) {
   return new Promise((resolve, reject) => {
@@ -649,6 +649,64 @@ function dayDataApi(env) {
             return
           }
           const count = await setDays(days)
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify({ count }))
+        } catch (e) {
+          res.statusCode = 500
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify({ error: String(e) }))
+        }
+      })
+
+      // No Cron in local dev — hit this manually (e.g. curl) to test the snapshot logic.
+      server.middlewares.use('/api/auto-backup', async (req, res) => {
+        try {
+          const result = await saveAutoBackup()
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify(result))
+        } catch (e) {
+          res.statusCode = 500
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify({ error: String(e) }))
+        }
+      })
+
+      server.middlewares.use('/api/auto-backup-list', async (req, res) => {
+        if (!authed(req, res)) return
+        try {
+          const dates = await listAutoBackups()
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify({ dates }))
+        } catch (e) {
+          res.statusCode = 500
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify({ error: String(e) }))
+        }
+      })
+
+      server.middlewares.use('/api/auto-backup-restore', async (req, res) => {
+        if (!authed(req, res)) return
+        if (req.method !== 'POST') {
+          res.statusCode = 405
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify({ error: 'method not allowed' }))
+          return
+        }
+        try {
+          const body = await readJsonBody(req)
+          if (!body.date) {
+            res.statusCode = 400
+            res.setHeader('Content-Type', 'application/json')
+            res.end(JSON.stringify({ error: 'date required' }))
+            return
+          }
+          const count = await restoreAutoBackup(body.date)
+          if (count == null) {
+            res.statusCode = 404
+            res.setHeader('Content-Type', 'application/json')
+            res.end(JSON.stringify({ error: 'backup not found' }))
+            return
+          }
           res.setHeader('Content-Type', 'application/json')
           res.end(JSON.stringify({ count }))
         } catch (e) {

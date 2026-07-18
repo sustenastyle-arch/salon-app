@@ -65,20 +65,38 @@ router:
   to scan every day ever saved — `/api/deposits` (`mode=date|client`) does this server-side via
   Redis `SCAN`, deliberately unbounded (data volume is tiny for a single small spa; a lookback
   window would silently drop older deposits with no error).
-- `📤 データバックアップ` / `📥 データ復元` export/import the full store as one JSON file
-  (`/api/export-all` / `/api/import-all`); `☁️ この端末のデータをクラウドへ移行` is a one-time
+- `📤 Backup Data` / `📥 Restore Data` export/import the full store as one JSON file
+  (`/api/export-all` / `/api/import-all`); `☁️ Migrate This Device's Data to Cloud` is a one-time
   button that reads whatever's still in a browser's local `localStorage` (pre-migration data) and
   bulk-uploads it via the same `import-all` endpoint — the only place the app still reads
   `localStorage` on purpose.
+- `🕐 Restore from Auto-Backup` restores from an automatic daily snapshot instead of a manually
+  downloaded file — see "Automatic daily backup" below.
 - Every `/api/*` day-data endpoint checks a shared-secret header against `VITE_APP_PASSWORD`
   (`checkAuth` in `dayDataStore.js`) — skipped if unset, same as the client-side password gate.
 - Excel export uses `xlsx` (SheetJS).
+
+### Automatic daily backup
+
+A Vercel Cron job (`vercel.json`, `0 13 * * *` = 3am Hawaii time, safely after closing) hits
+`/api/auto-backup` once a day, which snapshots every saved day (same data `/api/export-all`
+would return) under its own Redis key (`auto-backup-YYYY-MM-DD`, separate from the day-sheet
+keys themselves so an accidental delete/overwrite of a day via the app can't also wipe out its
+backup) and prunes anything older than the most recent 30 snapshots. This exists so a day's data
+can be recovered even if nobody remembered to click the manual backup button. `/api/auto-backup`
+optionally checks a `CRON_SECRET` bearer token (set in Vercel's env vars; skipped if unset) to
+confirm the request actually came from Vercel's scheduler — Cron jobs don't run under `vite dev`,
+so `saveAutoBackup()` must be triggered manually in local dev. `/api/auto-backup-list` and
+`/api/auto-backup-restore` back the `🕐 Restore from Auto-Backup` button, which lists available
+snapshot dates and restores the full store to one via `setDays()` — the same bulk-upsert helper
+`import-all` uses.
 
 ### Cloud data API (dual implementation, shared logic)
 
 Like the Square proxy below, the day-data API exists once as Vite dev middleware
 (`vite.config.js`'s `dayDataApi`) and once as Vercel serverless functions (`api/day-data.js`,
-`api/day-data-range.js`, `api/deposits.js`, `api/export-all.js`, `api/import-all.js`) — but
+`api/day-data-range.js`, `api/deposits.js`, `api/export-all.js`, `api/import-all.js`,
+`api/auto-backup.js`, `api/auto-backup-list.js`, `api/auto-backup-restore.js`) — but
 unlike Square, the actual Redis logic isn't duplicated: both import the same
 `api/_lib/dayDataStore.js` (files under `api/_lib/` are helpers, not routes — Vercel's
 zero-config routing skips `_`-prefixed paths). Only the request/response plumbing differs

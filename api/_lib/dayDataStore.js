@@ -85,6 +85,52 @@ export async function setDays(dateToPayload) {
   return entries.length;
 }
 
+const AUTO_BACKUP_PREFIX = "auto-backup-";
+const AUTO_BACKUP_KEEP = 30; // ~1 month of daily snapshots is enough to recover from an accidental delete/overwrite
+
+// A full-store snapshot taken automatically once a day (see api/auto-backup.js, triggered by
+// the Vercel Cron in vercel.json), so a day's data can still be recovered even if nobody
+// remembered to click the manual 📤 Backup Data button. Stored under its own key prefix (not
+// the day-sheet keys themselves), so an accidental delete/overwrite of a day via the app can't
+// also wipe out its own backup.
+export async function saveAutoBackup() {
+  const days = await getAllDayBlobs();
+  const dateKey = new Date().toISOString().slice(0, 10);
+  await getRedis().set(`${AUTO_BACKUP_PREFIX}${dateKey}`, days);
+  await pruneOldAutoBackups();
+  return { dateKey, dayCount: Object.keys(days).length };
+}
+
+async function pruneOldAutoBackups() {
+  const keys = [];
+  let cursor = "0";
+  do {
+    const [nextCursor, batch] = await getRedis().scan(cursor, { match: `${AUTO_BACKUP_PREFIX}*`, count: 100 });
+    cursor = nextCursor;
+    keys.push(...batch);
+  } while (cursor !== "0");
+  keys.sort(); // "auto-backup-YYYY-MM-DD" sorts chronologically as plain strings
+  const toDelete = keys.slice(0, Math.max(0, keys.length - AUTO_BACKUP_KEEP));
+  if (toDelete.length > 0) await getRedis().del(...toDelete);
+}
+
+export async function listAutoBackups() {
+  const keys = [];
+  let cursor = "0";
+  do {
+    const [nextCursor, batch] = await getRedis().scan(cursor, { match: `${AUTO_BACKUP_PREFIX}*`, count: 100 });
+    cursor = nextCursor;
+    keys.push(...batch);
+  } while (cursor !== "0");
+  return keys.map((k) => k.slice(AUTO_BACKUP_PREFIX.length)).sort().reverse(); // newest first
+}
+
+export async function restoreAutoBackup(dateKey) {
+  const days = await getRedis().get(`${AUTO_BACKUP_PREFIX}${dateKey}`);
+  if (!days) return null;
+  return setDays(days);
+}
+
 // Shared-secret check reused across every endpoint below — the app already ships
 // VITE_APP_PASSWORD to the browser bundle for the client-side PasswordGate, so sending
 // it again as a header adds no new exposure. If it's unset (e.g. local dev without the
