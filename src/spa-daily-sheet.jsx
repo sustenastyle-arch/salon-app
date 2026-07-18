@@ -1214,7 +1214,7 @@ export default function SpaDailySheet() {
           <div style={{ color: "#fff", fontSize: 22, fontWeight: 700 }}>🌺 Spa Schedule</div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-          <DatePicker value={date} onChange={setDate}
+          <DatePicker value={date} onChange={setDate} allowClear={false}
             style={{ padding: "8px 12px", borderRadius: 8, border: "none", background: "rgba(255,255,255,0.15)", color: "#fff", fontSize: 14 }} />
           <button onClick={fetchSquare} disabled={squareLoading}
             style={{ padding: "8px 16px", borderRadius: 8, border: "none", background: squareLoading ? "#666" : "#E8A84A", color: "#fff", fontWeight: 700, cursor: squareLoading ? "not-allowed" : "pointer", fontSize: 13 }}>
@@ -4586,35 +4586,83 @@ function MonthPicker({ value, onChange, style }) {
   );
 }
 
+const WEEKDAY_NAMES = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
+
 // Same reasoning as MonthPicker above: native <input type="date">'s calendar popup (era labels
 // like "令和", "今日"/Today, "削除"/Clear) renders in the browser's UI language, not the page's —
-// this custom picker has no native popup at all, so it can't leak the browser's language. Accepts
-// and emits "" for date fields that are genuinely optional (e.g. an unset deposit date) rather
-// than silently defaulting to today, which would make an unset field look set.
-function DatePicker({ value, onChange, style }) {
+// this is a fully custom calendar-grid popup instead, so there's no native popup to leak the
+// browser's language through, while keeping the "click a day" interaction staff are used to
+// (a plain month/day/year dropdown trio works but is slower to use than picking off a calendar).
+function DatePicker({ value, onChange, style, allowClear = true }) {
+  const [open, setOpen] = useState(false);
+  const today = new Date();
   const [y, m, d] = value ? value.split("-").map(Number) : [null, null, null];
-  const daysInMonth = (y && m) ? new Date(y, m, 0).getDate() : 31;
-  const commit = (ny, nm, nd) => {
-    if (!ny || !nm || !nd) { onChange(""); return; }
-    const maxDay = new Date(ny, nm, 0).getDate();
-    onChange(`${ny}-${String(nm).padStart(2, "0")}-${String(Math.min(nd, maxDay)).padStart(2, "0")}`);
+  const [viewYear, setViewYear] = useState(y || today.getFullYear());
+  const [viewMonth, setViewMonth] = useState(m || today.getMonth() + 1); // 1-12
+
+  const openPicker = () => {
+    setViewYear(y || today.getFullYear());
+    setViewMonth(m || today.getMonth() + 1);
+    setOpen(true);
   };
-  const thisYear = new Date().getFullYear();
+
+  const daysInMonth = new Date(viewYear, viewMonth, 0).getDate();
+  const firstWeekday = new Date(viewYear, viewMonth - 1, 1).getDay();
+  const cells = [...Array(firstWeekday).fill(null), ...Array.from({ length: daysInMonth }, (_, i) => i + 1)];
+
+  const changeMonth = (delta) => {
+    let nm = viewMonth + delta, ny = viewYear;
+    if (nm < 1) { nm = 12; ny -= 1; } else if (nm > 12) { nm = 1; ny += 1; }
+    setViewMonth(nm); setViewYear(ny);
+  };
+
+  const selectDay = (day) => {
+    onChange(`${viewYear}-${String(viewMonth).padStart(2, "0")}-${String(day).padStart(2, "0")}`);
+    setOpen(false);
+  };
+
+  const displayText = value ? `${MONTH_NAMES[m - 1].slice(0, 3)} ${d}, ${y}` : "Select a date";
+
   return (
-    <div style={{ display: "flex", gap: 4 }}>
-      <select value={m || ""} onChange={e => commit(y || thisYear, Number(e.target.value), d || 1)} style={style}>
-        <option value="">Month</option>
-        {MONTH_NAMES.map((name, i) => <option key={i} value={i + 1}>{name}</option>)}
-      </select>
-      <select value={d || ""} onChange={e => commit(y || thisYear, m || 1, Number(e.target.value))} style={{ ...style, width: 62 }}>
-        <option value="">Day</option>
-        {Array.from({ length: daysInMonth }, (_, i) => i + 1).map(day => <option key={day} value={day}>{day}</option>)}
-      </select>
-      <input type="number" value={y || ""} placeholder="Year" onChange={e => {
-        const ny = Number(e.target.value);
-        if (!ny) { onChange(""); return; }
-        commit(ny, m || 1, d || 1);
-      }} style={{ ...style, width: 72 }} />
+    <div style={{ position: "relative", display: "inline-block" }}>
+      <button type="button" onClick={() => open ? setOpen(false) : openPicker()} style={{ ...style, cursor: "pointer", whiteSpace: "nowrap" }}>
+        📅 {displayText}
+      </button>
+      {open && (
+        <>
+          <div onClick={() => setOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 1000 }} />
+          <div style={{ position: "absolute", top: "100%", left: 0, marginTop: 4, background: "#fff", borderRadius: 10, boxShadow: "0 4px 16px rgba(0,0,0,0.25)", padding: 12, zIndex: 1001, width: 230 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+              <button type="button" onClick={() => changeMonth(-1)} style={{ border: "none", background: "none", cursor: "pointer", fontSize: 16, color: "#0D4F4F", fontWeight: 700, padding: "0 8px" }}>‹</button>
+              <span style={{ fontWeight: 700, fontSize: 13, color: "#0D4F4F" }}>{MONTH_NAMES[viewMonth - 1]} {viewYear}</span>
+              <button type="button" onClick={() => changeMonth(1)} style={{ border: "none", background: "none", cursor: "pointer", fontSize: 16, color: "#0D4F4F", fontWeight: 700, padding: "0 8px" }}>›</button>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 2, marginBottom: 4 }}>
+              {WEEKDAY_NAMES.map(w => <div key={w} style={{ textAlign: "center", fontSize: 10, color: "#AAA", fontWeight: 700 }}>{w}</div>)}
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 2 }}>
+              {cells.map((day, i) => {
+                if (day == null) return <div key={i} />;
+                const isSelected = value && day === d && viewMonth === m && viewYear === y;
+                const isToday = day === today.getDate() && viewMonth === today.getMonth() + 1 && viewYear === today.getFullYear();
+                return (
+                  <button type="button" key={i} onClick={() => selectDay(day)} style={{
+                    border: isToday && !isSelected ? "1.5px solid #0D4F4F" : "none", borderRadius: 6, padding: "6px 0",
+                    cursor: "pointer", fontSize: 12, background: isSelected ? "#0D4F4F" : "transparent",
+                    color: isSelected ? "#fff" : "#333", fontWeight: isSelected || isToday ? 700 : 400,
+                  }}>{day}</button>
+                );
+              })}
+            </div>
+            {value && allowClear && (
+              <button type="button" onClick={() => { onChange(""); setOpen(false); }}
+                style={{ marginTop: 8, width: "100%", padding: "6px", borderRadius: 6, border: "1px solid #DDD", background: "#fff", color: "#888", fontSize: 11, cursor: "pointer" }}>
+                Clear
+              </button>
+            )}
+          </div>
+        </>
+      )}
     </div>
   );
 }
