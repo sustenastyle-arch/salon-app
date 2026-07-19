@@ -376,8 +376,6 @@ export default function SpaDailySheet() {
   const [reconcileLoading, setReconcileLoading] = useState(false);
   const [reconcileResult, setReconcileResult] = useState(null);
   const [dayLoading, setDayLoading] = useState(true);
-  const [autoBackupDates, setAutoBackupDates] = useState(null);
-  const [autoBackupListLoading, setAutoBackupListLoading] = useState(false);
 
   const showToast = (msg, type = "success") => { setToast({ msg, type }); setTimeout(() => setToast(null), 3000); };
 
@@ -743,8 +741,11 @@ export default function SpaDailySheet() {
     }
   };
 
-  // Downloads every saved day (from the cloud store, not this browser) as one JSON file — the
-  // export counterpart to handleImportBackup below, for an offline copy or a manual transfer.
+  // Downloads every saved day (from the cloud store, not this browser) as one JSON file for an
+  // offline copy or a manual transfer. Restoring from it (or from the automatic nightly backup)
+  // is deliberately not exposed as a button anymore — a full-store restore overwrites everything,
+  // so an accidental click could wipe out real data. If a genuine restore is ever needed, it's
+  // done directly against /api/import-all or /api/auto-backup-restore instead of through the UI.
   const handleExportBackup = async () => {
     try {
       const { days } = await apiFetch("/api/export-all");
@@ -758,56 +759,6 @@ export default function SpaDailySheet() {
     } catch (e) {
       console.error("Export error:", e);
       showToast("Backup failed. Please check your internet connection and try again", "error");
-    }
-  };
-
-  // Restores a previously exported JSON file into the shared cloud store (bulk upsert via
-  // /api/import-all — accepts both this format and the older per-browser localStorage export
-  // format, since setDays() on the server normalizes either raw JSON strings or parsed objects).
-  const handleImportBackup = (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = async () => {
-      try {
-        const data = JSON.parse(reader.result);
-        const { count } = await apiFetch("/api/import-all", { method: "POST", body: JSON.stringify(data) });
-        showToast(`✅ Restored ${count} day(s) of data`);
-        window.location.reload();
-      } catch (err) {
-        showToast("Failed to load: " + err.message, "error");
-      }
-    };
-    reader.readAsText(file);
-    e.target.value = "";
-  };
-
-  // A snapshot of every saved day is taken automatically once a day (see api/auto-backup.js,
-  // triggered by the Vercel Cron in vercel.json) — this lets a day get recovered even if nobody
-  // remembered to click the manual 📤 Backup Data button.
-  const openAutoBackupList = async () => {
-    setAutoBackupListLoading(true);
-    try {
-      const { dates } = await apiFetch("/api/auto-backup-list");
-      setAutoBackupDates(dates);
-    } catch (e) {
-      console.error("Auto-backup list error:", e);
-      showToast("Failed to load the backup list. Please check your internet connection and try again", "error");
-    } finally {
-      setAutoBackupListLoading(false);
-    }
-  };
-
-  const restoreFromAutoBackup = async (date) => {
-    if (!window.confirm(`This will overwrite the current cloud data with the automatic backup from ${date}. Continue?`)) return;
-    try {
-      const { count } = await apiFetch("/api/auto-backup-restore", { method: "POST", body: JSON.stringify({ date }) });
-      showToast(`✅ Restored ${count} day(s) of data from the ${date} backup`);
-      setAutoBackupDates(null);
-      window.location.reload();
-    } catch (e) {
-      console.error("Auto-backup restore error:", e);
-      showToast("Restore failed. Please check your internet connection and try again", "error");
     }
   };
 
@@ -1218,14 +1169,6 @@ export default function SpaDailySheet() {
           <button onClick={handleExportBackup}
             style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: "rgba(255,255,255,0.15)", color: "#fff", fontWeight: 700, cursor: "pointer", fontSize: 13 }}>
             📤 Backup Data
-          </button>
-          <label style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: "rgba(255,255,255,0.15)", color: "#fff", fontWeight: 700, cursor: "pointer", fontSize: 13 }}>
-            📥 Restore Data
-            <input type="file" accept="application/json" onChange={handleImportBackup} style={{ display: "none" }} />
-          </label>
-          <button onClick={openAutoBackupList} disabled={autoBackupListLoading}
-            style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: "rgba(255,255,255,0.15)", color: "#fff", fontWeight: 700, cursor: autoBackupListLoading ? "not-allowed" : "pointer", fontSize: 13 }}>
-            {autoBackupListLoading ? "⏳ Loading..." : "🕐 Restore from Auto-Backup"}
           </button>
         </div>
       </div>
@@ -1921,7 +1864,6 @@ export default function SpaDailySheet() {
       {editingStaffPurchase && <StaffPurchaseModal sp={editingStaffPurchase} onSave={saveStaffPurchase} onDelete={() => { deleteStaffPurchase(editingStaffPurchase.id); setEditingStaffPurchase(null); }} onClose={() => setEditingStaffPurchase(null)} />}
       {editingRefund && <RefundModal rf={editingRefund} onSave={saveRefund} onDelete={() => { deleteRefund(editingRefund.id); setEditingRefund(null); }} onClose={() => setEditingRefund(null)} />}
       {editingForgottenTip && <ForgottenTipModal ft={editingForgottenTip} onSave={saveForgottenTip} onDelete={() => { deleteForgottenTip(editingForgottenTip.id); setEditingForgottenTip(null); }} onClose={() => setEditingForgottenTip(null)} />}
-      {autoBackupDates && <AutoBackupModal dates={autoBackupDates} onRestore={restoreFromAutoBackup} onClose={() => setAutoBackupDates(null)} />}
 
       {toast && (
         <div style={{ position: "fixed", bottom: 20, right: 20, padding: "12px 20px", borderRadius: 10, background: toast.type === "error" ? "#C62828" : toast.type === "info" ? "#1565C0" : "#0D4F4F", color: "#fff", fontWeight: 600, fontSize: 14, boxShadow: "0 4px 12px rgba(0,0,0,0.2)", zIndex: 9999 }}>
@@ -4539,35 +4481,6 @@ function ForgottenTipModal({ ft, onSave, onDelete, onClose }) {
         <button onClick={handleSave} style={{ flex: 1, padding: "12px", borderRadius: 10, border: "none", background: "#00695C", color: "#fff", fontWeight: 700, fontSize: 15, cursor: "pointer" }}>💾 Save</button>
         {ft.id && <button onClick={onDelete} style={{ padding: "12px 16px", borderRadius: 10, border: "none", background: "#FFEBEE", color: "#C62828", fontWeight: 700, cursor: "pointer" }}>🗑️</button>}
       </div>
-    </Modal>
-  );
-}
-
-function AutoBackupModal({ dates, onRestore, onClose }) {
-  return (
-    <Modal onClose={onClose}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-        <h2 style={{ margin: 0, fontSize: 18, color: "#0D4F4F" }}>🕐 Restore from Auto-Backup</h2>
-        <button onClick={onClose} style={{ border: "none", background: "none", fontSize: 22, cursor: "pointer" }}>✕</button>
-      </div>
-      <div style={{ fontSize: 12, color: "#888", marginBottom: 12 }}>
-        A snapshot of all data is saved automatically once a day. Pick a date below to restore the cloud store to that day's snapshot — this overwrites whatever's currently saved.
-      </div>
-      {dates.length === 0 ? (
-        <div style={{ textAlign: "center", color: "#AAA", padding: 24, fontSize: 13 }}>No automatic backups yet</div>
-      ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 8, maxHeight: "50vh", overflowY: "auto" }}>
-          {dates.map(date => (
-            <div key={date} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px", background: "#F5F5F5", borderRadius: 8 }}>
-              <span style={{ fontWeight: 600, fontSize: 13 }}>{date}</span>
-              <button onClick={() => onRestore(date)}
-                style={{ padding: "6px 14px", borderRadius: 8, border: "none", background: "#0D4F4F", color: "#fff", fontWeight: 700, cursor: "pointer", fontSize: 12 }}>
-                Restore
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
     </Modal>
   );
 }
