@@ -2156,7 +2156,7 @@ function ApptCard({ appt, onClick, allAppointments }) {
                   {names && <div style={{ fontWeight: 600, color: "#333", fontSize: 12 }}>{names}</div>}
                   {sellerNames.length > 1 && (
                     <div style={{ fontSize: 11, fontWeight: 600, color: "#333" }}>
-                      {sellerNames.map(n => `${n} $${r2(sellerTotals[n])}`).join(" / ")}
+                      With: {sellerNames.map(n => `${n} $${r2(sellerTotals[n])}`).join(", ")}
                     </div>
                   )}
                 </div>
