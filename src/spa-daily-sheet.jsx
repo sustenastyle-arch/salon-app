@@ -2013,17 +2013,24 @@ function ApptCard({ appt, onClick, allAppointments }) {
         const dispTip = isSameDay ? pkgTip : tip;
         const dispTotal = r2(dispSvc + dispTip);
 
+        // A gift card used today was already counted as revenue on the (earlier) day it was
+        // purchased/loaded — same rule as gcAlloc/gcAllocPackage in the summary totals below.
+        // Without this, the card's red total (meant to be "what should match the register
+        // today") double-counted money that isn't actually new revenue today.
+        const gc = (!isGiftCard && !isPromo) ? Number(appt.giftCardUsed||0) : 0;
+        const gcSvcAmt = Math.min(gc, dispSvc);
+        const gcTipAmt = Math.min(Math.max(0, gc - gcSvcAmt), dispTip);
+        const receivedTodayTotal = r2((dispSvc - gcSvcAmt) + (dispTip - gcTipAmt));
+
         const svcText = isSameDay
-          ? (appt.packageSplitPayment ? `💵$${appt.packageCashPortion||0}＋💳$${appt.packageCardPortion||0}` : `${dispSvc}${paidIcon}`)
-          : !isRedemption && appt.svcSplitPayment ? `💵$${appt.svcCashPortion||0}＋💳$${appt.svcCardPortion||0}` : `${dispSvc}${paidIcon}`;
+          ? (appt.packageSplitPayment ? `💵$${appt.packageCashPortion||0}＋💳$${appt.packageCardPortion||0}` : `${dispSvc}${gcSvcAmt >= dispSvc && dispSvc > 0 ? "🎁" : paidIcon}`)
+          : !isRedemption && appt.svcSplitPayment ? `💵$${appt.svcCashPortion||0}＋💳$${appt.svcCardPortion||0}` : `${dispSvc}${gcSvcAmt >= dispSvc && dispSvc > 0 ? "🎁" : paidIcon}`;
         const tipText = !isRedemption && !isSameDay && appt.tipSplitPayment
-          ? `💵$${appt.tipCashPortion||0}＋💳$${appt.tipCardPortion||0}` : `${dispTip}${tipIcon}`;
+          ? `💵$${appt.tipCashPortion||0}＋💳$${appt.tipCardPortion||0}` : `${dispTip}${gcTipAmt >= dispTip && dispTip > 0 ? "🎁" : tipIcon}`;
 
         const courseName = isTicket ? (stripJpAnnotation(appt.serviceName) || appt.ticketMenu) : (stripJpAnnotation(appt.serviceName) || `${appt.duration}min`);
         const sessionSuffix = isRedemption && appt.ticketCurrent > 0 ? ` ${appt.ticketCurrent}/${appt.ticketTotal}`
           : isSameDay ? ` x${appt.ticketTotal}` : "";
-
-        const gc = (!isGiftCard && !isPromo) ? Number(appt.giftCardUsed||0) : 0;
 
         return (
           <div style={{ fontSize: 17, marginTop: 2 }}>
@@ -2038,7 +2045,7 @@ function ApptCard({ appt, onClick, allAppointments }) {
                 <div>{svcText}</div>
                 {dispTip > 0 && <div>{tipText}</div>}
                 <div style={{ fontWeight: 800 }}>
-                  {dispTotal}
+                  {gc > 0 ? receivedTodayTotal : dispTotal}
                   {extraSvc > 0 && <span style={{ color: REVENUE_COLOR }}> +Extra ${extraSvc}{appt.extraPricePaymentType==="card"?"💳":"💵"}</span>}
                   {extra > 0 && <span style={{ color: REVENUE_COLOR }}> +Extra tip{extra}💝{appt.extraTipPaymentType==="card"?"💳":"💵"}</span>}
                 </div>
