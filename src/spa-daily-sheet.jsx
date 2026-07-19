@@ -2024,6 +2024,24 @@ function ApptCard({ appt, onClick, allAppointments }) {
         {dep > 0 && !isWeightLossService(parent?.serviceName) && (
           <div style={{ color: "#2E7D32", fontSize: 12 }}>💰Deposit split included</div>
         )}
+        {(() => {
+          // A retail sale on the parent visit can be split with this machine (cav) therapist
+          // (see the "retail" purchaseTag branch below) — the payroll split already accounts
+          // for it, but without this it never showed up anywhere on the cav therapist's own
+          // card, so it was easy to forget to double-check later.
+          if (!parent) return null;
+          const items = getRetailItems(parent);
+          let myShare = 0;
+          items.forEach(it => (it.sellers || []).forEach(sel => {
+            if (sel.therapist === appt.therapist) myShare += Number(sel.amount || 0);
+          }));
+          if (myShare <= 0) return null;
+          return (
+            <div style={{ color: REVENUE_COLOR, fontSize: 12, fontWeight: 700 }}>
+              🛍️ Retail ${r2(myShare)} (with {appt.bodyTherapist})
+            </div>
+          );
+        })()}
       </div>
     );
   }
@@ -2188,8 +2206,26 @@ function ApptCard({ appt, onClick, allAppointments }) {
               if (total === 0) return emptyChip;
               const uniformType = items.every(it => it.paymentType === items[0].paymentType) ? items[0].paymentType : null;
               const icon = uniformType === "card" ? "💳" : uniformType === "cash" ? "💵" : "";
+              // A sale split with another staff member (e.g. the machine/cav therapist) only
+              // lived in the payroll split before, invisible on the card itself — show who got
+              // what so it's not just a lump sum that reads as one person's full credit. The
+              // co-seller's own share also gets echoed onto their own card (see the isCavSlot
+              // branch above) so they don't have to spot it here to know it happened.
+              const sellerTotals = {};
+              items.forEach(it => (it.sellers || []).forEach(sel => {
+                if (!sel.therapist) return;
+                sellerTotals[sel.therapist] = (sellerTotals[sel.therapist] || 0) + Number(sel.amount || 0);
+              }));
+              const sellerNames = Object.keys(sellerTotals);
               return (
-                <div key={tagId} style={{ fontSize: 13, color: REVENUE_COLOR, fontWeight: 700 }}>Retail ${total}{icon}</div>
+                <div key={tagId} style={{ fontSize: 13, color: REVENUE_COLOR, fontWeight: 700 }}>
+                  <div>Retail ${total}{icon}</div>
+                  {sellerNames.length > 1 && (
+                    <div style={{ fontSize: 11, fontWeight: 600 }}>
+                      {sellerNames.map(n => `${n} $${r2(sellerTotals[n])}`).join(" / ")}
+                    </div>
+                  )}
+                </div>
               );
             }
             if (tagId === "giftCard") {
