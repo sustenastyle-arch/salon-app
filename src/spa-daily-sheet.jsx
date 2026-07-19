@@ -4709,6 +4709,12 @@ async function exportSalesReportXlsx(monthStr) {
     const data = days[dateStr];
     if (data) {
       const appts = (data.appointments || []).filter(a => !a.isCavSlot);
+      // The machine (cav) therapist's own portion of a split visit lives on its own isCavSlot
+      // row (price/tip fields hold the cav amounts) — must be folded into today's cash/card
+      // totals same as the body side, or a cav-split visit's cav earnings go missing from the
+      // monthly report entirely (this was a real bug: matched the in-app 📊集計 tab's own
+      // cavSlotAppts handling, which the export here had never mirrored).
+      const cavSlotAppts = (data.appointments || []).filter(a => a.isCavSlot && !a.isTicket && !a.isGiftCard && !a.isPromo);
       const retails = data.retails || [];
       const refunds = data.refunds || [];
       const forgottenTips = data.forgottenTips || [];
@@ -4774,6 +4780,7 @@ async function exportSalesReportXlsx(monthStr) {
         + pureTicketAppts.filter(a => a.extraPricePaymentType === "cash").reduce((s,a) => s + Number(a.extraPrice||0), 0)
         + sameDayTicketAppts.filter(a => a.extraPricePaymentType === "cash").reduce((s,a) => s + Number(a.extraPrice||0), 0)
         + revenueAddons.filter(ad => ad.paymentType === "cash").reduce((s,ad) => s + Number(ad.price||0), 0)
+        + cavSlotAppts.filter(a => a.paymentType === "cash").reduce((s,a) => s + Number(a.price||0), 0)
         + depositCash
         + forgottenServiceCash
         - refundServiceCash;
@@ -4784,6 +4791,7 @@ async function exportSalesReportXlsx(monthStr) {
         + pureTicketAppts.filter(a => a.extraTipPaymentType === "cash").reduce((s,a) => s + Number(a.extraTip||0), 0)
         + sameDayTicketAppts.filter(a => a.extraTipPaymentType === "cash").reduce((s,a) => s + Number(a.extraTip||0), 0)
         + revenueAddons.filter(ad => ad.tipPaymentType === "cash").reduce((s,ad) => s + Number(ad.tip||0), 0)
+        + cavSlotAppts.filter(a => a.tipPaymentType === "cash").reduce((s,a) => s + Number(a.tip||0), 0)
         + forgottenTipCash
         - refundTipCash;
       const cardTreatment = revenueAppts.filter(a => !a.svcSplitPayment && a.paymentType === "card").reduce((s,a) => s + Number(a.price||0) - gcAlloc(a).gcSvc, 0)
@@ -4793,6 +4801,7 @@ async function exportSalesReportXlsx(monthStr) {
         + pureTicketAppts.filter(a => a.extraPricePaymentType === "card").reduce((s,a) => s + Number(a.extraPrice||0), 0)
         + sameDayTicketAppts.filter(a => a.extraPricePaymentType === "card").reduce((s,a) => s + Number(a.extraPrice||0), 0)
         + revenueAddons.filter(ad => ad.paymentType !== "cash").reduce((s,ad) => s + Number(ad.price||0), 0)
+        + cavSlotAppts.filter(a => a.paymentType !== "cash").reduce((s,a) => s + Number(a.price||0), 0)
         + depositCard
         + forgottenServiceCard
         - refundServiceCard;
@@ -4803,6 +4812,7 @@ async function exportSalesReportXlsx(monthStr) {
         + pureTicketAppts.filter(a => a.extraTipPaymentType === "card").reduce((s,a) => s + Number(a.extraTip||0), 0)
         + sameDayTicketAppts.filter(a => a.extraTipPaymentType === "card").reduce((s,a) => s + Number(a.extraTip||0), 0)
         + revenueAddons.filter(ad => ad.tipPaymentType !== "cash").reduce((s,ad) => s + Number(ad.tip||0), 0)
+        + cavSlotAppts.filter(a => a.tipPaymentType !== "cash").reduce((s,a) => s + Number(a.tip||0), 0)
         + forgottenTipCard
         - refundTipCard;
       const totalTip = revenueAppts.reduce((s,a) => s + Number(a.tip||0) - gcAlloc(a).gcTip, 0)
@@ -4810,6 +4820,7 @@ async function exportSalesReportXlsx(monthStr) {
         + pureTicketAppts.reduce((s,a) => s + Number(a.extraTip||0), 0)
         + sameDayTicketAppts.reduce((s,a) => s + Number(a.extraTip||0), 0)
         + revenueAddons.reduce((s,ad) => s + Number(ad.tip||0), 0)
+        + cavSlotAppts.reduce((s,a) => s + Number(a.tip||0), 0)
         + forgottenTipCash + forgottenTipCard
         - refundTipCash - refundTipCard;
       const totalSales = cashTreatment + cashProduct + cardTreatment + cardProduct;
