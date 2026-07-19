@@ -2182,8 +2182,12 @@ function ApptCard({ appt, onClick, allAppointments }) {
               if (total === 0) return emptyChip;
               const uniformType = items.every(it => it.paymentType === items[0].paymentType) ? items[0].paymentType : null;
               const icon = uniformType === "card" ? "💳" : uniformType === "cash" ? "💵" : "";
+              const names = items.map(it => it.productName).filter(Boolean).join(" / ");
               return (
-                <div key={tagId} style={{ fontSize: 10, color: REVENUE_COLOR, fontWeight: 700 }}>Retail ${total}{icon}</div>
+                <div key={tagId} style={{ fontSize: 10, color: REVENUE_COLOR, fontWeight: 700 }}>
+                  <div>Retail ${total}{icon}</div>
+                  {names && <div style={{ fontWeight: 600, color: "#555" }}>{names}</div>}
+                </div>
               );
             }
             if (tagId === "giftCard") {
