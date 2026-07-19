@@ -1140,6 +1140,7 @@ export default function SpaDailySheet() {
   // Square's own Payments totals for the day (used by the Square照合 check below).
   const sheetCashTotal = r2(cashTreatmentAll + cashProductStd + tipCashAllSources);
   const sheetCardTotal = r2(cardTreatmentAll + cardProductStd + tipCardAllSources);
+  const sheetCashTip = r2(tipCashAllSources);
   const sheetCardTip = r2(tipCardAllSources);
 
   // 新規チケット販売（当日購入、または「当日の追加購入」→チケット新規購入タグ）— チケット消化とは別の集計。
@@ -1254,13 +1255,16 @@ export default function SpaDailySheet() {
       {squareStatus && <div style={{ background: "#FFF3CD", padding: "8px 20px", fontSize: 13, color: "#856404" }}>⚠️ {squareStatus}</div>}
 
       {reconcileResult && (() => {
-        // Square doesn't record a separate tip amount for CASH payments (only card payments
-        // go through a tip-prompt screen) — a cash sale is just one lump total in Square, so
-        // there's nothing to compare the sheet's cash-tip figure against. Card tips, on the
-        // other hand, are always captured separately and can be checked directly.
+        // Cash payments never go through Square's tip-prompt screen, so tip_money is always 0
+        // for them — but /api/square-payments falls back to the order's itemized "Tip" line
+        // (same as it already did for card) when staff rang the tip up as a manual line item
+        // inside a cash order, so cash tips are comparable too as long as that's how they were
+        // entered in Square. A cash tip paid with no "Tip" line item at all still won't show up
+        // here (there's nothing in Square to recover it from).
         const rows = [
           { label: "Cash Total (Treatment + Retail + Tip)", sheet: sheetCashTotal, square: reconcileResult.cashTotal },
           { label: "Card Total (Treatment + Retail + Tip)", sheet: sheetCardTotal, square: reconcileResult.cardTotal },
+          { label: "Cash Tip", sheet: sheetCashTip, square: reconcileResult.cashTip },
           { label: "Card Tip", sheet: sheetCardTip, square: reconcileResult.cardTip },
         ];
         return (

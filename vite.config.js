@@ -251,8 +251,10 @@ function squarePaymentsApi(env) {
           // Package/ticket sales are sometimes rung up with the tip added as a manual line
           // item named "Tip" inside the order, instead of going through Square's tip-prompt
           // flow — in that case tip_money stays 0 even though real tip money is bundled into
-          // the total, so it has to be recovered from the order's line items instead. Only
-          // checked for card payments (the only tip breakdown compared on the frontend).
+          // the total, so it has to be recovered from the order's line items instead. Cash
+          // payments never go through the tip-prompt flow at all (so tip_money is always 0
+          // for them), but staff sometimes still itemize a "Tip" line inside a cash order —
+          // checked for both tenders for that reason.
           //
           // Use gross_sales_money (the line item's price as entered), not total_money — an
           // order-level discount gets auto-prorated across every line item including "Tip" by
@@ -302,11 +304,11 @@ function squarePaymentsApi(env) {
               if (p.status !== 'COMPLETED') continue
               const total = (p.total_money?.amount || 0) / 100
               let tip = (p.tip_money?.amount || 0) / 100
+              if (tip === 0 && p.order_id) tip = await getOrderTipLineItems(p.order_id)
               if (p.source_type === 'CASH') {
                 cashTotal += total
                 cashTip += tip
               } else {
-                if (tip === 0 && p.order_id) tip = await getOrderTipLineItems(p.order_id)
                 cardTotal += total
                 cardTip += tip
               }
