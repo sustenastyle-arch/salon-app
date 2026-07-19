@@ -2211,20 +2211,27 @@ function ApptCard({ appt, onClick, allAppointments }) {
               // lived in the payroll split before, invisible on the card itself — show who got
               // what so it's not just a lump sum that reads as one person's full credit. The
               // co-seller's own share also gets echoed onto their own card (see the isCavSlot
-              // branch above) so they don't have to spot it here to know it happened.
+              // branch above) so they don't have to spot it here to know it happened. An item
+              // with no explicit seller split defaults its full amount to this card's own
+              // therapist (same fallback PayrollTab uses), so an un-split sale still nets out
+              // to "my share = the whole thing" below.
               const sellerTotals = {};
-              items.forEach(it => (it.sellers || []).forEach(sel => {
-                if (!sel.therapist) return;
-                sellerTotals[sel.therapist] = (sellerTotals[sel.therapist] || 0) + Number(sel.amount || 0);
-              }));
-              const sellerNames = Object.keys(sellerTotals);
+              items.forEach(it => {
+                const sellers = (it.sellers && it.sellers.length > 0) ? it.sellers : [{ therapist: appt.therapist, amount: Number(it.amount || 0) }];
+                sellers.forEach(sel => {
+                  if (!sel.therapist) return;
+                  sellerTotals[sel.therapist] = (sellerTotals[sel.therapist] || 0) + Number(sel.amount || 0);
+                });
+              });
+              const others = Object.keys(sellerTotals).filter(n => n !== appt.therapist);
+              const myShare = sellerTotals[appt.therapist] || 0;
               return (
                 <div key={tagId} style={{ fontSize: 13, color: REVENUE_COLOR, fontWeight: 700 }}>
-                  <div>Retail ${total}{icon}</div>
+                  <div>Retail ${others.length > 0 ? r2(myShare) : total}{icon}{others.length > 0 && ` with ${others.join(", ")}`}</div>
                   {names && <div style={{ fontWeight: 600, color: "#555" }}>{names}</div>}
-                  {sellerNames.length > 1 && (
-                    <div style={{ fontSize: 11, fontWeight: 600 }}>
-                      {sellerNames.map(n => `${n} $${r2(sellerTotals[n])}`).join(" / ")}
+                  {others.length > 0 && (
+                    <div style={{ fontSize: 11, fontWeight: 600, color: "#555" }}>
+                      Total ${total} ({Object.keys(sellerTotals).map(n => `${n} $${r2(sellerTotals[n])}`).join(" / ")})
                     </div>
                   )}
                 </div>
