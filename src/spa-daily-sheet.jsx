@@ -2021,12 +2021,16 @@ function ApptCard({ appt, onClick, allAppointments }) {
         const gcSvcAmt = Math.min(gc, dispSvc);
         const gcTipAmt = Math.min(Math.max(0, gc - gcSvcAmt), dispTip);
         const receivedTodayTotal = r2((dispSvc - gcSvcAmt) + (dispTip - gcTipAmt));
+        // Line items show the net (post-gift-card) amount too — showing the gross entered
+        // number next to a total that's already netted out looked like the two didn't add up.
+        const netSvc = r2(dispSvc - gcSvcAmt);
+        const netTip = r2(dispTip - gcTipAmt);
 
         const svcText = isSameDay
-          ? (appt.packageSplitPayment ? `💵$${appt.packageCashPortion||0}＋💳$${appt.packageCardPortion||0}` : `${dispSvc}${gcSvcAmt >= dispSvc && dispSvc > 0 ? "🎁" : paidIcon}`)
-          : !isRedemption && appt.svcSplitPayment ? `💵$${appt.svcCashPortion||0}＋💳$${appt.svcCardPortion||0}` : `${dispSvc}${gcSvcAmt >= dispSvc && dispSvc > 0 ? "🎁" : paidIcon}`;
+          ? (appt.packageSplitPayment ? `💵$${appt.packageCashPortion||0}＋💳$${appt.packageCardPortion||0}` : `${netSvc}${gcSvcAmt >= dispSvc && dispSvc > 0 ? "🎁" : paidIcon}`)
+          : !isRedemption && appt.svcSplitPayment ? `💵$${appt.svcCashPortion||0}＋💳$${appt.svcCardPortion||0}` : `${netSvc}${gcSvcAmt >= dispSvc && dispSvc > 0 ? "🎁" : paidIcon}`;
         const tipText = !isRedemption && !isSameDay && appt.tipSplitPayment
-          ? `💵$${appt.tipCashPortion||0}＋💳$${appt.tipCardPortion||0}` : `${dispTip}${gcTipAmt >= dispTip && dispTip > 0 ? "🎁" : tipIcon}`;
+          ? `💵$${appt.tipCashPortion||0}＋💳$${appt.tipCardPortion||0}` : `${netTip}${gcTipAmt >= dispTip && dispTip > 0 ? "🎁" : tipIcon}`;
 
         const courseName = isTicket ? (stripJpAnnotation(appt.serviceName) || appt.ticketMenu) : (stripJpAnnotation(appt.serviceName) || `${appt.duration}min`);
         const sessionSuffix = isRedemption && appt.ticketCurrent > 0 ? ` ${appt.ticketCurrent}/${appt.ticketTotal}`
