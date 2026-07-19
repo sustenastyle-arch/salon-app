@@ -2036,8 +2036,10 @@ function ApptCard({ appt, onClick, allAppointments }) {
             if (sel.therapist === appt.therapist) myShare += Number(sel.amount || 0);
           }));
           if (myShare <= 0) return null;
+          // Black, not red — the full sale total already shows in red on the body therapist's
+          // own card; this is a payroll-split detail, not a second sale to add on top.
           return (
-            <div style={{ color: REVENUE_COLOR, fontSize: 12, fontWeight: 700 }}>
+            <div style={{ color: "#333", fontSize: 12, fontWeight: 700 }}>
               🛍️ Retail ${r2(myShare)} (with {appt.bodyTherapist})
             </div>
           );
@@ -2207,14 +2209,13 @@ function ApptCard({ appt, onClick, allAppointments }) {
               const uniformType = items.every(it => it.paymentType === items[0].paymentType) ? items[0].paymentType : null;
               const icon = uniformType === "card" ? "💳" : uniformType === "cash" ? "💵" : "";
               const names = items.map(it => it.productName).filter(Boolean).join(" / ");
-              // A sale split with another staff member (e.g. the machine/cav therapist) only
-              // lived in the payroll split before, invisible on the card itself — show who got
-              // what so it's not just a lump sum that reads as one person's full credit. The
-              // co-seller's own share also gets echoed onto their own card (see the isCavSlot
-              // branch above) so they don't have to spot it here to know it happened. An item
-              // with no explicit seller split defaults its full amount to this card's own
-              // therapist (same fallback PayrollTab uses), so an un-split sale still nets out
-              // to "my share = the whole thing" below.
+              // Red is reserved for the one number that should match Square/the register total —
+              // the full amount actually collected. The seller split is a payroll-allocation
+              // detail, not extra revenue on top, so it's rendered in black: a staff member
+              // scanning cards and mentally adding up red numbers should never double-count a
+              // single sale as if the split were a second sale. An item with no explicit seller
+              // split defaults its full amount to this card's own therapist (same fallback
+              // PayrollTab uses).
               const sellerTotals = {};
               items.forEach(it => {
                 const sellers = (it.sellers && it.sellers.length > 0) ? it.sellers : [{ therapist: appt.therapist, amount: Number(it.amount || 0) }];
@@ -2223,15 +2224,14 @@ function ApptCard({ appt, onClick, allAppointments }) {
                   sellerTotals[sel.therapist] = (sellerTotals[sel.therapist] || 0) + Number(sel.amount || 0);
                 });
               });
-              const others = Object.keys(sellerTotals).filter(n => n !== appt.therapist);
-              const myShare = sellerTotals[appt.therapist] || 0;
+              const sellerNames = Object.keys(sellerTotals);
               return (
-                <div key={tagId} style={{ fontSize: 13, color: REVENUE_COLOR, fontWeight: 700 }}>
-                  <div>Retail ${others.length > 0 ? r2(myShare) : total}{icon}{others.length > 0 && ` with ${others.join(", ")}`}</div>
-                  {names && <div style={{ fontWeight: 600, color: "#555" }}>{names}</div>}
-                  {others.length > 0 && (
-                    <div style={{ fontSize: 11, fontWeight: 600, color: "#555" }}>
-                      Total ${total} ({Object.keys(sellerTotals).map(n => `${n} $${r2(sellerTotals[n])}`).join(" / ")})
+                <div key={tagId}>
+                  <div style={{ fontSize: 13, color: REVENUE_COLOR, fontWeight: 700 }}>Retail ${total}{icon}</div>
+                  {names && <div style={{ fontWeight: 600, color: "#333", fontSize: 12 }}>{names}</div>}
+                  {sellerNames.length > 1 && (
+                    <div style={{ fontSize: 11, fontWeight: 600, color: "#333" }}>
+                      {sellerNames.map(n => `${n} $${r2(sellerTotals[n])}`).join(" / ")}
                     </div>
                   )}
                 </div>
