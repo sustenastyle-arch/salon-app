@@ -436,12 +436,17 @@ function squareBookingsApi(env) {
               const variationName = isDroppableVariation ? '' : rawVariationName
               const itemId = d.object?.item_variation_data?.item_id
               const itemObj = (d.related_objects || []).find(o => o.id === itemId)
-              // Item names in this business's Square catalog include a Japanese translation in
-              // parentheses (e.g. "Deep Tissue or Lomi Lomi Massage 90min (ディープティシュー..."))
-              // — staff want the schedule cards English-only, so it's stripped at the source here
-              // rather than in every place serviceName gets displayed.
+              // Item names in this business's Square catalog carry extra junk that was never
+              // meant to be in the Name field: a Japanese translation in parentheses, or — for
+              // at least one item — a call-to-action with phone numbers typed straight into the
+              // name (e.g. "HIFU(Full Face) -ハイフ全顔 Please Call us 808-922-5115 or Text us
+              // 808-971-1267"). Staff want the schedule cards English-only, so all of it is
+              // stripped at the source here rather than in every place serviceName gets displayed.
               const rawItemName = itemObj?.item_data?.name || ''
-              const itemName = rawItemName.replace(/\s*\([^)]*[぀-ヿ一-鿿][^)]*\)/g, '').trim()
+              let itemName = rawItemName.replace(/\s*\([^)]*[぀-ヿ一-鿿][^)]*\)/g, '')
+              const ctaIdx = itemName.search(/(please\s+)?(call|text)\s+us|\d{3}[-.\s]\d{3}[-.\s]\d{4}/i)
+              if (ctaIdx !== -1) itemName = itemName.slice(0, ctaIdx)
+              itemName = itemName.split(/\s+/).filter(t => t && !/[぀-ヿ一-鿿]/.test(t)).join(' ').trim()
               const full = itemName && variationName ? `${itemName} ${variationName}` : (itemName || variationName)
               serviceCache[variationId] = full
               return full

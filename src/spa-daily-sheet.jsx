@@ -13,17 +13,19 @@ const HOURS = Array.from({ length: 11 }, (_, i) => i + 9);
 const REGULAR_WL_CAV_PRICE = 116;
 const isWeightLossService = (name) => (name || "").toLowerCase().includes("weight loss");
 // Appointments synced from Square before the item-name cleanup in the booking sync (see
-// vite.config.js/api/square-bookings.js) may still have serviceName saved with a Japanese
-// translation in parentheses and/or a Japanese variation name tacked on after the English
-// item name (e.g. "Deep Tissue / Lomi Lomi 90min ロミロミ矯正90分") — strip both for display
-// only (the stored value is left alone; other code like isWeightLossService above just does
-// a substring check on the English part, so it's unaffected either way).
+// vite.config.js/api/square-bookings.js) may still have serviceName saved with extra junk
+// the catalog item's Name field was never meant to carry: a Japanese translation in
+// parentheses, a bare Japanese translation/variation tacked on elsewhere (e.g. "-ハイフ全顔"),
+// or even a call-to-action + phone number typed straight into the name (e.g. "HIFU(Full
+// Face) -ハイフ全顔 Please Call us 808-922-5115 or Text us 808-971-1267 通常"). Strip all three
+// for display only (the stored value is left alone; other code like isWeightLossService above
+// just does a substring check on the English part, so it's unaffected either way).
 const stripJpAnnotation = (name) => {
   if (!name) return "";
-  const withoutParens = name.replace(/\s*\([^)]*[぀-ヿ一-鿿][^)]*\)/g, "");
-  const tokens = withoutParens.trim().split(/\s+/);
-  while (tokens.length > 0 && /[぀-ヿ一-鿿]/.test(tokens[tokens.length - 1])) tokens.pop();
-  return tokens.join(" ").trim();
+  let s = name.replace(/\s*\([^)]*[぀-ヿ一-鿿][^)]*\)/g, "");
+  const ctaIdx = s.search(/(please\s+)?(call|text)\s+us|\d{3}[-.\s]\d{3}[-.\s]\d{4}/i);
+  if (ctaIdx !== -1) s = s.slice(0, ctaIdx);
+  return s.split(/\s+/).filter(t => t && !/[぀-ヿ一-鿿]/.test(t)).join(" ").trim();
 };
 
 // 社販 (staff self-purchase) — same pattern as getRetailItems: first item lives directly on the
@@ -1416,7 +1418,7 @@ export default function SpaDailySheet() {
               <tr>
                 <th style={{ width: 70, padding: "8px 4px", fontSize: 11, color: "#888", textAlign: "left", borderBottom: "2px solid #0D4F4F" }}>Time</th>
                 {visibleTherapists.map(t => (
-                  <th key={t} style={{ padding: "8px 6px", fontSize: 13, fontWeight: 700, color: "#0D4F4F", textAlign: "center", borderBottom: "2px solid #0D4F4F", minWidth: 170 }}>
+                  <th key={t} style={{ padding: "8px 6px", fontSize: 13, fontWeight: 700, color: "#0D4F4F", textAlign: "center", borderBottom: "2px solid #0D4F4F", minWidth: 190 }}>
                     {t}
                   </th>
                 ))}
@@ -2005,22 +2007,22 @@ function ApptCard({ appt, onClick, allAppointments }) {
     const tipIcon = appt.tipPaymentType === "card" ? "💳" : appt.tipPaymentType === "cash" ? "💵" : "";
     return (
       <div onClick={onClick} style={{ background: bg, border: `2px solid ${borderColor}`, borderRadius: 8, padding: "5px 8px", marginBottom: 3, cursor: "pointer", opacity: 0.9 }}>
-        <div style={{ fontSize: 15, fontWeight: 700, color: "#6A1B9A" }}>⚡ Machine {appt.isTicket ? "🎟️" : ""}</div>
-        <div style={{ fontSize: 15, color: "#555" }}>
-          {appt.clientName} <span style={{ color: "#888", fontSize: 12 }}>({appt.startTime}〜)</span>
+        <div style={{ fontSize: 17, fontWeight: 700, color: "#6A1B9A" }}>⚡ Machine {appt.isTicket ? "🎟️" : ""}</div>
+        <div style={{ fontSize: 17, color: "#555" }}>
+          {appt.clientName} <span style={{ color: "#888", fontSize: 13 }}>({appt.startTime}〜)</span>
         </div>
         {appt.bodyTherapist && (
-          <div style={{ fontSize: 12, color: "#8E24AA" }}>with {appt.bodyTherapist}</div>
+          <div style={{ fontSize: 13, color: "#8E24AA" }}>with {appt.bodyTherapist}</div>
         )}
         {(cavSvc > 0 || cavTip > 0) && (
-          <div style={{ fontSize: 15, color: amountColor, fontWeight: 700 }}>
+          <div style={{ fontSize: 17, color: amountColor, fontWeight: 700 }}>
             <div>{cavSvc}{svcIcon}</div>
             {cavTip > 0 && <div>{cavTip}{tipIcon}</div>}
             <div style={{ fontWeight: 800 }}>{cavTotal}</div>
           </div>
         )}
         {dep > 0 && !isWeightLossService(parent?.serviceName) && (
-          <div style={{ color: "#2E7D32", fontSize: 11 }}>💰Deposit split included</div>
+          <div style={{ color: "#2E7D32", fontSize: 12 }}>💰Deposit split included</div>
         )}
       </div>
     );
@@ -2029,8 +2031,8 @@ function ApptCard({ appt, onClick, allAppointments }) {
   return (
     <div onClick={onClick} style={{ background: bg, border: `2px solid ${borderColor}`, borderRadius: 8, padding: "6px 8px", marginBottom: 3, cursor: "pointer" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-        <span style={{ fontSize: 16, fontWeight: 700, lineHeight: 1.3 }}>{appt.clientName || "(not set)"}</span>
-        <span style={{ fontSize: 12, fontWeight: 700, color: "#fff", background: typeColors[appt.customerType]||"#888", padding: "1px 5px", borderRadius: 8, marginLeft: 4, whiteSpace: "nowrap" }}>
+        <span style={{ fontSize: 18, fontWeight: 700, lineHeight: 1.3 }}>{appt.clientName || "(not set)"}</span>
+        <span style={{ fontSize: 13, fontWeight: 700, color: "#fff", background: typeColors[appt.customerType]||"#888", padding: "1px 5px", borderRadius: 8, marginLeft: 4, whiteSpace: "nowrap" }}>
           {appt.customerType}
         </span>
       </div>
@@ -2090,10 +2092,10 @@ function ApptCard({ appt, onClick, allAppointments }) {
         const gc = (!isGiftCard && !isPromo) ? Number(appt.giftCardUsed||0) : 0;
 
         return (
-          <div style={{ fontSize: 15, marginTop: 2 }}>
+          <div style={{ fontSize: 17, marginTop: 2 }}>
             <div style={{ color: isGiftCard ? "#B45309" : isPromo ? "#1565C0" : "#222", fontWeight: 700, lineHeight: 1.4 }}>
-              {isGiftCard && <span style={{ fontSize: 12, background: "#F59E0B", color: "#fff", padding: "1px 5px", borderRadius: 6, marginRight: 4 }}>🎁GC Redemption</span>}
-              {isPromo && <span style={{ fontSize: 12, background: "#1565C0", color: "#fff", padding: "1px 5px", borderRadius: 6, marginRight: 4 }}>📸Complimentary PR</span>}
+              {isGiftCard && <span style={{ fontSize: 13, background: "#F59E0B", color: "#fff", padding: "1px 5px", borderRadius: 6, marginRight: 4 }}>🎁GC Redemption</span>}
+              {isPromo && <span style={{ fontSize: 13, background: "#1565C0", color: "#fff", padding: "1px 5px", borderRadius: 6, marginRight: 4 }}>📸Complimentary PR</span>}
               {courseName}{sessionSuffix}
               {(appt.extraServiceNames || []).map(n => ` + ${n}`).join("")}
             </div>
@@ -2119,13 +2121,13 @@ function ApptCard({ appt, onClick, allAppointments }) {
               </div>
             )}
             {appt.cavTherapist && !isDualLicense(appt.therapist) && (
-              <div style={{ color: "#6A1B9A", fontSize: 12 }}>with {appt.cavTherapist}</div>
+              <div style={{ color: "#6A1B9A", fontSize: 13 }}>with {appt.cavTherapist}</div>
             )}
             {dep > 0 && (
-              <div style={{ color: "#2E7D32", fontSize: 12 }}>💰Deposit ${dep} paid (not included in today's total received){depDate ? ` ${depDate}` : ""}</div>
+              <div style={{ color: "#2E7D32", fontSize: 13 }}>💰Deposit ${dep} paid (not included in today's total received){depDate ? ` ${depDate}` : ""}</div>
             )}
             {gc > 0 && (
-              <div style={{ color: "#2E7D32", fontSize: 12 }}>GC used ${gc}</div>
+              <div style={{ color: "#2E7D32", fontSize: 13 }}>GC used ${gc}</div>
             )}
             {(appt.addons || []).length > 0 && (
               <div style={{ display: "flex", flexDirection: "column", gap: 3, marginTop: 3 }}>
@@ -2138,7 +2140,7 @@ function ApptCard({ appt, onClick, allAppointments }) {
                   const svcIcon = addon.paymentType === "card" ? "💳" : addon.paymentType === "cash" ? "💵" : "";
                   const tipIcon = addon.tipPaymentType === "card" ? "💳" : addon.tipPaymentType === "cash" ? "💵" : "";
                   return (
-                    <div key={addon.id} style={{ fontSize: 12, color: chipColor, fontWeight: 700 }}>
+                    <div key={addon.id} style={{ fontSize: 13, color: chipColor, fontWeight: 700 }}>
                       <div>➕ {label}{addon.ticketCurrent ? ` ${addon.ticketCurrent}/${appt.ticketTotal||3}` : ""}{addon.countsAsRevenue === null && " ⚠️"}</div>
                       {aTotal > 0 && (
                         <>
@@ -2161,7 +2163,7 @@ function ApptCard({ appt, onClick, allAppointments }) {
             const tag = PURCHASE_TAGS.find(t => t.id === tagId);
             if (!tag) return null;
             const emptyChip = (
-              <span key={tagId} style={{ fontSize: 11, background: tag.bg, color: tag.color, padding: "2px 6px", borderRadius: 8, fontWeight: 700, alignSelf: "flex-start" }}>{tag.label}</span>
+              <span key={tagId} style={{ fontSize: 12, background: tag.bg, color: tag.color, padding: "2px 6px", borderRadius: 8, fontWeight: 700, alignSelf: "flex-start" }}>{tag.label}</span>
             );
 
             if (tagId === "newTicket") {
@@ -2172,7 +2174,7 @@ function ApptCard({ appt, onClick, allAppointments }) {
               const ntTipIcon = appt.newTicketTipPaymentType==="card"?"💳":appt.newTicketTipPaymentType==="cash"?"💵":"";
               const ntSvcText = appt.newTicketSplitPayment ? `💵$${appt.newTicketCashPortion||0}＋💳$${appt.newTicketCardPortion||0}` : `${ntSvc}${ntSvcIcon}`;
               return (
-                <div key={tagId} style={{ fontSize: 12, color: REVENUE_COLOR, fontWeight: 700 }}>
+                <div key={tagId} style={{ fontSize: 13, color: REVENUE_COLOR, fontWeight: 700 }}>
                   <div>{tag.label}{appt.newTicketPackageName && ` (${appt.newTicketPackageName})`}</div>
                   <div>{ntSvcText}</div>
                   {ntTip > 0 && <div>{ntTip}{ntTipIcon}</div>}
@@ -2187,7 +2189,7 @@ function ApptCard({ appt, onClick, allAppointments }) {
               const uniformType = items.every(it => it.paymentType === items[0].paymentType) ? items[0].paymentType : null;
               const icon = uniformType === "card" ? "💳" : uniformType === "cash" ? "💵" : "";
               return (
-                <div key={tagId} style={{ fontSize: 12, color: REVENUE_COLOR, fontWeight: 700 }}>Retail ${total}{icon}</div>
+                <div key={tagId} style={{ fontSize: 13, color: REVENUE_COLOR, fontWeight: 700 }}>Retail ${total}{icon}</div>
               );
             }
             if (tagId === "giftCard") {
@@ -2195,7 +2197,7 @@ function ApptCard({ appt, onClick, allAppointments }) {
               if (total === 0) return emptyChip;
               const icon = appt.giftCardPurchasePaymentType==="card"?"💳":appt.giftCardPurchasePaymentType==="cash"?"💵":"";
               return (
-                <div key={tagId} style={{ fontSize: 12, color: REVENUE_COLOR, fontWeight: 700 }}>{tag.label} ${total}{icon}</div>
+                <div key={tagId} style={{ fontSize: 13, color: REVENUE_COLOR, fontWeight: 700 }}>{tag.label} ${total}{icon}</div>
               );
             }
             return emptyChip;
