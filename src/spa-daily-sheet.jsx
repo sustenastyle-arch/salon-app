@@ -1146,24 +1146,24 @@ export default function SpaDailySheet() {
         <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
           <DatePicker value={date} onChange={setDate} allowClear={false}
             style={{ padding: "8px 12px", borderRadius: 8, border: "none", background: "rgba(255,255,255,0.15)", color: "#fff", fontSize: 14 }} />
-          <button onClick={fetchSquare} disabled={squareLoading}
-            style={{ padding: "8px 16px", borderRadius: 8, border: "none", background: squareLoading ? "#666" : "#E8A84A", color: "#fff", fontWeight: 700, cursor: squareLoading ? "not-allowed" : "pointer", fontSize: 13 }}>
+          <button onClick={fetchSquare} disabled={squareLoading || dayLoading}
+            style={{ padding: "8px 16px", borderRadius: 8, border: "none", background: (squareLoading || dayLoading) ? "#666" : "#E8A84A", color: "#fff", fontWeight: 700, cursor: (squareLoading || dayLoading) ? "not-allowed" : "pointer", fontSize: 13 }}>
             {squareLoading ? "⏳ Fetching..." : "□ Square Sync"}
           </button>
-          <button onClick={syncOnlineGiftCards} disabled={gcSyncLoading}
-            style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: gcSyncLoading ? "#666" : "#B45309", color: "#fff", fontWeight: 700, cursor: gcSyncLoading ? "not-allowed" : "pointer", fontSize: 13 }}>
+          <button onClick={syncOnlineGiftCards} disabled={gcSyncLoading || dayLoading}
+            style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: (gcSyncLoading || dayLoading) ? "#666" : "#B45309", color: "#fff", fontWeight: 700, cursor: (gcSyncLoading || dayLoading) ? "not-allowed" : "pointer", fontSize: 13 }}>
             {gcSyncLoading ? "⏳ Fetching..." : "🎁 Fetch Gift Card Purchases"}
           </button>
-          <button onClick={syncSquareDeposits} disabled={depositSyncLoading}
-            style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: depositSyncLoading ? "#666" : "#00796B", color: "#fff", fontWeight: 700, cursor: depositSyncLoading ? "not-allowed" : "pointer", fontSize: 13 }}>
+          <button onClick={syncSquareDeposits} disabled={depositSyncLoading || dayLoading}
+            style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: (depositSyncLoading || dayLoading) ? "#666" : "#00796B", color: "#fff", fontWeight: 700, cursor: (depositSyncLoading || dayLoading) ? "not-allowed" : "pointer", fontSize: 13 }}>
             {depositSyncLoading ? "⏳ Fetching..." : "💰 Auto-Fetch Deposits"}
           </button>
-          <button onClick={checkSquareReconciliation} disabled={reconcileLoading}
-            style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: reconcileLoading ? "#666" : "#4A6572", color: "#fff", fontWeight: 700, cursor: reconcileLoading ? "not-allowed" : "pointer", fontSize: 13 }}>
+          <button onClick={checkSquareReconciliation} disabled={reconcileLoading || dayLoading}
+            style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: (reconcileLoading || dayLoading) ? "#666" : "#4A6572", color: "#fff", fontWeight: 700, cursor: (reconcileLoading || dayLoading) ? "not-allowed" : "pointer", fontSize: 13 }}>
             {reconcileLoading ? "⏳ Checking..." : "🔍 Square Reconcile"}
           </button>
-          <button onClick={handleLockToggle}
-            style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: locked ? "#C62828" : "rgba(255,255,255,0.15)", color: "#fff", fontWeight: 700, cursor: "pointer", fontSize: 13 }}>
+          <button onClick={handleLockToggle} disabled={dayLoading}
+            style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: dayLoading ? "#666" : locked ? "#C62828" : "rgba(255,255,255,0.15)", color: "#fff", fontWeight: 700, cursor: dayLoading ? "not-allowed" : "pointer", fontSize: 13 }}>
             {locked ? "🔒 Finalized (Unlock)" : "🔓 Finalize This Day"}
           </button>
           <button onClick={handleExportBackup}
