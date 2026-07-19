@@ -782,30 +782,6 @@ export default function SpaDailySheet() {
     e.target.value = "";
   };
 
-  // One-time helper for the shop PC (or any browser with real pre-cloud-sync data still sitting
-  // in its localStorage) to push that data into the shared cloud store — after this runs once,
-  // every computer reads/writes the same place instead of each browser keeping its own copy.
-  const handleMigrateLocalToCloud = async () => {
-    const data = {};
-    for (let i = 0; i < localStorage.length; i++) {
-      const key = localStorage.key(i);
-      if (key?.startsWith("spa-sheet-")) data[key.replace("spa-sheet-", "")] = localStorage.getItem(key);
-    }
-    if (Object.keys(data).length === 0) {
-      showToast("No data on this device to migrate", "info");
-      return;
-    }
-    if (!window.confirm(`This will migrate ${Object.keys(data).length} day(s) of data saved on this device to the cloud. Continue?`)) return;
-    try {
-      const { count } = await apiFetch("/api/import-all", { method: "POST", body: JSON.stringify(data) });
-      showToast(`✅ Migrated ${count} day(s) of data to the cloud`);
-      window.location.reload();
-    } catch (e) {
-      console.error("Migration error:", e);
-      showToast("Migration failed. Please check your internet connection and try again", "error");
-    }
-  };
-
   // A snapshot of every saved day is taken automatically once a day (see api/auto-backup.js,
   // triggered by the Vercel Cron in vercel.json) — this lets a day get recovered even if nobody
   // remembered to click the manual 📤 Backup Data button.
@@ -1247,10 +1223,6 @@ export default function SpaDailySheet() {
             📥 Restore Data
             <input type="file" accept="application/json" onChange={handleImportBackup} style={{ display: "none" }} />
           </label>
-          <button onClick={handleMigrateLocalToCloud}
-            style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: "rgba(255,255,255,0.15)", color: "#fff", fontWeight: 700, cursor: "pointer", fontSize: 13 }}>
-            ☁️ Migrate This Device's Data to Cloud
-          </button>
           <button onClick={openAutoBackupList} disabled={autoBackupListLoading}
             style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: "rgba(255,255,255,0.15)", color: "#fff", fontWeight: 700, cursor: autoBackupListLoading ? "not-allowed" : "pointer", fontSize: 13 }}>
             {autoBackupListLoading ? "⏳ Loading..." : "🕐 Restore from Auto-Backup"}
