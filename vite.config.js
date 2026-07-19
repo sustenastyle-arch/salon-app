@@ -427,11 +427,21 @@ function squareBookingsApi(env) {
               if (!r.ok) { serviceCache[variationId] = ''; return '' }
               const rawVariationName = d.object?.item_variation_data?.name || ''
               // "Regular" is Square's default variation name for single-variation items — it
-              // carries no real info, so drop it rather than appending it to every course name.
-              const variationName = rawVariationName.trim().toLowerCase() === 'regular' ? '' : rawVariationName
+              // carries no real info. Some of this business's variations are also just the
+              // course name written in Japanese instead (e.g. "ロミロミ矯正90分") rather than
+              // "通常" — staff want the schedule cards English-only, so any Japanese variation
+              // name is dropped the same way, not just the literal default.
+              const isDroppableVariation = rawVariationName.trim().toLowerCase() === 'regular'
+                || /[぀-ヿ一-鿿]/.test(rawVariationName)
+              const variationName = isDroppableVariation ? '' : rawVariationName
               const itemId = d.object?.item_variation_data?.item_id
               const itemObj = (d.related_objects || []).find(o => o.id === itemId)
-              const itemName = itemObj?.item_data?.name || ''
+              // Item names in this business's Square catalog include a Japanese translation in
+              // parentheses (e.g. "Deep Tissue or Lomi Lomi Massage 90min (ディープティシュー..."))
+              // — staff want the schedule cards English-only, so it's stripped at the source here
+              // rather than in every place serviceName gets displayed.
+              const rawItemName = itemObj?.item_data?.name || ''
+              const itemName = rawItemName.replace(/\s*\([^)]*[぀-ヿ一-鿿][^)]*\)/g, '').trim()
               const full = itemName && variationName ? `${itemName} ${variationName}` : (itemName || variationName)
               serviceCache[variationId] = full
               return full
