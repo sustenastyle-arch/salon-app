@@ -251,8 +251,10 @@ function squarePaymentsApi(env) {
           // Package/ticket sales are sometimes rung up with the tip added as a manual line
           // item named "Tip" inside the order, instead of going through Square's tip-prompt
           // flow — in that case tip_money stays 0 even though real tip money is bundled into
-          // the total, so it has to be recovered from the order's line items instead. Only
-          // checked for card payments (the only tip breakdown compared on the frontend).
+          // the total, so it has to be recovered from the order's line items instead. Cash
+          // payments never go through the tip-prompt flow at all (so tip_money is always 0
+          // for them), but staff sometimes still itemize a "Tip" line inside a cash order —
+          // checked for both tenders for that reason.
           //
           // Use gross_sales_money (the line item's price as entered), not total_money — an
           // order-level discount gets auto-prorated across every line item including "Tip" by
@@ -302,11 +304,11 @@ function squarePaymentsApi(env) {
               if (p.status !== 'COMPLETED') continue
               const total = (p.total_money?.amount || 0) / 100
               let tip = (p.tip_money?.amount || 0) / 100
+              if (tip === 0 && p.order_id) tip = await getOrderTipLineItems(p.order_id)
               if (p.source_type === 'CASH') {
                 cashTotal += total
                 cashTip += tip
               } else {
-                if (tip === 0 && p.order_id) tip = await getOrderTipLineItems(p.order_id)
                 cardTotal += total
                 cardTip += tip
               }
@@ -425,11 +427,26 @@ function squareBookingsApi(env) {
               if (!r.ok) { serviceCache[variationId] = ''; return '' }
               const rawVariationName = d.object?.item_variation_data?.name || ''
               // "Regular" is Square's default variation name for single-variation items — it
-              // carries no real info, so drop it rather than appending it to every course name.
-              const variationName = rawVariationName.trim().toLowerCase() === 'regular' ? '' : rawVariationName
+              // carries no real info. Some of this business's variations are also just the
+              // course name written in Japanese instead (e.g. "ロミロミ矯正90分") rather than
+              // "通常" — staff want the schedule cards English-only, so any Japanese variation
+              // name is dropped the same way, not just the literal default.
+              const isDroppableVariation = rawVariationName.trim().toLowerCase() === 'regular'
+                || /[぀-ヿ一-鿿]/.test(rawVariationName)
+              const variationName = isDroppableVariation ? '' : rawVariationName
               const itemId = d.object?.item_variation_data?.item_id
               const itemObj = (d.related_objects || []).find(o => o.id === itemId)
-              const itemName = itemObj?.item_data?.name || ''
+              // Item names in this business's Square catalog carry extra junk that was never
+              // meant to be in the Name field: a Japanese translation in parentheses, or — for
+              // at least one item — a call-to-action with phone numbers typed straight into the
+              // name (e.g. "HIFU(Full Face) -ハイフ全顔 Please Call us 808-922-5115 or Text us
+              // 808-971-1267"). Staff want the schedule cards English-only, so all of it is
+              // stripped at the source here rather than in every place serviceName gets displayed.
+              const rawItemName = itemObj?.item_data?.name || ''
+              let itemName = rawItemName.replace(/\s*\([^)]*[぀-ヿ一-鿿][^)]*\)/g, '')
+              const ctaIdx = itemName.search(/(please\s+)?(call|text)\s+us|\d{3}[-.\s]\d{3}[-.\s]\d{4}/i)
+              if (ctaIdx !== -1) itemName = itemName.slice(0, ctaIdx)
+              itemName = itemName.split(/\s+/).filter(t => t && !/[぀-ヿ一-鿿]/.test(t)).join(' ').trim()
               const full = itemName && variationName ? `${itemName} ${variationName}` : (itemName || variationName)
               serviceCache[variationId] = full
               return full

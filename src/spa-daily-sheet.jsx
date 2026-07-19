@@ -1,9 +1,9 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import * as XLSX from "xlsx";
+import { REFERRAL_SOURCES, getRetailItems, computeDayTotals } from "./lib/reportTotals.js";
 
 const THERAPISTS = ["Mami", "Aya", "Megumi", "Hitomi", "Maki", "Yuka", "Mai", "Betsy"];
 const CUSTOMER_TYPES = ["RL", "RT", "NL", "NT"];
-const REFERRAL_SOURCES = ["Google / Website", "Google Map", "Instagram", "Yelp", "紹介"];
 // Stored value stays "紹介" (already-saved appointments are matched against it by exact equality
 // in reporting) — this only translates it for display, same pattern as CUSTOMER_TYPE_LABELS below.
 const REFERRAL_LABELS = { "紹介": "Referral" };
@@ -12,18 +12,20 @@ const HOURS = Array.from({ length: 11 }, (_, i) => i + 9);
 // of duration or total price — the rest goes to the body therapist.
 const REGULAR_WL_CAV_PRICE = 116;
 const isWeightLossService = (name) => (name || "").toLowerCase().includes("weight loss");
-// Inline 物販購入 (within an appointment) supports multiple products in the same visit — the first
-// item lives directly on the appointment (retailProductName/retailPurchaseAmount/...), any further
-// items live in extraRetailItems[] so existing saved appointments (single item) keep working as-is.
-const getRetailItems = (a) => {
-  const items = [];
-  if (Number(a.retailPurchaseAmount || 0) > 0 || a.retailProductName) {
-    items.push({ productName: a.retailProductName || "", amount: Number(a.retailPurchaseAmount || 0), paymentType: a.retailPurchasePaymentType, sellers: a.retailSellers });
-  }
-  (a.extraRetailItems || []).forEach(it => {
-    if (Number(it.amount || 0) > 0 || it.productName) items.push(it);
-  });
-  return items;
+// Appointments synced from Square before the item-name cleanup in the booking sync (see
+// vite.config.js/api/square-bookings.js) may still have serviceName saved with extra junk
+// the catalog item's Name field was never meant to carry: a Japanese translation in
+// parentheses, a bare Japanese translation/variation tacked on elsewhere (e.g. "-ハイフ全顔"),
+// or even a call-to-action + phone number typed straight into the name (e.g. "HIFU(Full
+// Face) -ハイフ全顔 Please Call us 808-922-5115 or Text us 808-971-1267 通常"). Strip all three
+// for display only (the stored value is left alone; other code like isWeightLossService above
+// just does a substring check on the English part, so it's unaffected either way).
+const stripJpAnnotation = (name) => {
+  if (!name) return "";
+  let s = name.replace(/\s*\([^)]*[぀-ヿ一-鿿][^)]*\)/g, "");
+  const ctaIdx = s.search(/(please\s+)?(call|text)\s+us|\d{3}[-.\s]\d{3}[-.\s]\d{4}/i);
+  if (ctaIdx !== -1) s = s.slice(0, ctaIdx);
+  return s.split(/\s+/).filter(t => t && !/[぀-ヿ一-鿿]/.test(t)).join(" ").trim();
 };
 
 // 社販 (staff self-purchase) — same pattern as getRetailItems: first item lives directly on the
@@ -1153,6 +1155,7 @@ export default function SpaDailySheet() {
   // Square's own Payments totals for the day (used by the Square照合 check below).
   const sheetCashTotal = r2(cashTreatmentAll + cashProductStd + tipCashAllSources);
   const sheetCardTotal = r2(cardTreatmentAll + cardProductStd + tipCardAllSources);
+  const sheetCashTip = r2(tipCashAllSources);
   const sheetCardTip = r2(tipCardAllSources);
 
   // 新規チケット販売（当日購入、または「当日の追加購入」→チケット新規購入タグ）— チケット消化とは別の集計。
@@ -1267,13 +1270,16 @@ export default function SpaDailySheet() {
       {squareStatus && <div style={{ background: "#FFF3CD", padding: "8px 20px", fontSize: 13, color: "#856404" }}>⚠️ {squareStatus}</div>}
 
       {reconcileResult && (() => {
-        // Square doesn't record a separate tip amount for CASH payments (only card payments
-        // go through a tip-prompt screen) — a cash sale is just one lump total in Square, so
-        // there's nothing to compare the sheet's cash-tip figure against. Card tips, on the
-        // other hand, are always captured separately and can be checked directly.
+        // Cash payments never go through Square's tip-prompt screen, so tip_money is always 0
+        // for them — but /api/square-payments falls back to the order's itemized "Tip" line
+        // (same as it already did for card) when staff rang the tip up as a manual line item
+        // inside a cash order, so cash tips are comparable too as long as that's how they were
+        // entered in Square. A cash tip paid with no "Tip" line item at all still won't show up
+        // here (there's nothing in Square to recover it from).
         const rows = [
           { label: "Cash Total (Treatment + Retail + Tip)", sheet: sheetCashTotal, square: reconcileResult.cashTotal },
           { label: "Card Total (Treatment + Retail + Tip)", sheet: sheetCardTotal, square: reconcileResult.cardTotal },
+          { label: "Cash Tip", sheet: sheetCashTip, square: reconcileResult.cashTip },
           { label: "Card Tip", sheet: sheetCardTip, square: reconcileResult.cardTip },
         ];
         return (
@@ -1412,7 +1418,7 @@ export default function SpaDailySheet() {
               <tr>
                 <th style={{ width: 70, padding: "8px 4px", fontSize: 11, color: "#888", textAlign: "left", borderBottom: "2px solid #0D4F4F" }}>Time</th>
                 {visibleTherapists.map(t => (
-                  <th key={t} style={{ padding: "8px 6px", fontSize: 13, fontWeight: 700, color: "#0D4F4F", textAlign: "center", borderBottom: "2px solid #0D4F4F", minWidth: 140 }}>
+                  <th key={t} style={{ padding: "8px 6px", fontSize: 13, fontWeight: 700, color: "#0D4F4F", textAlign: "center", borderBottom: "2px solid #0D4F4F", minWidth: 190 }}>
                     {t}
                   </th>
                 ))}
@@ -2001,23 +2007,41 @@ function ApptCard({ appt, onClick, allAppointments }) {
     const tipIcon = appt.tipPaymentType === "card" ? "💳" : appt.tipPaymentType === "cash" ? "💵" : "";
     return (
       <div onClick={onClick} style={{ background: bg, border: `2px solid ${borderColor}`, borderRadius: 8, padding: "5px 8px", marginBottom: 3, cursor: "pointer", opacity: 0.9 }}>
-        <div style={{ fontSize: 11, fontWeight: 700, color: "#6A1B9A" }}>⚡ Machine {appt.isTicket ? "🎟️" : ""}</div>
-        <div style={{ fontSize: 11, color: "#555" }}>
-          {appt.clientName} <span style={{ color: "#888", fontSize: 10 }}>({appt.startTime}〜)</span>
+        <div style={{ fontSize: 17, fontWeight: 700, color: "#6A1B9A" }}>⚡ Machine {appt.isTicket ? "🎟️" : ""}</div>
+        <div style={{ fontSize: 17, color: "#555" }}>
+          {appt.clientName} <span style={{ color: "#888", fontSize: 13 }}>({appt.startTime}〜)</span>
         </div>
         {appt.bodyTherapist && (
-          <div style={{ fontSize: 10, color: "#8E24AA" }}>with {appt.bodyTherapist}</div>
+          <div style={{ fontSize: 13, color: "#8E24AA" }}>with {appt.bodyTherapist}</div>
         )}
         {(cavSvc > 0 || cavTip > 0) && (
-          <div style={{ fontSize: 11, color: amountColor, fontWeight: 700 }}>
+          <div style={{ fontSize: 17, color: amountColor, fontWeight: 700 }}>
             <div>{cavSvc}{svcIcon}</div>
             {cavTip > 0 && <div>{cavTip}{tipIcon}</div>}
             <div style={{ fontWeight: 800 }}>{cavTotal}</div>
           </div>
         )}
         {dep > 0 && !isWeightLossService(parent?.serviceName) && (
-          <div style={{ color: "#2E7D32", fontSize: 9 }}>💰Deposit split included</div>
+          <div style={{ color: "#2E7D32", fontSize: 12 }}>💰Deposit split included</div>
         )}
+        {(() => {
+          // A retail sale on the parent visit can be split with this machine (cav) therapist
+          // (see the "retail" purchaseTag branch below) — the payroll split already accounts
+          // for it, but without this it never showed up anywhere on the cav therapist's own
+          // card, so it was easy to forget to double-check later.
+          if (!parent) return null;
+          const items = getRetailItems(parent);
+          let myShare = 0;
+          items.forEach(it => (it.sellers || []).forEach(sel => {
+            if (sel.therapist === appt.therapist) myShare += Number(sel.amount || 0);
+          }));
+          if (myShare <= 0) return null;
+          return (
+            <div style={{ color: REVENUE_COLOR, fontSize: 12, fontWeight: 700 }}>
+              🛍️ Retail ${r2(myShare)} (with {appt.bodyTherapist})
+            </div>
+          );
+        })()}
       </div>
     );
   }
@@ -2025,8 +2049,8 @@ function ApptCard({ appt, onClick, allAppointments }) {
   return (
     <div onClick={onClick} style={{ background: bg, border: `2px solid ${borderColor}`, borderRadius: 8, padding: "6px 8px", marginBottom: 3, cursor: "pointer" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-        <span style={{ fontSize: 12, fontWeight: 700, lineHeight: 1.3 }}>{appt.clientName || "(not set)"}</span>
-        <span style={{ fontSize: 10, fontWeight: 700, color: "#fff", background: typeColors[appt.customerType]||"#888", padding: "1px 5px", borderRadius: 8, marginLeft: 4, whiteSpace: "nowrap" }}>
+        <span style={{ fontSize: 18, fontWeight: 700, lineHeight: 1.3 }}>{appt.clientName || "(not set)"}</span>
+        <span style={{ fontSize: 13, fontWeight: 700, color: "#fff", background: typeColors[appt.customerType]||"#888", padding: "1px 5px", borderRadius: 8, marginLeft: 4, whiteSpace: "nowrap" }}>
           {appt.customerType}
         </span>
       </div>
@@ -2079,17 +2103,17 @@ function ApptCard({ appt, onClick, allAppointments }) {
         const tipText = !isRedemption && !isSameDay && appt.tipSplitPayment
           ? `💵$${appt.tipCashPortion||0}＋💳$${appt.tipCardPortion||0}` : `${dispTip}${tipIcon}`;
 
-        const courseName = isTicket ? (appt.serviceName || appt.ticketMenu) : (appt.serviceName || `${appt.duration}min`);
+        const courseName = isTicket ? (stripJpAnnotation(appt.serviceName) || appt.ticketMenu) : (stripJpAnnotation(appt.serviceName) || `${appt.duration}min`);
         const sessionSuffix = isRedemption && appt.ticketCurrent > 0 ? ` ${appt.ticketCurrent}/${appt.ticketTotal}`
           : isSameDay ? ` x${appt.ticketTotal}` : "";
 
         const gc = (!isGiftCard && !isPromo) ? Number(appt.giftCardUsed||0) : 0;
 
         return (
-          <div style={{ fontSize: 11, marginTop: 2 }}>
+          <div style={{ fontSize: 17, marginTop: 2 }}>
             <div style={{ color: isGiftCard ? "#B45309" : isPromo ? "#1565C0" : "#222", fontWeight: 700, lineHeight: 1.4 }}>
-              {isGiftCard && <span style={{ fontSize: 10, background: "#F59E0B", color: "#fff", padding: "1px 5px", borderRadius: 6, marginRight: 4 }}>🎁GC Redemption</span>}
-              {isPromo && <span style={{ fontSize: 10, background: "#1565C0", color: "#fff", padding: "1px 5px", borderRadius: 6, marginRight: 4 }}>📸Complimentary PR</span>}
+              {isGiftCard && <span style={{ fontSize: 13, background: "#F59E0B", color: "#fff", padding: "1px 5px", borderRadius: 6, marginRight: 4 }}>🎁GC Redemption</span>}
+              {isPromo && <span style={{ fontSize: 13, background: "#1565C0", color: "#fff", padding: "1px 5px", borderRadius: 6, marginRight: 4 }}>📸Complimentary PR</span>}
               {courseName}{sessionSuffix}
               {(appt.extraServiceNames || []).map(n => ` + ${n}`).join("")}
             </div>
@@ -2115,13 +2139,13 @@ function ApptCard({ appt, onClick, allAppointments }) {
               </div>
             )}
             {appt.cavTherapist && !isDualLicense(appt.therapist) && (
-              <div style={{ color: "#6A1B9A", fontSize: 10 }}>with {appt.cavTherapist}</div>
+              <div style={{ color: "#6A1B9A", fontSize: 13 }}>with {appt.cavTherapist}</div>
             )}
             {dep > 0 && (
-              <div style={{ color: "#2E7D32", fontSize: 10 }}>💰Deposit ${dep} paid (not included in today's total received){depDate ? ` ${depDate}` : ""}</div>
+              <div style={{ color: "#2E7D32", fontSize: 13 }}>💰Deposit ${dep} paid (not included in today's total received){depDate ? ` ${depDate}` : ""}</div>
             )}
             {gc > 0 && (
-              <div style={{ color: "#2E7D32", fontSize: 10 }}>GC used ${gc}</div>
+              <div style={{ color: "#2E7D32", fontSize: 13 }}>GC used ${gc}</div>
             )}
             {(appt.addons || []).length > 0 && (
               <div style={{ display: "flex", flexDirection: "column", gap: 3, marginTop: 3 }}>
@@ -2134,7 +2158,7 @@ function ApptCard({ appt, onClick, allAppointments }) {
                   const svcIcon = addon.paymentType === "card" ? "💳" : addon.paymentType === "cash" ? "💵" : "";
                   const tipIcon = addon.tipPaymentType === "card" ? "💳" : addon.tipPaymentType === "cash" ? "💵" : "";
                   return (
-                    <div key={addon.id} style={{ fontSize: 10, color: chipColor, fontWeight: 700 }}>
+                    <div key={addon.id} style={{ fontSize: 13, color: chipColor, fontWeight: 700 }}>
                       <div>➕ {label}{addon.ticketCurrent ? ` ${addon.ticketCurrent}/${appt.ticketTotal||3}` : ""}{addon.countsAsRevenue === null && " ⚠️"}</div>
                       {aTotal > 0 && (
                         <>
@@ -2157,7 +2181,7 @@ function ApptCard({ appt, onClick, allAppointments }) {
             const tag = PURCHASE_TAGS.find(t => t.id === tagId);
             if (!tag) return null;
             const emptyChip = (
-              <span key={tagId} style={{ fontSize: 9, background: tag.bg, color: tag.color, padding: "2px 6px", borderRadius: 8, fontWeight: 700, alignSelf: "flex-start" }}>{tag.label}</span>
+              <span key={tagId} style={{ fontSize: 12, background: tag.bg, color: tag.color, padding: "2px 6px", borderRadius: 8, fontWeight: 700, alignSelf: "flex-start" }}>{tag.label}</span>
             );
 
             if (tagId === "newTicket") {
@@ -2168,7 +2192,7 @@ function ApptCard({ appt, onClick, allAppointments }) {
               const ntTipIcon = appt.newTicketTipPaymentType==="card"?"💳":appt.newTicketTipPaymentType==="cash"?"💵":"";
               const ntSvcText = appt.newTicketSplitPayment ? `💵$${appt.newTicketCashPortion||0}＋💳$${appt.newTicketCardPortion||0}` : `${ntSvc}${ntSvcIcon}`;
               return (
-                <div key={tagId} style={{ fontSize: 10, color: REVENUE_COLOR, fontWeight: 700 }}>
+                <div key={tagId} style={{ fontSize: 13, color: REVENUE_COLOR, fontWeight: 700 }}>
                   <div>{tag.label}{appt.newTicketPackageName && ` (${appt.newTicketPackageName})`}</div>
                   <div>{ntSvcText}</div>
                   {ntTip > 0 && <div>{ntTip}{ntTipIcon}</div>}
@@ -2183,10 +2207,26 @@ function ApptCard({ appt, onClick, allAppointments }) {
               const uniformType = items.every(it => it.paymentType === items[0].paymentType) ? items[0].paymentType : null;
               const icon = uniformType === "card" ? "💳" : uniformType === "cash" ? "💵" : "";
               const names = items.map(it => it.productName).filter(Boolean).join(" / ");
+              // A sale split with another staff member (e.g. the machine/cav therapist) only
+              // lived in the payroll split before, invisible on the card itself — show who got
+              // what so it's not just a lump sum that reads as one person's full credit. The
+              // co-seller's own share also gets echoed onto their own card (see the isCavSlot
+              // branch above) so they don't have to spot it here to know it happened.
+              const sellerTotals = {};
+              items.forEach(it => (it.sellers || []).forEach(sel => {
+                if (!sel.therapist) return;
+                sellerTotals[sel.therapist] = (sellerTotals[sel.therapist] || 0) + Number(sel.amount || 0);
+              }));
+              const sellerNames = Object.keys(sellerTotals);
               return (
-                <div key={tagId} style={{ fontSize: 10, color: REVENUE_COLOR, fontWeight: 700 }}>
+                <div key={tagId} style={{ fontSize: 13, color: REVENUE_COLOR, fontWeight: 700 }}>
                   <div>Retail ${total}{icon}</div>
                   {names && <div style={{ fontWeight: 600, color: "#555" }}>{names}</div>}
+                  {sellerNames.length > 1 && (
+                    <div style={{ fontSize: 11, fontWeight: 600 }}>
+                      {sellerNames.map(n => `${n} $${r2(sellerTotals[n])}`).join(" / ")}
+                    </div>
+                  )}
                 </div>
               );
             }
@@ -2195,7 +2235,7 @@ function ApptCard({ appt, onClick, allAppointments }) {
               if (total === 0) return emptyChip;
               const icon = appt.giftCardPurchasePaymentType==="card"?"💳":appt.giftCardPurchasePaymentType==="cash"?"💵":"";
               return (
-                <div key={tagId} style={{ fontSize: 10, color: REVENUE_COLOR, fontWeight: 700 }}>{tag.label} ${total}{icon}</div>
+                <div key={tagId} style={{ fontSize: 13, color: REVENUE_COLOR, fontWeight: 700 }}>{tag.label} ${total}{icon}</div>
               );
             }
             return emptyChip;
@@ -4713,9 +4753,6 @@ async function exportSalesReportXlsx(monthStr) {
     const data = days[dateStr];
     if (data) {
       const appts = (data.appointments || []).filter(a => !a.isCavSlot);
-      const retails = data.retails || [];
-      const refunds = data.refunds || [];
-      const forgottenTips = data.forgottenTips || [];
       appts.forEach(a => {
         const therapists = a.cavTherapist ? [{ name: a.therapist, share: 0.5 }, { name: a.cavTherapist, share: 0.5 }] : [{ name: a.therapist, share: 1 }];
         const hasTicketSale = (a.isSameDayTicket && Number(a.packagePrice || 0) > 0) || ((a.purchaseTags || []).includes("newTicket") && Number(a.newTicketAmount || 0) > 0);
@@ -4729,118 +4766,8 @@ async function exportSalesReportXlsx(monthStr) {
           localVisitEvents.push({ therapists: therapists.map(th => th.name), hasTicketSale });
         }
       });
-      const deposits = data.deposits || [];
-      const refundServiceCash = refunds.filter(rf => rf.paymentType === "cash").reduce((s,rf) => s + Number(rf.serviceAmount||0), 0);
-      const refundServiceCard = refunds.filter(rf => rf.paymentType === "card").reduce((s,rf) => s + Number(rf.serviceAmount||0), 0);
-      const refundTipCash = refunds.filter(rf => rf.paymentType === "cash").reduce((s,rf) => s + Number(rf.tipAmount||0), 0);
-      const refundTipCard = refunds.filter(rf => rf.paymentType === "card").reduce((s,rf) => s + Number(rf.tipAmount||0), 0);
-      const forgottenServiceCash = forgottenTips.filter(ft => ft.paymentType === "cash").reduce((s,ft) => s + Number(ft.serviceAmount||0), 0);
-      const forgottenServiceCard = forgottenTips.filter(ft => ft.paymentType === "card").reduce((s,ft) => s + Number(ft.serviceAmount||0), 0);
-      const forgottenTipCash = forgottenTips.filter(ft => ft.paymentType === "cash").reduce((s,ft) => s + Number(ft.tipAmount||0), 0);
-      const forgottenTipCard = forgottenTips.filter(ft => ft.paymentType === "card").reduce((s,ft) => s + Number(ft.tipAmount||0), 0);
 
-      // Only count money actually received today: regular visits and same-day ticket purchases.
-      // Excludes GC消化/PR無料 (no money received today) and pure ticket redemptions (already paid
-      // for when the ticket bundle was originally purchased) — same rule as the 📊集計 tab.
-      const revenueAppts = appts.filter(a => !a.isTicket && !a.isGiftCard && !a.isPromo);
-      const sameDayTicketAppts = appts.filter(a => a.isTicket && a.isSameDayTicket && !a.isGiftCard && !a.isPromo);
-      const pureTicketAppts = appts.filter(a => a.isTicket && !a.isSameDayTicket);
-      // Addons explicitly marked "本日のお支払い" count as revenue; "前回の未消化分" don't (paid earlier).
-      const revenueAddons = appts.flatMap(a => (a.addons || []).filter(ad => ad.countsAsRevenue === true));
-      // A giftCardUsed amount was already collected as revenue on the (possibly earlier) day the gift
-      // card was purchased/loaded, so it's excluded here too — same rule as the 📊集計 tab.
-      const gcAlloc = (a) => {
-        const gc = Number(a.giftCardUsed || 0);
-        const svc = Number(a.price || 0);
-        const tip = Number(a.tip || 0);
-        const gcSvc = Math.min(gc, svc);
-        const gcTip = Math.min(gc - gcSvc, tip);
-        return { gcSvc, gcTip };
-      };
-      const gcAllocPackage = (a) => {
-        const gc = Number(a.giftCardUsed || 0);
-        const svc = Number(a.packagePrice || 0);
-        const tip = Number(a.packageTip ?? a.tip ?? 0);
-        const gcSvc = Math.min(gc, svc);
-        const gcTip = Math.min(gc - gcSvc, tip);
-        return { gcSvc, gcTip };
-      };
-
-      // Deposits, gift cards, and cancellation fees are money received today but not tied to a
-      // service line item — the user wants them folded into the "Treatment" column, not "Product".
-      const depositCash = deposits.filter(dep => dep.paymentType === "cash").reduce((s,dep) => s + Number(dep.amount||0), 0);
-      const depositCard = deposits.filter(dep => dep.paymentType === "card").reduce((s,dep) => s + Number(dep.amount||0), 0);
-
-      const cashTreatment = revenueAppts.filter(a => !a.svcSplitPayment && a.paymentType === "cash").reduce((s,a) => s + Number(a.price||0) - gcAlloc(a).gcSvc, 0)
-        + revenueAppts.filter(a => a.svcSplitPayment).reduce((s,a) => s + Number(a.svcCashPortion||0), 0)
-        + sameDayTicketAppts.filter(a => !a.packageSplitPayment && a.paymentType === "cash").reduce((s,a) => s + Number(a.packagePrice||0) - gcAllocPackage(a).gcSvc, 0)
-        + sameDayTicketAppts.filter(a => a.packageSplitPayment).reduce((s,a) => s + Number(a.packageCashPortion||0), 0)
-        + pureTicketAppts.filter(a => a.extraPricePaymentType === "cash").reduce((s,a) => s + Number(a.extraPrice||0), 0)
-        + sameDayTicketAppts.filter(a => a.extraPricePaymentType === "cash").reduce((s,a) => s + Number(a.extraPrice||0), 0)
-        + revenueAddons.filter(ad => ad.paymentType === "cash").reduce((s,ad) => s + Number(ad.price||0), 0)
-        + depositCash
-        + forgottenServiceCash
-        - refundServiceCash;
-      const cashProduct = retails.filter(r => r.paymentType === "cash").reduce((s,r) => s + Number(r.price||0), 0);
-      const cashTip = revenueAppts.filter(a => !a.tipSplitPayment && a.tipPaymentType === "cash").reduce((s,a) => s + Number(a.tip||0) - gcAlloc(a).gcTip, 0)
-        + revenueAppts.filter(a => a.tipSplitPayment).reduce((s,a) => s + Number(a.tipCashPortion||0), 0)
-        + sameDayTicketAppts.filter(a => a.tipPaymentType === "cash").reduce((s,a) => s + Number(a.packageTip ?? a.tip ?? 0) - gcAllocPackage(a).gcTip, 0)
-        + pureTicketAppts.filter(a => a.extraTipPaymentType === "cash").reduce((s,a) => s + Number(a.extraTip||0), 0)
-        + sameDayTicketAppts.filter(a => a.extraTipPaymentType === "cash").reduce((s,a) => s + Number(a.extraTip||0), 0)
-        + revenueAddons.filter(ad => ad.tipPaymentType === "cash").reduce((s,ad) => s + Number(ad.tip||0), 0)
-        + forgottenTipCash
-        - refundTipCash;
-      const cardTreatment = revenueAppts.filter(a => !a.svcSplitPayment && a.paymentType === "card").reduce((s,a) => s + Number(a.price||0) - gcAlloc(a).gcSvc, 0)
-        + revenueAppts.filter(a => a.svcSplitPayment).reduce((s,a) => s + Number(a.svcCardPortion||0), 0)
-        + sameDayTicketAppts.filter(a => !a.packageSplitPayment && a.paymentType === "card").reduce((s,a) => s + Number(a.packagePrice||0) - gcAllocPackage(a).gcSvc, 0)
-        + sameDayTicketAppts.filter(a => a.packageSplitPayment).reduce((s,a) => s + Number(a.packageCardPortion||0), 0)
-        + pureTicketAppts.filter(a => a.extraPricePaymentType === "card").reduce((s,a) => s + Number(a.extraPrice||0), 0)
-        + sameDayTicketAppts.filter(a => a.extraPricePaymentType === "card").reduce((s,a) => s + Number(a.extraPrice||0), 0)
-        + revenueAddons.filter(ad => ad.paymentType !== "cash").reduce((s,ad) => s + Number(ad.price||0), 0)
-        + depositCard
-        + forgottenServiceCard
-        - refundServiceCard;
-      const cardProduct = retails.filter(r => r.paymentType === "card").reduce((s,r) => s + Number(r.price||0), 0);
-      const cardTip = revenueAppts.filter(a => !a.tipSplitPayment && a.tipPaymentType === "card").reduce((s,a) => s + Number(a.tip||0) - gcAlloc(a).gcTip, 0)
-        + revenueAppts.filter(a => a.tipSplitPayment).reduce((s,a) => s + Number(a.tipCardPortion||0), 0)
-        + sameDayTicketAppts.filter(a => a.tipPaymentType === "card").reduce((s,a) => s + Number(a.packageTip ?? a.tip ?? 0) - gcAllocPackage(a).gcTip, 0)
-        + pureTicketAppts.filter(a => a.extraTipPaymentType === "card").reduce((s,a) => s + Number(a.extraTip||0), 0)
-        + sameDayTicketAppts.filter(a => a.extraTipPaymentType === "card").reduce((s,a) => s + Number(a.extraTip||0), 0)
-        + revenueAddons.filter(ad => ad.tipPaymentType !== "cash").reduce((s,ad) => s + Number(ad.tip||0), 0)
-        + forgottenTipCard
-        - refundTipCard;
-      const totalTip = revenueAppts.reduce((s,a) => s + Number(a.tip||0) - gcAlloc(a).gcTip, 0)
-        + sameDayTicketAppts.reduce((s,a) => s + Number(a.packageTip ?? a.tip ?? 0) - gcAllocPackage(a).gcTip, 0)
-        + pureTicketAppts.reduce((s,a) => s + Number(a.extraTip||0), 0)
-        + sameDayTicketAppts.reduce((s,a) => s + Number(a.extraTip||0), 0)
-        + revenueAddons.reduce((s,ad) => s + Number(ad.tip||0), 0)
-        + forgottenTipCash + forgottenTipCard
-        - refundTipCash - refundTipCard;
-      const totalSales = cashTreatment + cashProduct + cardTreatment + cardProduct;
-      const totalCash = cashTreatment + cashProduct;
-      const totalCard = cardTreatment + cardProduct;
-      const clients = appts.filter(a => !a.isTicket).length + appts.filter(a => a.isTicket).length;
-
-      dailyData.push({
-        date: d,
-        totalSales,
-        clients,
-        cashTreatment: cashTreatment || "",
-        cashProduct: cashProduct || "",
-        totalCash: totalCash || "",
-        cashTip: cashTip || "",
-        cardTreatment: cardTreatment || "",
-        cardProduct: cardProduct || "",
-        totalCard: totalCard || "",
-        cardTip: cardTip || "",
-        totalTip: totalTip || "",
-        grandTotal: totalSales + totalTip,
-        rl: appts.filter(a => a.customerType === "RL").length,
-        rt: appts.filter(a => a.customerType === "RT").length,
-        nl: appts.filter(a => a.customerType === "NL").length,
-        nt: appts.filter(a => a.customerType === "NT").length,
-        referrals: REFERRAL_SOURCES.map(src => appts.filter(a => a.referralSource === src).length),
-      });
+      dailyData.push({ date: d, ...computeDayTotals(data) });
     } else {
       dailyData.push({ date: d, totalSales: 0, clients: "", cashTreatment:"", cashProduct:"", totalCash:"", cashTip:"", cardTreatment:"", cardProduct:"", totalCard:"", cardTip:"", totalTip:"", grandTotal: 0, rl: 0, rt: 0, nl: 0, nt: 0, referrals: REFERRAL_SOURCES.map(() => 0) });
     }
