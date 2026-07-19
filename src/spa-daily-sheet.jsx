@@ -4755,10 +4755,32 @@ async function exportSalesReportXlsx(monthStr) {
         const gc = Number(a.giftCardUsed || 0);
         const svc = Number(a.price || 0);
         const tip = Number(a.tip || 0);
+        const retail = (a.purchaseTags?.includes("retail")) ? getRetailItems(a).reduce((s, it) => s + Number(it.amount || 0), 0) : 0;
         const gcSvc = Math.min(gc, svc);
         const gcTip = Math.min(gc - gcSvc, tip);
-        return { gcSvc, gcTip };
+        const gcRetail = Math.min(gc - gcSvc - gcTip, retail);
+        return { gcSvc, gcTip, gcRetail };
       };
+      // Retail sold inline during a visit (物販 tag on the appointment, up to 3 items via
+      // getRetailItems) lives on the appointment record itself, not in the standalone `retails`
+      // array — missed here entirely before this fix (matches the in-app 📊集計 tab's own
+      // inlineRetailCash/inlineRetailCard handling).
+      const inlineRetailAppts = appts.filter(a => (a.purchaseTags || []).includes("retail"));
+      const retailCashCardSplit = (a) => {
+        const items = getRetailItems(a);
+        const itemsTotal = items.reduce((s, it) => s + Number(it.amount || 0), 0);
+        const gcRetail = gcAlloc(a).gcRetail;
+        let cash = 0, card = 0;
+        items.forEach(it => {
+          const amt = Number(it.amount || 0);
+          const gcShare = itemsTotal > 0 ? gcRetail * amt / itemsTotal : 0;
+          const net = Math.max(0, amt - gcShare);
+          if (it.paymentType === "cash") cash += net; else card += net;
+        });
+        return { cash, card };
+      };
+      const inlineRetailCash = inlineRetailAppts.reduce((s,a) => s + retailCashCardSplit(a).cash, 0);
+      const inlineRetailCard = inlineRetailAppts.reduce((s,a) => s + retailCashCardSplit(a).card, 0);
       const gcAllocPackage = (a) => {
         const gc = Number(a.giftCardUsed || 0);
         const svc = Number(a.packagePrice || 0);
@@ -4784,7 +4806,7 @@ async function exportSalesReportXlsx(monthStr) {
         + depositCash
         + forgottenServiceCash
         - refundServiceCash;
-      const cashProduct = retails.filter(r => r.paymentType === "cash").reduce((s,r) => s + Number(r.price||0), 0);
+      const cashProduct = retails.filter(r => r.paymentType === "cash").reduce((s,r) => s + Number(r.price||0), 0) + inlineRetailCash;
       const cashTip = revenueAppts.filter(a => !a.tipSplitPayment && a.tipPaymentType === "cash").reduce((s,a) => s + Number(a.tip||0) - gcAlloc(a).gcTip, 0)
         + revenueAppts.filter(a => a.tipSplitPayment).reduce((s,a) => s + Number(a.tipCashPortion||0), 0)
         + sameDayTicketAppts.filter(a => a.tipPaymentType === "cash").reduce((s,a) => s + Number(a.packageTip ?? a.tip ?? 0) - gcAllocPackage(a).gcTip, 0)
@@ -4805,7 +4827,7 @@ async function exportSalesReportXlsx(monthStr) {
         + depositCard
         + forgottenServiceCard
         - refundServiceCard;
-      const cardProduct = retails.filter(r => r.paymentType === "card").reduce((s,r) => s + Number(r.price||0), 0);
+      const cardProduct = retails.filter(r => r.paymentType === "card").reduce((s,r) => s + Number(r.price||0), 0) + inlineRetailCard;
       const cardTip = revenueAppts.filter(a => !a.tipSplitPayment && a.tipPaymentType === "card").reduce((s,a) => s + Number(a.tip||0) - gcAlloc(a).gcTip, 0)
         + revenueAppts.filter(a => a.tipSplitPayment).reduce((s,a) => s + Number(a.tipCardPortion||0), 0)
         + sameDayTicketAppts.filter(a => a.tipPaymentType === "card").reduce((s,a) => s + Number(a.packageTip ?? a.tip ?? 0) - gcAllocPackage(a).gcTip, 0)
