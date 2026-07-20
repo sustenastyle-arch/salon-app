@@ -2152,7 +2152,10 @@ function ApptCard({ appt, onClick, allAppointments }) {
                   sellerTotals[sel.therapist] = (sellerTotals[sel.therapist] || 0) + Number(sel.amount || 0);
                 });
               });
-              const sellerNames = Object.keys(sellerTotals);
+              // Only worth calling out sellers OTHER than this card's own therapist — a solo
+              // sale falls back to attributing 100% to appt.therapist (see above), and showing
+              // "With: <own name>" on your own card reads like you split it with yourself.
+              const otherSellerNames = Object.keys(sellerTotals).filter(n => n !== appt.therapist);
               // Product name(s) — the total alone didn't say what was actually sold, so staff
               // reviewing the card later couldn't tell without reopening the entry.
               const itemLabel = (it) => RETAIL_PRODUCT_LABELS[it.productName] || it.productName || "(item not entered)";
@@ -2161,9 +2164,9 @@ function ApptCard({ appt, onClick, allAppointments }) {
                 <div key={tagId}>
                   <div style={{ fontSize: 13, color: REVENUE_COLOR, fontWeight: 700 }}>Retail ${total}{icon}</div>
                   {names && <div style={{ fontWeight: 600, color: "#333", fontSize: 12 }}>{names}</div>}
-                  {sellerNames.length > 0 && (
+                  {otherSellerNames.length > 0 && (
                     <div style={{ fontSize: 11, fontWeight: 600, color: "#333" }}>
-                      With: {sellerNames.map(n => `${n} $${r2(sellerTotals[n])}`).join(", ")}
+                      With: {otherSellerNames.map(n => `${n} $${r2(sellerTotals[n])}`).join(", ")}
                     </div>
                   )}
                 </div>
