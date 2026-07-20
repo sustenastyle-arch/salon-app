@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import * as XLSX from "xlsx";
 import { REFERRAL_SOURCES, getRetailItems, computeDayTotals } from "./lib/reportTotals.js";
 
-const THERAPISTS = ["Mami", "Aya", "Megumi", "Hitomi", "Maki", "Yuka", "Mai", "Betsy"];
+const THERAPISTS = ["Mami", "Aya", "Megumi", "Hiromi", "Maki", "Yuka", "Mai", "Betsy"];
 const CUSTOMER_TYPES = ["RL", "RT", "NL", "NT"];
 // Stored value stays "紹介" (already-saved appointments are matched against it by exact equality
 // in reporting) — this only translates it for display, same pattern as CUSTOMER_TYPE_LABELS below.
@@ -130,7 +130,7 @@ const MENU_OPTIONS = [
 
 // Staff capabilities
 const CAV_CAPABLE = ["Mami", "Betsy", "Megumi", "Yuka"]; // can operate machine
-const BODY_CAPABLE = ["Mami", "Betsy", "Megumi", "Aya", "Hitomi", "Mai", "Maki"]; // can do body massage
+const BODY_CAPABLE = ["Mami", "Betsy", "Megumi", "Aya", "Hiromi", "Mai", "Maki"]; // can do body massage
 const DUAL_LICENSE = ["Mami", "Betsy", "Megumi"]; // body + machine (handles both themselves)
 // Yuka: machine/facial only (no body massage)
 const isCavCapable = (name) => CAV_CAPABLE.includes(name);
@@ -2152,21 +2152,24 @@ function ApptCard({ appt, onClick, allAppointments }) {
                   sellerTotals[sel.therapist] = (sellerTotals[sel.therapist] || 0) + Number(sel.amount || 0);
                 });
               });
-              // Only worth calling out sellers OTHER than this card's own therapist — a solo
-              // sale falls back to attributing 100% to appt.therapist (see above), and showing
-              // "With: <own name>" on your own card reads like you split it with yourself.
-              const otherSellerNames = Object.keys(sellerTotals).filter(n => n !== appt.therapist);
+              const sellerNames = Object.keys(sellerTotals);
               // Product name(s) — the total alone didn't say what was actually sold, so staff
               // reviewing the card later couldn't tell without reopening the entry.
               const itemLabel = (it) => RETAIL_PRODUCT_LABELS[it.productName] || it.productName || "(item not entered)";
               const names = items.map(it => itemLabel(it)).filter(Boolean).join(" / ");
+              // A solo sale (one seller, and it's this card's own therapist) doesn't need her own
+              // name stated — just the payroll-split dollar amount. A real split, or a solo sale
+              // credited to someone other than this card's therapist, does need the name(s).
+              const soloObvious = sellerNames.length === 1 && sellerNames[0] === appt.therapist;
               return (
                 <div key={tagId}>
                   <div style={{ fontSize: 13, color: REVENUE_COLOR, fontWeight: 700 }}>Retail ${total}{icon}</div>
                   {names && <div style={{ fontWeight: 600, color: "#333", fontSize: 12 }}>{names}</div>}
-                  {otherSellerNames.length > 0 && (
+                  {sellerNames.length > 0 && (
                     <div style={{ fontSize: 11, fontWeight: 600, color: "#333" }}>
-                      With: {otherSellerNames.map(n => `${n} $${r2(sellerTotals[n])}`).join(", ")}
+                      {soloObvious
+                        ? `振り分け $${r2(sellerTotals[sellerNames[0]])}`
+                        : `Sold by: ${sellerNames.map(n => `${n} $${r2(sellerTotals[n])}`).join(", ")}`}
                     </div>
                   )}
                 </div>
@@ -4314,7 +4317,7 @@ function StaffPurchaseModal({ sp, onSave, onDelete, onClose }) {
         <Field label="Staff Name">
           <select value={form.staffName} onChange={e => set("staffName", e.target.value)} style={inputStyle}>
             <option value="">— Select —</option>
-            {["Mami","Aya","Megumi","Hitomi","Maki","Yuka","Mai","Betsy"].map(t => (
+            {["Mami","Aya","Megumi","Hiromi","Maki","Yuka","Mai","Betsy"].map(t => (
               <option key={t} value={t}>{t}</option>
             ))}
           </select>
