@@ -275,6 +275,11 @@ const ADDON_PRESETS = [
 
 // Sales tax subtracted before splitting a retail sale's commission-eligible amount among sellers.
 const RETAIL_TAX_RATE = 0.04712;
+// Same tax-exclusion used everywhere a seller split is explicitly entered (see afterTaxTotal in
+// RetailModal and the inline retail item editor) — applied here too so a retail item with no
+// explicit split (falls back to crediting the card's own therapist) is taxed the same way,
+// instead of crediting the full pre-tax amount only when nobody bothered to fill in a split.
+const afterTaxAmount = (amt) => Math.round(Number(amt || 0) * (1 - RETAIL_TAX_RATE) * 100) / 100;
 
 const RETAIL_PRODUCTS = [
   { name: "Sheet Mask", price: 10 },
@@ -1412,7 +1417,7 @@ export default function SpaDailySheet() {
                 <span style={{ fontWeight: 700, color: "#6A1B9A" }}>{formatCurrency(r.price)}</span>
                 <PayBadge type={r.paymentType} />
                 <span style={{ fontSize: 12, color: "#888" }}>
-                  {(r.sellers || (r.soldBy ? [{ therapist: r.soldBy, amount: r.price }] : [])).filter(sel => sel.therapist).map(sel => `${sel.therapist}$${sel.amount||0}`).join(" / ")}
+                  {(r.sellers || (r.soldBy ? [{ therapist: r.soldBy, amount: afterTaxAmount(r.price) }] : [])).filter(sel => sel.therapist).map(sel => `${sel.therapist}$${sel.amount||0}`).join(" / ")}
                 </span>
                 <button onClick={() => setEditingRetail(r)} disabled={locked} style={{...iconBtn, opacity: locked ? 0.35 : 1, cursor: locked ? "not-allowed" : "pointer"}}>✏️</button>
                 <button onClick={() => deleteRetail(r.id)} disabled={locked} style={{...iconBtn, opacity: locked ? 0.35 : 1, cursor: locked ? "not-allowed" : "pointer"}}>🗑️</button>
@@ -2146,7 +2151,7 @@ function ApptCard({ appt, onClick, allAppointments }) {
               // PayrollTab uses).
               const sellerTotals = {};
               items.forEach(it => {
-                const sellers = (it.sellers && it.sellers.length > 0) ? it.sellers : [{ therapist: appt.therapist, amount: Number(it.amount || 0) }];
+                const sellers = (it.sellers && it.sellers.length > 0) ? it.sellers : [{ therapist: appt.therapist, amount: afterTaxAmount(it.amount) }];
                 sellers.forEach(sel => {
                   if (!sel.therapist) return;
                   sellerTotals[sel.therapist] = (sellerTotals[sel.therapist] || 0) + Number(sel.amount || 0);
@@ -4941,13 +4946,13 @@ function PayrollTab() {
     });
 
     // Retail from appointments → split among up to 3 sellers (defaults to just the body
-    // therapist getting the full amount when no split was entered).
+    // therapist getting the full after-tax amount when no split was entered).
     allAppts.filter(a => !a.isCavSlot && a.purchaseTags?.includes("retail")).forEach(a => {
       getRetailItems(a).forEach(item => {
         const isCard = item.paymentType === "card";
         const sellers = (item.sellers && item.sellers.length > 0)
           ? item.sellers
-          : [{ therapist: a.therapist, amount: Number(item.amount) }];
+          : [{ therapist: a.therapist, amount: afterTaxAmount(item.amount) }];
         sellers.filter(sel => sel.therapist && Number(sel.amount || 0) > 0).forEach(sel => {
           const t = sel.therapist;
           if (!t || !byTherapist[t]) return;
@@ -4976,7 +4981,7 @@ function PayrollTab() {
     // each getting their own dollar share (commission rates differ per staff member, e.g. Maki's is
     // lower than everyone else's, so an even split isn't assumed — each amount is entered manually).
     allRetails.forEach(r => {
-      const sellers = r.sellers || (r.soldBy ? [{ therapist: r.soldBy, amount: r.price }] : []);
+      const sellers = r.sellers || (r.soldBy ? [{ therapist: r.soldBy, amount: afterTaxAmount(r.price) }] : []);
       const isCard = r.paymentType === "card";
       sellers.filter(sel => sel.therapist && Number(sel.amount || 0) > 0).forEach(sel => {
         const t = sel.therapist;
