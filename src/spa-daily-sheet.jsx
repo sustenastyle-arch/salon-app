@@ -376,8 +376,6 @@ export default function SpaDailySheet() {
   const [reconcileLoading, setReconcileLoading] = useState(false);
   const [reconcileResult, setReconcileResult] = useState(null);
   const [dayLoading, setDayLoading] = useState(true);
-  const [autoBackupDates, setAutoBackupDates] = useState(null);
-  const [autoBackupListLoading, setAutoBackupListLoading] = useState(false);
 
   const showToast = (msg, type = "success") => { setToast({ msg, type }); setTimeout(() => setToast(null), 3000); };
 
@@ -743,8 +741,11 @@ export default function SpaDailySheet() {
     }
   };
 
-  // Downloads every saved day (from the cloud store, not this browser) as one JSON file — the
-  // export counterpart to handleImportBackup below, for an offline copy or a manual transfer.
+  // Downloads every saved day (from the cloud store, not this browser) as one JSON file for an
+  // offline copy or a manual transfer. Restoring from it (or from the automatic nightly backup)
+  // is deliberately not exposed as a button anymore — a full-store restore overwrites everything,
+  // so an accidental click could wipe out real data. If a genuine restore is ever needed, it's
+  // done directly against /api/import-all or /api/auto-backup-restore instead of through the UI.
   const handleExportBackup = async () => {
     try {
       const { days } = await apiFetch("/api/export-all");
@@ -758,80 +759,6 @@ export default function SpaDailySheet() {
     } catch (e) {
       console.error("Export error:", e);
       showToast("Backup failed. Please check your internet connection and try again", "error");
-    }
-  };
-
-  // Restores a previously exported JSON file into the shared cloud store (bulk upsert via
-  // /api/import-all — accepts both this format and the older per-browser localStorage export
-  // format, since setDays() on the server normalizes either raw JSON strings or parsed objects).
-  const handleImportBackup = (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = async () => {
-      try {
-        const data = JSON.parse(reader.result);
-        const { count } = await apiFetch("/api/import-all", { method: "POST", body: JSON.stringify(data) });
-        showToast(`✅ Restored ${count} day(s) of data`);
-        window.location.reload();
-      } catch (err) {
-        showToast("Failed to load: " + err.message, "error");
-      }
-    };
-    reader.readAsText(file);
-    e.target.value = "";
-  };
-
-  // One-time helper for the shop PC (or any browser with real pre-cloud-sync data still sitting
-  // in its localStorage) to push that data into the shared cloud store — after this runs once,
-  // every computer reads/writes the same place instead of each browser keeping its own copy.
-  const handleMigrateLocalToCloud = async () => {
-    const data = {};
-    for (let i = 0; i < localStorage.length; i++) {
-      const key = localStorage.key(i);
-      if (key?.startsWith("spa-sheet-")) data[key.replace("spa-sheet-", "")] = localStorage.getItem(key);
-    }
-    if (Object.keys(data).length === 0) {
-      showToast("No data on this device to migrate", "info");
-      return;
-    }
-    if (!window.confirm(`This will migrate ${Object.keys(data).length} day(s) of data saved on this device to the cloud. Continue?`)) return;
-    try {
-      const { count } = await apiFetch("/api/import-all", { method: "POST", body: JSON.stringify(data) });
-      showToast(`✅ Migrated ${count} day(s) of data to the cloud`);
-      window.location.reload();
-    } catch (e) {
-      console.error("Migration error:", e);
-      showToast("Migration failed. Please check your internet connection and try again", "error");
-    }
-  };
-
-  // A snapshot of every saved day is taken automatically once a day (see api/auto-backup.js,
-  // triggered by the Vercel Cron in vercel.json) — this lets a day get recovered even if nobody
-  // remembered to click the manual 📤 Backup Data button.
-  const openAutoBackupList = async () => {
-    setAutoBackupListLoading(true);
-    try {
-      const { dates } = await apiFetch("/api/auto-backup-list");
-      setAutoBackupDates(dates);
-    } catch (e) {
-      console.error("Auto-backup list error:", e);
-      showToast("Failed to load the backup list. Please check your internet connection and try again", "error");
-    } finally {
-      setAutoBackupListLoading(false);
-    }
-  };
-
-  const restoreFromAutoBackup = async (date) => {
-    if (!window.confirm(`This will overwrite the current cloud data with the automatic backup from ${date}. Continue?`)) return;
-    try {
-      const { count } = await apiFetch("/api/auto-backup-restore", { method: "POST", body: JSON.stringify({ date }) });
-      showToast(`✅ Restored ${count} day(s) of data from the ${date} backup`);
-      setAutoBackupDates(null);
-      window.location.reload();
-    } catch (e) {
-      console.error("Auto-backup restore error:", e);
-      showToast("Restore failed. Please check your internet connection and try again", "error");
     }
   };
 
@@ -1219,41 +1146,29 @@ export default function SpaDailySheet() {
         <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
           <DatePicker value={date} onChange={setDate} allowClear={false}
             style={{ padding: "8px 12px", borderRadius: 8, border: "none", background: "rgba(255,255,255,0.15)", color: "#fff", fontSize: 14 }} />
-          <button onClick={fetchSquare} disabled={squareLoading}
-            style={{ padding: "8px 16px", borderRadius: 8, border: "none", background: squareLoading ? "#666" : "#E8A84A", color: "#fff", fontWeight: 700, cursor: squareLoading ? "not-allowed" : "pointer", fontSize: 13 }}>
+          <button onClick={fetchSquare} disabled={squareLoading || dayLoading}
+            style={{ padding: "8px 16px", borderRadius: 8, border: "none", background: (squareLoading || dayLoading) ? "#666" : "#E8A84A", color: "#fff", fontWeight: 700, cursor: (squareLoading || dayLoading) ? "not-allowed" : "pointer", fontSize: 13 }}>
             {squareLoading ? "⏳ Fetching..." : "□ Square Sync"}
           </button>
-          <button onClick={syncOnlineGiftCards} disabled={gcSyncLoading}
-            style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: gcSyncLoading ? "#666" : "#B45309", color: "#fff", fontWeight: 700, cursor: gcSyncLoading ? "not-allowed" : "pointer", fontSize: 13 }}>
+          <button onClick={syncOnlineGiftCards} disabled={gcSyncLoading || dayLoading}
+            style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: (gcSyncLoading || dayLoading) ? "#666" : "#B45309", color: "#fff", fontWeight: 700, cursor: (gcSyncLoading || dayLoading) ? "not-allowed" : "pointer", fontSize: 13 }}>
             {gcSyncLoading ? "⏳ Fetching..." : "🎁 Fetch Gift Card Purchases"}
           </button>
-          <button onClick={syncSquareDeposits} disabled={depositSyncLoading}
-            style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: depositSyncLoading ? "#666" : "#00796B", color: "#fff", fontWeight: 700, cursor: depositSyncLoading ? "not-allowed" : "pointer", fontSize: 13 }}>
+          <button onClick={syncSquareDeposits} disabled={depositSyncLoading || dayLoading}
+            style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: (depositSyncLoading || dayLoading) ? "#666" : "#00796B", color: "#fff", fontWeight: 700, cursor: (depositSyncLoading || dayLoading) ? "not-allowed" : "pointer", fontSize: 13 }}>
             {depositSyncLoading ? "⏳ Fetching..." : "💰 Auto-Fetch Deposits"}
           </button>
-          <button onClick={checkSquareReconciliation} disabled={reconcileLoading}
-            style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: reconcileLoading ? "#666" : "#4A6572", color: "#fff", fontWeight: 700, cursor: reconcileLoading ? "not-allowed" : "pointer", fontSize: 13 }}>
+          <button onClick={checkSquareReconciliation} disabled={reconcileLoading || dayLoading}
+            style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: (reconcileLoading || dayLoading) ? "#666" : "#4A6572", color: "#fff", fontWeight: 700, cursor: (reconcileLoading || dayLoading) ? "not-allowed" : "pointer", fontSize: 13 }}>
             {reconcileLoading ? "⏳ Checking..." : "🔍 Square Reconcile"}
           </button>
-          <button onClick={handleLockToggle}
-            style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: locked ? "#C62828" : "rgba(255,255,255,0.15)", color: "#fff", fontWeight: 700, cursor: "pointer", fontSize: 13 }}>
+          <button onClick={handleLockToggle} disabled={dayLoading}
+            style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: dayLoading ? "#666" : locked ? "#C62828" : "rgba(255,255,255,0.15)", color: "#fff", fontWeight: 700, cursor: dayLoading ? "not-allowed" : "pointer", fontSize: 13 }}>
             {locked ? "🔒 Finalized (Unlock)" : "🔓 Finalize This Day"}
           </button>
           <button onClick={handleExportBackup}
             style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: "rgba(255,255,255,0.15)", color: "#fff", fontWeight: 700, cursor: "pointer", fontSize: 13 }}>
             📤 Backup Data
-          </button>
-          <label style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: "rgba(255,255,255,0.15)", color: "#fff", fontWeight: 700, cursor: "pointer", fontSize: 13 }}>
-            📥 Restore Data
-            <input type="file" accept="application/json" onChange={handleImportBackup} style={{ display: "none" }} />
-          </label>
-          <button onClick={handleMigrateLocalToCloud}
-            style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: "rgba(255,255,255,0.15)", color: "#fff", fontWeight: 700, cursor: "pointer", fontSize: 13 }}>
-            ☁️ Migrate This Device's Data to Cloud
-          </button>
-          <button onClick={openAutoBackupList} disabled={autoBackupListLoading}
-            style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: "rgba(255,255,255,0.15)", color: "#fff", fontWeight: 700, cursor: autoBackupListLoading ? "not-allowed" : "pointer", fontSize: 13 }}>
-            {autoBackupListLoading ? "⏳ Loading..." : "🕐 Restore from Auto-Backup"}
           </button>
         </div>
       </div>
@@ -1949,7 +1864,6 @@ export default function SpaDailySheet() {
       {editingStaffPurchase && <StaffPurchaseModal sp={editingStaffPurchase} onSave={saveStaffPurchase} onDelete={() => { deleteStaffPurchase(editingStaffPurchase.id); setEditingStaffPurchase(null); }} onClose={() => setEditingStaffPurchase(null)} />}
       {editingRefund && <RefundModal rf={editingRefund} onSave={saveRefund} onDelete={() => { deleteRefund(editingRefund.id); setEditingRefund(null); }} onClose={() => setEditingRefund(null)} />}
       {editingForgottenTip && <ForgottenTipModal ft={editingForgottenTip} onSave={saveForgottenTip} onDelete={() => { deleteForgottenTip(editingForgottenTip.id); setEditingForgottenTip(null); }} onClose={() => setEditingForgottenTip(null)} />}
-      {autoBackupDates && <AutoBackupModal dates={autoBackupDates} onRestore={restoreFromAutoBackup} onClose={() => setAutoBackupDates(null)} />}
 
       {toast && (
         <div style={{ position: "fixed", bottom: 20, right: 20, padding: "12px 20px", borderRadius: 10, background: toast.type === "error" ? "#C62828" : toast.type === "info" ? "#1565C0" : "#0D4F4F", color: "#fff", fontWeight: 600, fontSize: 14, boxShadow: "0 4px 12px rgba(0,0,0,0.2)", zIndex: 9999 }}>
@@ -2040,8 +1954,10 @@ function ApptCard({ appt, onClick, allAppointments }) {
             }
           }));
           if (myShare <= 0) return null;
+          // Black, not red — the full sale total already shows in red on the body therapist's
+          // own card; this is a payroll-split detail, not a second sale to add on top.
           return (
-            <div style={{ color: REVENUE_COLOR, fontSize: 12, fontWeight: 700 }}>
+            <div style={{ color: "#333", fontSize: 12, fontWeight: 700 }}>
               🛍️ {myItems.join(", ")} ${r2(myShare)} (with {appt.bodyTherapist})
             </div>
           );
@@ -2101,17 +2017,28 @@ function ApptCard({ appt, onClick, allAppointments }) {
         const dispTip = isSameDay ? pkgTip : tip;
         const dispTotal = r2(dispSvc + dispTip);
 
+        // A gift card used today was already counted as revenue on the (earlier) day it was
+        // purchased/loaded — same rule as gcAlloc/gcAllocPackage in the summary totals below.
+        // Without this, the card's red total (meant to be "what should match the register
+        // today") double-counted money that isn't actually new revenue today.
+        const gc = (!isGiftCard && !isPromo) ? Number(appt.giftCardUsed||0) : 0;
+        const gcSvcAmt = Math.min(gc, dispSvc);
+        const gcTipAmt = Math.min(Math.max(0, gc - gcSvcAmt), dispTip);
+        const receivedTodayTotal = r2((dispSvc - gcSvcAmt) + (dispTip - gcTipAmt));
+        // Line items show the net (post-gift-card) amount too — showing the gross entered
+        // number next to a total that's already netted out looked like the two didn't add up.
+        const netSvc = r2(dispSvc - gcSvcAmt);
+        const netTip = r2(dispTip - gcTipAmt);
+
         const svcText = isSameDay
-          ? (appt.packageSplitPayment ? `💵$${appt.packageCashPortion||0}＋💳$${appt.packageCardPortion||0}` : `${dispSvc}${paidIcon}`)
-          : !isRedemption && appt.svcSplitPayment ? `💵$${appt.svcCashPortion||0}＋💳$${appt.svcCardPortion||0}` : `${dispSvc}${paidIcon}`;
+          ? (appt.packageSplitPayment ? `💵$${appt.packageCashPortion||0}＋💳$${appt.packageCardPortion||0}` : `${netSvc}${gcSvcAmt >= dispSvc && dispSvc > 0 ? "🎁" : paidIcon}`)
+          : !isRedemption && appt.svcSplitPayment ? `💵$${appt.svcCashPortion||0}＋💳$${appt.svcCardPortion||0}` : `${netSvc}${gcSvcAmt >= dispSvc && dispSvc > 0 ? "🎁" : paidIcon}`;
         const tipText = !isRedemption && !isSameDay && appt.tipSplitPayment
-          ? `💵$${appt.tipCashPortion||0}＋💳$${appt.tipCardPortion||0}` : `${dispTip}${tipIcon}`;
+          ? `💵$${appt.tipCashPortion||0}＋💳$${appt.tipCardPortion||0}` : `${netTip}${gcTipAmt >= dispTip && dispTip > 0 ? "🎁" : tipIcon}`;
 
         const courseName = isTicket ? (stripJpAnnotation(appt.serviceName) || appt.ticketMenu) : (stripJpAnnotation(appt.serviceName) || `${appt.duration}min`);
         const sessionSuffix = isRedemption && appt.ticketCurrent > 0 ? ` ${appt.ticketCurrent}/${appt.ticketTotal}`
           : isSameDay ? ` x${appt.ticketTotal}` : "";
-
-        const gc = (!isGiftCard && !isPromo) ? Number(appt.giftCardUsed||0) : 0;
 
         return (
           <div style={{ fontSize: 17, marginTop: 2 }}>
@@ -2126,7 +2053,7 @@ function ApptCard({ appt, onClick, allAppointments }) {
                 <div>{svcText}</div>
                 {dispTip > 0 && <div>{tipText}</div>}
                 <div style={{ fontWeight: 800 }}>
-                  {dispTotal}
+                  {gc > 0 ? receivedTodayTotal : dispTotal}
                   {extraSvc > 0 && <span style={{ color: REVENUE_COLOR }}> +Extra ${extraSvc}{appt.extraPricePaymentType==="card"?"💳":"💵"}</span>}
                   {extra > 0 && <span style={{ color: REVENUE_COLOR }}> +Extra tip{extra}💝{appt.extraTipPaymentType==="card"?"💳":"💵"}</span>}
                 </div>
@@ -2210,27 +2137,33 @@ function ApptCard({ appt, onClick, allAppointments }) {
               if (total === 0) return emptyChip;
               const uniformType = items.every(it => it.paymentType === items[0].paymentType) ? items[0].paymentType : null;
               const icon = uniformType === "card" ? "💳" : uniformType === "cash" ? "💵" : "";
-              // A sale split with another staff member (e.g. the machine/cav therapist) only
-              // lived in the payroll split before, invisible on the card itself — show who got
-              // what so it's not just a lump sum that reads as one person's full credit. The
-              // co-seller's own share also gets echoed onto their own card (see the isCavSlot
-              // branch above) so they don't have to spot it here to know it happened.
+              // Red is reserved for the one number that should match Square/the register total —
+              // the full amount actually collected. The seller split is a payroll-allocation
+              // detail, not extra revenue on top, so it's rendered in black: a staff member
+              // scanning cards and mentally adding up red numbers should never double-count a
+              // single sale as if the split were a second sale. An item with no explicit seller
+              // split defaults its full amount to this card's own therapist (same fallback
+              // PayrollTab uses).
               const sellerTotals = {};
-              items.forEach(it => (it.sellers || []).forEach(sel => {
-                if (!sel.therapist) return;
-                sellerTotals[sel.therapist] = (sellerTotals[sel.therapist] || 0) + Number(sel.amount || 0);
-              }));
+              items.forEach(it => {
+                const sellers = (it.sellers && it.sellers.length > 0) ? it.sellers : [{ therapist: appt.therapist, amount: Number(it.amount || 0) }];
+                sellers.forEach(sel => {
+                  if (!sel.therapist) return;
+                  sellerTotals[sel.therapist] = (sellerTotals[sel.therapist] || 0) + Number(sel.amount || 0);
+                });
+              });
               const sellerNames = Object.keys(sellerTotals);
               // Product name(s) — the total alone didn't say what was actually sold, so staff
               // reviewing the card later couldn't tell without reopening the entry.
               const itemLabel = (it) => RETAIL_PRODUCT_LABELS[it.productName] || it.productName || "(item not entered)";
+              const names = items.map(it => itemLabel(it)).filter(Boolean).join(" / ");
               return (
-                <div key={tagId} style={{ fontSize: 13, color: REVENUE_COLOR, fontWeight: 700 }}>
-                  <div>{items.map(it => itemLabel(it)).join(", ")}</div>
-                  <div>Retail ${total}{icon}</div>
-                  {sellerNames.length > 1 && (
-                    <div style={{ fontSize: 11, fontWeight: 600 }}>
-                      {sellerNames.map(n => `${n} $${r2(sellerTotals[n])}`).join(" / ")}
+                <div key={tagId}>
+                  <div style={{ fontSize: 13, color: REVENUE_COLOR, fontWeight: 700 }}>Retail ${total}{icon}</div>
+                  {names && <div style={{ fontWeight: 600, color: "#333", fontSize: 12 }}>{names}</div>}
+                  {sellerNames.length > 0 && (
+                    <div style={{ fontSize: 11, fontWeight: 600, color: "#333" }}>
+                      With: {sellerNames.map(n => `${n} $${r2(sellerTotals[n])}`).join(", ")}
                     </div>
                   )}
                 </div>
@@ -4566,35 +4499,6 @@ function ForgottenTipModal({ ft, onSave, onDelete, onClose }) {
         <button onClick={handleSave} style={{ flex: 1, padding: "12px", borderRadius: 10, border: "none", background: "#00695C", color: "#fff", fontWeight: 700, fontSize: 15, cursor: "pointer" }}>💾 Save</button>
         {ft.id && <button onClick={onDelete} style={{ padding: "12px 16px", borderRadius: 10, border: "none", background: "#FFEBEE", color: "#C62828", fontWeight: 700, cursor: "pointer" }}>🗑️</button>}
       </div>
-    </Modal>
-  );
-}
-
-function AutoBackupModal({ dates, onRestore, onClose }) {
-  return (
-    <Modal onClose={onClose}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-        <h2 style={{ margin: 0, fontSize: 18, color: "#0D4F4F" }}>🕐 Restore from Auto-Backup</h2>
-        <button onClick={onClose} style={{ border: "none", background: "none", fontSize: 22, cursor: "pointer" }}>✕</button>
-      </div>
-      <div style={{ fontSize: 12, color: "#888", marginBottom: 12 }}>
-        A snapshot of all data is saved automatically once a day. Pick a date below to restore the cloud store to that day's snapshot — this overwrites whatever's currently saved.
-      </div>
-      {dates.length === 0 ? (
-        <div style={{ textAlign: "center", color: "#AAA", padding: 24, fontSize: 13 }}>No automatic backups yet</div>
-      ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 8, maxHeight: "50vh", overflowY: "auto" }}>
-          {dates.map(date => (
-            <div key={date} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px", background: "#F5F5F5", borderRadius: 8 }}>
-              <span style={{ fontWeight: 600, fontSize: 13 }}>{date}</span>
-              <button onClick={() => onRestore(date)}
-                style={{ padding: "6px 14px", borderRadius: 8, border: "none", background: "#0D4F4F", color: "#fff", fontWeight: 700, cursor: "pointer", fontSize: 12 }}>
-                Restore
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
     </Modal>
   );
 }
