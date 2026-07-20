@@ -2032,13 +2032,17 @@ function ApptCard({ appt, onClick, allAppointments }) {
           if (!parent) return null;
           const items = getRetailItems(parent);
           let myShare = 0;
+          const myItems = [];
           items.forEach(it => (it.sellers || []).forEach(sel => {
-            if (sel.therapist === appt.therapist) myShare += Number(sel.amount || 0);
+            if (sel.therapist === appt.therapist) {
+              myShare += Number(sel.amount || 0);
+              myItems.push(RETAIL_PRODUCT_LABELS[it.productName] || it.productName || "(item not entered)");
+            }
           }));
           if (myShare <= 0) return null;
           return (
             <div style={{ color: REVENUE_COLOR, fontSize: 12, fontWeight: 700 }}>
-              🛍️ Retail ${r2(myShare)} (with {appt.bodyTherapist})
+              🛍️ {myItems.join(", ")} ${r2(myShare)} (with {appt.bodyTherapist})
             </div>
           );
         })()}
@@ -2217,8 +2221,12 @@ function ApptCard({ appt, onClick, allAppointments }) {
                 sellerTotals[sel.therapist] = (sellerTotals[sel.therapist] || 0) + Number(sel.amount || 0);
               }));
               const sellerNames = Object.keys(sellerTotals);
+              // Product name(s) — the total alone didn't say what was actually sold, so staff
+              // reviewing the card later couldn't tell without reopening the entry.
+              const itemLabel = (it) => RETAIL_PRODUCT_LABELS[it.productName] || it.productName || "(item not entered)";
               return (
                 <div key={tagId} style={{ fontSize: 13, color: REVENUE_COLOR, fontWeight: 700 }}>
+                  <div>{items.map(it => itemLabel(it)).join(", ")}</div>
                   <div>Retail ${total}{icon}</div>
                   {sellerNames.length > 1 && (
                     <div style={{ fontSize: 11, fontWeight: 600 }}>
