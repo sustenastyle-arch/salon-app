@@ -1406,6 +1406,18 @@ export default function SpaDailySheet() {
             <div style={{ fontSize: 11, color: "#999", marginTop: 8 }}>
               ※ Cash tips aren't broken out separately on Square's side, so they're excluded from this check (only the cash total is compared).
             </div>
+            {/* When staff charge the client's real card for the FULL visit total and only track
+                the gift-card portion internally (rather than redeeming it as a separate Square
+                gift-card tender), Square's own total naturally includes that GC-covered amount —
+                while the sheet deliberately excludes it (it was already counted as revenue on
+                the day the card was originally sold). This is the single most common source of
+                a Card Total mismatch, so it's called out explicitly rather than left for staff
+                to work out each time from the raw payment list above. */}
+            {totalGCUsed > 0 && (
+              <div style={{ fontSize: 11, color: "#5D4037", marginTop: 4, background: "#FFF8E1", borderRadius: 6, padding: "6px 10px" }}>
+                🎁 ${r2(totalGCUsed)} in gift cards was used today. If the client's card was charged the full visit total (with the gift-card portion tracked separately here rather than redeemed as a Square gift-card payment), Square's total will include that amount too — that alone can fully explain a Card Total difference close to ${r2(totalGCUsed)}.
+              </div>
+            )}
             {/* Individual refunds found on Square that day — surfaced so staff can match each
                 one back to the sheet entry that needs a correction (e.g. a mis-entered price
                 that was fixed with a Square refund), rather than only seeing the net total
