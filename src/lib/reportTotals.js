@@ -13,7 +13,7 @@ export const REFERRAL_SOURCES = ["Google / Website", "Google Map", "Instagram", 
 export const getRetailItems = (a) => {
   const items = [];
   if (Number(a.retailPurchaseAmount || 0) > 0 || a.retailProductName) {
-    items.push({ productName: a.retailProductName || "", amount: Number(a.retailPurchaseAmount || 0), paymentType: a.retailPurchasePaymentType, sellers: a.retailSellers });
+    items.push({ productName: a.retailProductName || "", amount: Number(a.retailPurchaseAmount || 0), paymentType: a.retailPurchasePaymentType, sellers: a.retailSellers, quantity: a.retailQuantity });
   }
   (a.extraRetailItems || []).forEach(it => {
     if (Number(it.amount || 0) > 0 || it.productName) items.push(it);

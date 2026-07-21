@@ -2413,7 +2413,7 @@ function ApptCard({ appt, onClick, allAppointments }) {
               const sellerNames = Object.keys(sellerTotals);
               // Product name(s) — the total alone didn't say what was actually sold, so staff
               // reviewing the card later couldn't tell without reopening the entry.
-              const itemLabel = (it) => RETAIL_PRODUCT_LABELS[it.productName] || it.productName || "(item not entered)";
+              const itemLabel = (it) => `${RETAIL_PRODUCT_LABELS[it.productName] || it.productName || "(item not entered)"}${Number(it.quantity) > 1 ? ` ×${it.quantity}` : ""}`;
               const names = items.map(it => itemLabel(it)).filter(Boolean).join(" / ");
               // A solo sale (one seller, and it's this card's own therapist) doesn't need her own
               // name stated — just the payroll-split dollar amount. A real split, or a solo sale
@@ -4084,7 +4084,7 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
               {/* 🛍️ Retail Purchase fields — supports multiple products in one visit (2nd/3rd item stored in extraRetailItems[]) */}
               {hasTag("retail") && (() => {
                 const items = [
-                  { productName: form.retailProductName, amount: form.retailPurchaseAmount, paymentType: form.retailPurchasePaymentType, sellers: form.retailSellers },
+                  { productName: form.retailProductName, amount: form.retailPurchaseAmount, paymentType: form.retailPurchasePaymentType, sellers: form.retailSellers, quantity: form.retailQuantity },
                   ...(form.extraRetailItems || [])
                 ];
                 const updateItem = (idx, patch) => {
@@ -4093,6 +4093,7 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                     if ("amount" in patch) set("retailPurchaseAmount", patch.amount);
                     if ("paymentType" in patch) set("retailPurchasePaymentType", patch.paymentType);
                     if ("sellers" in patch) set("retailSellers", patch.sellers);
+                    if ("quantity" in patch) set("retailQuantity", patch.quantity);
                   } else {
                     const extras = form.extraRetailItems || [];
                     set("extraRetailItems", extras.map((it, i) => i === idx - 1 ? { ...it, ...patch } : it));
@@ -4119,7 +4120,8 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                           <select value={RETAIL_PRODUCTS.find(p => p.name === item.productName) ? item.productName : (item.productName ? "__other__" : "")} onChange={e => {
                             const val = e.target.value;
                             const prod = RETAIL_PRODUCTS.find(p => p.name === val);
-                            updateItem(idx, { productName: val === "__other__" ? "" : val, amount: prod?.price > 0 ? prod.price : item.amount });
+                            const qty = Number(item.quantity) || 1;
+                            updateItem(idx, { productName: val === "__other__" ? "" : val, amount: prod?.price > 0 ? r2(prod.price * qty) : item.amount });
                           }} style={{ ...inputStyle, borderColor: "#CE93D8" }}>
                             <option value="">— Select a product —</option>
                             {RETAIL_PRODUCTS.map(p => (
@@ -4131,6 +4133,16 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                             <input type="text" value={item.productName || ""} placeholder="Enter product name" style={{ ...inputStyle, borderColor: "#CE93D8", marginTop: 4 }}
                               onChange={e => updateItem(idx, { productName: e.target.value })} />
                           )}
+                        </div>
+                        {/* Quantity — buying several of the same item at once (e.g. 4 Koso Shots)
+                            recomputes the amount automatically instead of needing 4 separate rows. */}
+                        <div>
+                          <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>Quantity</div>
+                          <input type="number" min="1" value={item.quantity || 1} onChange={e => {
+                            const qty = Math.max(1, Number(e.target.value) || 1);
+                            const prod = RETAIL_PRODUCTS.find(p => p.name === item.productName);
+                            updateItem(idx, { quantity: e.target.value, amount: prod?.price > 0 ? r2(prod.price * qty) : item.amount });
+                          }} style={{ ...inputStyle, borderColor: "#CE93D8" }} placeholder="e.g. 4" />
                         </div>
                         <div>
                           <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>Amount ($)</div>
@@ -4272,7 +4284,8 @@ function RetailModal({ retail, onSave, onClose }) {
             onChange={e => {
               const val = e.target.value;
               const prod = RETAIL_PRODUCTS.find(p => p.name === val);
-              setForm(f => ({ ...f, item: val === "__other__" ? "" : val, price: prod?.price > 0 ? prod.price : f.price }));
+              const qty = Number(form.quantity) || 1;
+              setForm(f => ({ ...f, item: val === "__other__" ? "" : val, price: prod?.price > 0 ? r2(prod.price * qty) : f.price }));
             }} style={inputStyle}>
             <option value="">— Select a product —</option>
             {RETAIL_PRODUCTS.map(p => (
@@ -4284,6 +4297,17 @@ function RetailModal({ retail, onSave, onClose }) {
             <input type="text" value={form.item || ""} placeholder="Enter product name" style={{ ...inputStyle, marginTop: 4 }}
               onChange={e => set("item", e.target.value)} />
           )}
+        </Field>
+        {/* Quantity — multiple bottles/units of the same product bought at once (e.g. a customer
+            buying 4 Koso Shots) recompute the amount automatically instead of needing 4 separate
+            entries. Only auto-multiplies for a known product's price; a custom item still needs
+            the total typed in by hand since there's no per-unit price to multiply. */}
+        <Field label="Quantity">
+          <input type="number" min="1" value={form.quantity || 1} onChange={e => {
+            const qty = Math.max(1, Number(e.target.value) || 1);
+            const prod = RETAIL_PRODUCTS.find(p => p.name === form.item);
+            setForm(f => ({ ...f, quantity: e.target.value, price: prod?.price > 0 ? r2(prod.price * qty) : f.price }));
+          }} style={inputStyle} placeholder="e.g. 4" />
         </Field>
         <Field label="Amount ($)"><input type="number" value={form.price || ""} onChange={e => set("price", e.target.value)} style={inputStyle} /></Field>
         <Field label={`Split between (up to 3 people, splitting the tax-excluded amount of $${afterTaxTotal})${Number(form.price) > 0 && Math.abs(sellersTotal - afterTaxTotal) > 0.15 ? " ⚠️ The total is significantly off from the tax-excluded amount" : ""}`}>
