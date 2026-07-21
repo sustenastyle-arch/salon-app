@@ -2165,6 +2165,11 @@ function ApptCard({ appt, onClick, allAppointments }) {
   // or a comped/PR treatment (no money is ever received for it).
   const isRevenueToday = !isGiftCard && !isPromo && !gcFullyCovers && (!isTicket || appt.isSameDayTicket);
   const amountColor = isRevenueToday ? REVENUE_COLOR : NON_REVENUE_COLOR;
+  // The cav slot never carries its own package-price field — even for a same-day ticket
+  // purchase, its price/tip are always just the per-session payroll-reference split (the real
+  // revenue for that purchase shows in red on the body/main card's own package-price line
+  // instead), so it should read as non-revenue here regardless of isSameDayTicket.
+  const cavAmountColor = (!isGiftCard && !isPromo && !gcFullyCovers && !isTicket) ? REVENUE_COLOR : NON_REVENUE_COLOR;
   const borderColor = isCavSlot ? "#9C27B0" : isGiftCard ? "#F59E0B" : isPromo ? "#1565C0" : isTicket ? "#1565C0" : appt.paymentType === "cash" ? "#4CAF50" : "#2196F3";
   const bg = isCavSlot ? "#F9F0FF" : isGiftCard ? "#FFFDE7" : isPromo ? "#E3F2FD" : isTicket ? "#EEF5FF" : appt.paymentType === "cash" ? "#F1FBF3" : "#EEF5FF";
 
@@ -2198,7 +2203,7 @@ function ApptCard({ appt, onClick, allAppointments }) {
           <div style={{ fontSize: 13, color: "#8E24AA" }}>with {appt.bodyTherapist}</div>
         )}
         {(cavSvc > 0 || cavTip > 0) && (
-          <div style={{ fontSize: 17, color: amountColor, fontWeight: 700 }}>
+          <div style={{ fontSize: 17, color: cavAmountColor, fontWeight: 700 }}>
             <div>{cavSvc}{svcIcon}</div>
             {cavTip > 0 && <div>{cavTip}{tipIcon}</div>}
             <div style={{ fontWeight: 800 }}>{cavTotal}</div>
@@ -2332,6 +2337,9 @@ function ApptCard({ appt, onClick, allAppointments }) {
                   {extraSvc > 0 && <span style={{ color: REVENUE_COLOR }}> +Extra ${extraSvc}{appt.extraPricePaymentType==="card"?"💳":"💵"}</span>}
                   {extra > 0 && <span style={{ color: REVENUE_COLOR }}> +Extra tip{extra}💝{appt.extraTipPaymentType==="card"?"💳":"💵"}</span>}
                 </div>
+                {(extraSvc > 0 || extra > 0) && appt.extraNotes && (
+                  <div style={{ fontSize: 11, color: "#888", fontWeight: 400, fontStyle: "italic" }}>{appt.extraNotes}</div>
+                )}
               </div>
             )}
             {/* Same-day ticket purchase where session 1 was also used today: show the
@@ -3423,6 +3431,13 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                     <input type="number" value={form.extraTip || ""} onChange={e => set("extraTip", e.target.value)} style={inputStyle} placeholder="e.g. 20" />
                   </Field>
                 </div>
+                {(Number(form.extraPrice||0) > 0 || Number(form.extraTip||0) > 0) && (
+                  <div style={{ marginTop: 8 }}>
+                    <Field label="Notes (e.g. what this extra is for)">
+                      <input value={form.extraNotes || ""} onChange={e => set("extraNotes", e.target.value)} style={inputStyle} placeholder="e.g. Micro Channeling neck add-on" />
+                    </Field>
+                  </div>
+                )}
                 {(Number(form.extraPrice||0) > 0) && (
                   <div style={{ marginTop: 8 }}>
                     <Field label="Extra Treatment Fee Payment Method" error={errors.includes("extraPricePaymentType")}><PaymentToggle value={form.extraPricePaymentType} onChange={v => set("extraPricePaymentType", v)} /></Field>
