@@ -2242,6 +2242,7 @@ const APPT_ERROR_LABELS = {
   giftCardPurchasePaymentType: "Gift Card Purchase Payment Method",
   depositPaidDate: "Deposit Paid Date",
   packageDepositDate: "Deposit Paid Date",
+  addonCountsAsRevenue: "Add-on: How to Treat This (Pay-as-you-go / Ticket Redemption)",
 };
 
 function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
@@ -2314,6 +2315,9 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
       if (Number(f.giftCardPurchaseAmount || 0) > 0 && !f.giftCardPurchasePaymentType) errs.push("giftCardPurchasePaymentType");
     }
     if (f.depositOn && Number(f.depositApplied || 0) > 0 && !f.depositPaidDate) errs.push("depositPaidDate");
+    if ((f.addons || []).some(a => (Number(a.price || 0) > 0 || Number(a.tip || 0) > 0) && a.countsAsRevenue === null)) {
+      errs.push("addonCountsAsRevenue");
+    }
     return errs;
   };
 
