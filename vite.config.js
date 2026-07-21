@@ -301,6 +301,11 @@ function squarePaymentsApi(env) {
 
           let cashTotal = 0, cardTotal = 0, cashTip = 0, cardTip = 0
           const refunds = []
+          // Every individual completed payment (net of any refund), so the client can try to
+          // match each one against a sheet entry with the same tender + total — narrowing a
+          // reconciliation mismatch down to specific transactions instead of just an aggregate
+          // total being off, which otherwise has to be tracked down by hand.
+          const payments = []
           let cursor
           do {
             const params = new URLSearchParams({
@@ -333,7 +338,8 @@ function squarePaymentsApi(env) {
               if (tip === 0 && p.order_id) tip = await getOrderTipLineItems(p.order_id)
               // A fully refunded payment kept no money at all, tip included.
               const netTip = netTotal > 0 ? tip : 0
-              if (p.source_type === 'CASH') {
+              const tender = p.source_type === 'CASH' ? 'cash' : 'card'
+              if (tender === 'cash') {
                 cashTotal += netTotal
                 cashTip += netTip
               } else {
@@ -343,7 +349,16 @@ function squarePaymentsApi(env) {
               if (refunded > 0) {
                 refunds.push({
                   amount: Math.round(refunded * 100) / 100,
-                  tender: p.source_type === 'CASH' ? 'cash' : 'card',
+                  tender,
+                  time: formatHawaiiTime(p.created_at),
+                  label: p.order_id ? await getOrderItemLabel(p.order_id) : '',
+                })
+              }
+              if (netTotal > 0) {
+                payments.push({
+                  amount: Math.round(netTotal * 100) / 100,
+                  tip: Math.round(netTip * 100) / 100,
+                  tender,
                   time: formatHawaiiTime(p.created_at),
                   label: p.order_id ? await getOrderItemLabel(p.order_id) : '',
                 })
@@ -357,6 +372,7 @@ function squarePaymentsApi(env) {
             cashTotal: Math.round(cashTotal * 100) / 100,
             cardTotal: Math.round(cardTotal * 100) / 100,
             refunds,
+            payments,
             cashTip: Math.round(cashTip * 100) / 100,
             cardTip: Math.round(cardTip * 100) / 100,
           }))

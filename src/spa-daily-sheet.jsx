@@ -1111,6 +1111,93 @@ export default function SpaDailySheet() {
   const sheetCashTip = r2(tipCashAllSources);
   const sheetCardTip = r2(tipCardAllSources);
 
+  // Individual money-in events for the Square照合 payment-matching table below — each one
+  // should correspond to exactly one real Square payment (tender + amount combined), so a
+  // mismatch can point at the specific entry that's wrong instead of only an aggregate total
+  // being off (which previously had to be tracked down by manually re-adding everything).
+  // Best-effort: matches on tender + rounded dollar amount, so two unrelated entries that
+  // happen to charge the identical amount on the identical tender can't be told apart.
+  const moneyEvents = [];
+  const splitParts = (amt, isSplit, type, cashPortion, cardPortion) => {
+    const total = r2(Math.max(0, Number(amt || 0)));
+    if (total <= 0) return [];
+    if (isSplit) {
+      const parts = [];
+      if (Number(cashPortion || 0) > 0) parts.push({ amount: r2(Number(cashPortion)), tender: "cash" });
+      if (Number(cardPortion || 0) > 0) parts.push({ amount: r2(Number(cardPortion)), tender: "card" });
+      return parts;
+    }
+    if (!type) return [];
+    return [{ amount: total, tender: type }];
+  };
+  const addMoneyEvent = (label, svcAmt, svcSplit, svcType, svcCash, svcCard, tipAmt, tipSplit, tipType, tipCash, tipCard) => {
+    const svcParts = splitParts(svcAmt, svcSplit, svcType, svcCash, svcCard);
+    const tipParts = splitParts(tipAmt, tipSplit, tipType, tipCash, tipCard);
+    // Service and tip usually get rung up together as one Square charge when paid the same
+    // way — combine them so the matcher looks for one payment, not two.
+    if (svcParts.length === 1 && tipParts.length === 1 && svcParts[0].tender === tipParts[0].tender) {
+      moneyEvents.push({ label, amount: r2(svcParts[0].amount + tipParts[0].amount), tender: svcParts[0].tender });
+    } else {
+      svcParts.forEach(p => moneyEvents.push({ label, amount: p.amount, tender: p.tender }));
+      tipParts.forEach(p => moneyEvents.push({ label: `${label} (tip)`, amount: p.amount, tender: p.tender }));
+    }
+  };
+  regularAppts.forEach(a => {
+    const gc = gcAlloc(a);
+    addMoneyEvent(a.clientName || "(unnamed)",
+      Number(a.price || 0) - gc.gcSvc, a.svcSplitPayment, a.paymentType, a.svcCashPortion, a.svcCardPortion,
+      Number(a.tip || 0) - gc.gcTip, a.tipSplitPayment, a.tipPaymentType, a.tipCashPortion, a.tipCardPortion);
+  });
+  sameDayAppts.forEach(a => {
+    const gc = gcAllocPackage(a);
+    addMoneyEvent(`${a.clientName || "(unnamed)"} (ticket purchase)`,
+      Number(a.packagePrice || 0) - gc.gcSvc, a.packageSplitPayment, a.paymentType, a.packageCashPortion, a.packageCardPortion,
+      Number(a.packageTip ?? a.tip ?? 0) - gc.gcTip, false, a.tipPaymentType, 0, 0);
+  });
+  ticketAppts.forEach(a => {
+    if (Number(a.extraPrice || 0) > 0 || Number(a.extraTip || 0) > 0) {
+      addMoneyEvent(`${a.clientName || "(unnamed)"} (extra)`,
+        a.extraPrice, false, a.extraPricePaymentType, 0, 0,
+        a.extraTip, false, a.extraTipPaymentType, 0, 0);
+    }
+  });
+  revenueAddons.forEach(ad => {
+    addMoneyEvent(ad.serviceName || "Add-on", ad.price, false, ad.paymentType, 0, 0, ad.tip, false, ad.tipPaymentType, 0, 0);
+  });
+  cavSlotAppts.forEach(a => {
+    addMoneyEvent(`${a.clientName || "(unnamed)"} (machine)`, a.price, false, a.paymentType, 0, 0, a.tip, false, a.tipPaymentType, 0, 0);
+  });
+  deposits.forEach(d => {
+    const label = d.type === "giftcard" ? `${d.clientName || "Gift Card"} (gift card)` : d.type === "cancellation" ? `${d.clientName || "Cancellation"} (cancellation fee)` : `${d.clientName || "Deposit"} (deposit)`;
+    addMoneyEvent(label, d.amount, false, d.paymentType, 0, 0, d.tip, false, d.tipPaymentType || (Number(d.tip || 0) > 0 ? "cash" : ""), 0, 0);
+  });
+  ticketPurchases.forEach(tp => {
+    addMoneyEvent(tp.clientName ? `${tp.clientName} (ticket purchase)` : "Ticket Purchase",
+      tp.amount, tp.splitPayment, tp.paymentType, tp.cashPortion, tp.cardPortion,
+      tp.tip, false, tp.tipPaymentType || (Number(tp.tip || 0) > 0 ? "cash" : ""), 0, 0);
+  });
+  retails.forEach(r => {
+    addMoneyEvent(r.item || "Retail", r.price, false, r.paymentType, 0, 0, 0, false, "", 0, 0);
+  });
+  inlineRetailAppts.forEach(a => {
+    getRetailItems(a).forEach(it => {
+      addMoneyEvent(`${a.clientName || "(unnamed)"} (retail)`, it.amount, false, it.paymentType, 0, 0, 0, false, "", 0, 0);
+    });
+  });
+  inlineNewTicketAppts.forEach(a => {
+    addMoneyEvent(`${a.clientName || "(unnamed)"} (new ticket)`,
+      a.newTicketAmount, a.newTicketSplitPayment, a.newTicketPaymentType, a.newTicketCashPortion, a.newTicketCardPortion,
+      a.newTicketTip, false, a.newTicketTipPaymentType, 0, 0);
+  });
+  inlineGCAppts.forEach(a => {
+    addMoneyEvent(`${a.clientName || "(unnamed)"} (gift card sale)`, a.giftCardPurchaseAmount, false, a.giftCardPurchasePaymentType, 0, 0, 0, false, "", 0, 0);
+  });
+  staffPurchases.forEach(sp => {
+    getStaffPurchaseItems(sp).forEach(it => {
+      addMoneyEvent(`${sp.staffName || "Staff"} (staff purchase)`, it.amount, false, it.paymentType, 0, 0, 0, false, "", 0, 0);
+    });
+  });
+
   // 新規チケット販売（当日購入、または「当日の追加購入」→チケット新規購入タグ）— チケット消化とは別の集計。
   // 機械担当と2人で入って売れた場合は、件数・金額とも0.5ずつに割る。
   const newTicketByTherapist = {};
@@ -1223,6 +1310,18 @@ export default function SpaDailySheet() {
           { label: "Cash Tip", sheet: sheetCashTip, square: reconcileResult.cashTip },
           { label: "Card Tip", sheet: sheetCardTip, square: reconcileResult.cardTip },
         ];
+        // When the totals above don't match, try to pin down exactly which transaction(s) are
+        // responsible instead of leaving it as "the total is off by $X" — match each real Square
+        // payment against a sheet entry with the same tender + amount (best-effort; two entries
+        // that happen to charge the identical amount the identical way can't be told apart).
+        const anyMismatch = rows.some(r => Math.abs(r2(r.sheet - r.square)) > 0.01);
+        const usedEventIdx = new Set();
+        const unmatchedPayments = [];
+        (reconcileResult.payments || []).forEach(p => {
+          const idx = moneyEvents.findIndex((e, i) => !usedEventIdx.has(i) && e.tender === p.tender && Math.abs(e.amount - p.amount) < 0.01);
+          if (idx === -1) unmatchedPayments.push(p); else usedEventIdx.add(idx);
+        });
+        const unmatchedEvents = moneyEvents.filter((e, i) => !usedEventIdx.has(i));
         return (
           <div style={{ background: "#fff", margin: "10px 20px", borderRadius: 10, border: "1px solid #DDD", padding: 14 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
@@ -1276,6 +1375,38 @@ export default function SpaDailySheet() {
                       {r.tender === "cash" ? "💵" : "💳"} {formatCurrency(r.amount)} refunded — payment at {r.time}{r.label ? ` (${r.label})` : ""}
                     </div>
                   ))}
+                </div>
+              </div>
+            )}
+            {/* Only shown when a total above didn't match — narrows the search down to specific
+                transactions instead of the whole day needing to be re-tallied by hand. */}
+            {anyMismatch && (unmatchedPayments.length > 0 || unmatchedEvents.length > 0) && (
+              <div style={{ marginTop: 12, background: "#E3F2FD", borderRadius: 8, padding: 10 }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: "#1565C0", marginBottom: 6 }}>
+                  🔎 Possible source of the mismatch — these didn't line up 1:1
+                </div>
+                {unmatchedPayments.length > 0 && (
+                  <div style={{ marginBottom: unmatchedEvents.length > 0 ? 8 : 0 }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: "#0D47A1", marginBottom: 3 }}>On Square, but no matching sheet entry found:</div>
+                    {unmatchedPayments.map((p, i) => (
+                      <div key={i} style={{ fontSize: 12, color: "#0D47A1" }}>
+                        {p.tender === "cash" ? "💵" : "💳"} {formatCurrency(p.amount)}{p.tip > 0 ? ` (incl. ${formatCurrency(p.tip)} tip)` : ""} — payment at {p.time}{p.label ? ` (${p.label})` : ""}
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {unmatchedEvents.length > 0 && (
+                  <div>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: "#0D47A1", marginBottom: 3 }}>On the sheet, but no matching Square payment found:</div>
+                    {unmatchedEvents.map((e, i) => (
+                      <div key={i} style={{ fontSize: 12, color: "#0D47A1" }}>
+                        {e.tender === "cash" ? "💵" : "💳"} {formatCurrency(e.amount)} — {e.label}
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div style={{ fontSize: 10, color: "#5C7A99", marginTop: 6 }}>
+                  ※ Best-effort match by tender + amount — two entries charging the exact same amount the same way can't always be told apart.
                 </div>
               </div>
             )}
