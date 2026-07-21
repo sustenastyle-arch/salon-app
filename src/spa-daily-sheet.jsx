@@ -12,6 +12,21 @@ const HOURS = Array.from({ length: 11 }, (_, i) => i + 9);
 // of duration or total price — the rest goes to the body therapist.
 const REGULAR_WL_CAV_PRICE = 116;
 const isWeightLossService = (name) => (name || "").toLowerCase().includes("weight loss");
+// An add-on menu item (a different therapist's extra treatment added to someone else's visit)
+// can itself have a machine (cav) portion — unlike the main service, staff only enter ONE total
+// price/tip for the whole add-on (there's no separately-observed cav amount to type in), so the
+// body/machine split has to be computed from the duration ratio instead, same convention as the
+// deposit-inclusive payroll split elsewhere in this file (round the body share, give the machine
+// therapist the remainder so the two always add back up to the entered total with no rounding gap).
+const splitAddonAmount = (amount, duration, cavMins) => {
+  const total = Number(amount || 0);
+  const dur = Number(duration || 0);
+  const cav = Number(cavMins || 0) || 15;
+  if (total <= 0 || dur <= 0 || cav <= 0 || cav >= dur) return { body: total, cav: 0 };
+  const bodyMins = dur - cav;
+  const body = Math.round(total * bodyMins / dur * 100) / 100;
+  return { body, cav: Math.round((total - body) * 100) / 100 };
+};
 // Appointments synced from Square before the item-name cleanup in the booking sync (see
 // vite.config.js/api/square-bookings.js) may still have serviceName saved with extra junk
 // the catalog item's Name field was never meant to carry: a Japanese translation in
@@ -1346,7 +1361,11 @@ export default function SpaDailySheet() {
                       if (a.isCavSlot) return [];
                       const [h] = (a.startTime || "").split(":").map(Number);
                       if (h !== hour) return [];
-                      return (a.addons || []).filter(ad => ad.therapist === t).map(ad => ({ parentAppt: a, addon: ad }));
+                      const bodyItems = (a.addons || []).filter(ad => ad.therapist === t).map(ad => ({ parentAppt: a, addon: ad, role: "body" }));
+                      // An add-on's own machine (cav) portion shows up as a separate card in the
+                      // machine therapist's own column, same as the main service's cav slot does.
+                      const cavItems = (a.addons || []).filter(ad => ad.hasCav === true && ad.cavTherapist === t).map(ad => ({ parentAppt: a, addon: ad, role: "cav" }));
+                      return [...bodyItems, ...cavItems];
                     });
                     const hasContent = appts.length > 0 || addonItems.length > 0;
                     return (
@@ -1361,22 +1380,27 @@ export default function SpaDailySheet() {
                             openApptForEdit(a);
                           }
                         }} />)}
-                        {addonItems.map(({ parentAppt, addon }) => {
-                          const aSvc = Number(addon.price||0);
-                          const aTip = Number(addon.tip||0);
+                        {addonItems.map(({ parentAppt, addon, role }) => {
+                          const isCavRole = role === "cav";
+                          const hasCav = addon.hasCav === true && !!addon.cavTherapist;
+                          const svcSplit = hasCav ? splitAddonAmount(addon.price, addon.duration, addon.cavMins) : null;
+                          const tipSplit = hasCav ? splitAddonAmount(addon.tip, addon.duration, addon.cavMins) : null;
+                          const aSvc = hasCav ? (isCavRole ? svcSplit.cav : svcSplit.body) : Number(addon.price||0);
+                          const aTip = hasCav ? (isCavRole ? tipSplit.cav : tipSplit.body) : Number(addon.tip||0);
                           const aTotal = r2(aSvc + aTip);
                           const aColor = addon.countsAsRevenue === true ? REVENUE_COLOR : addon.countsAsRevenue === false ? NON_REVENUE_COLOR : "#005F4A";
                           const svcIcon = addon.paymentType === "card" ? "💳" : addon.paymentType === "cash" ? "💵" : "";
                           const tipIcon = addon.tipPaymentType === "card" ? "💳" : addon.tipPaymentType === "cash" ? "💵" : "";
                           return (
-                            <div key={`${parentAppt.id}-${addon.id}`}
+                            <div key={`${parentAppt.id}-${addon.id}-${role}`}
                               onClick={e => { e.stopPropagation(); openApptForEdit(parentAppt); }}
-                              style={{ background: "#E0F2F1", border: "1.5px solid #00796B", borderRadius: 8, padding: "5px 7px", marginBottom: 3, cursor: "pointer" }}>
-                              <div style={{ fontSize: 10, fontWeight: 800, color: "#00695C" }}>➕ Add-on</div>
+                              style={{ background: isCavRole ? "#F9F0FF" : "#E0F2F1", border: `1.5px solid ${isCavRole ? "#9C27B0" : "#00796B"}`, borderRadius: 8, padding: "5px 7px", marginBottom: 3, cursor: "pointer" }}>
+                              <div style={{ fontSize: 10, fontWeight: 800, color: isCavRole ? "#6A1B9A" : "#00695C" }}>➕ Add-on{isCavRole ? " (machine)" : ""}</div>
                               <div style={{ fontSize: 11, fontWeight: 700, color: "#004D40" }}>{parentAppt.clientName}</div>
                               <div style={{ fontSize: 10, color: "#00796B" }}>
                                 {addon.serviceName || "Add-on"}{addon.ticketCurrent ? ` ${addon.ticketCurrent}/${parentAppt.ticketTotal||3}` : ""}
                               </div>
+                              {hasCav && <div style={{ fontSize: 9, color: "#888" }}>with {isCavRole ? addon.therapist : addon.cavTherapist}</div>}
                               {aTotal > 0 && (
                                 <div style={{ fontSize: 10, fontWeight: 700, color: aColor }}>
                                   <div>{aSvc}{svcIcon}</div>
@@ -2081,14 +2105,23 @@ function ApptCard({ appt, onClick, allAppointments }) {
                   const chipColor = addon.countsAsRevenue === true ? REVENUE_COLOR : addon.countsAsRevenue === false ? NON_REVENUE_COLOR : "#00695C";
                   const svcIcon = addon.paymentType === "card" ? "💳" : addon.paymentType === "cash" ? "💵" : "";
                   const tipIcon = addon.tipPaymentType === "card" ? "💳" : addon.tipPaymentType === "cash" ? "💵" : "";
+                  const hasCav = addon.hasCav === true && !!addon.cavTherapist;
+                  const svcSplit = hasCav ? splitAddonAmount(addon.price, addon.duration, addon.cavMins) : null;
+                  const tipSplit = hasCav ? splitAddonAmount(addon.tip, addon.duration, addon.cavMins) : null;
                   return (
                     <div key={addon.id} style={{ fontSize: 13, color: chipColor, fontWeight: 700 }}>
                       <div>➕ {label}{addon.ticketCurrent ? ` ${addon.ticketCurrent}/${appt.ticketTotal||3}` : ""}{addon.countsAsRevenue === null && " ⚠️"}</div>
+                      <div style={{ fontSize: 12, color: "#888", fontWeight: 400 }}>{addon.therapist}{hasCav ? ` + ${addon.cavTherapist} (machine)` : ""}</div>
                       {aTotal > 0 && (
                         <>
                           <div>{aSvc}{svcIcon}</div>
                           {aTip > 0 && <div>{aTip}{tipIcon}</div>}
                           <div style={{ fontWeight: 800 }}>{aTotal}</div>
+                          {hasCav && (
+                            <div style={{ fontSize: 11, fontWeight: 400, color: "#888" }}>
+                              {addon.therapist} ${svcSplit.body}{tipSplit.body > 0 ? `+${tipSplit.body}` : ""} / {addon.cavTherapist} ${svcSplit.cav}{tipSplit.cav > 0 ? `+${tipSplit.cav}` : ""}
+                            </div>
+                          )}
                         </>
                       )}
                     </div>
@@ -2537,6 +2570,9 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
             <select value="" onChange={e => {
               const name = e.target.value;
               if (!name) return;
+              // Auto-fill duration from a "NNmin" name (e.g. "Improving Posture 90min"), same
+              // pattern the main service field uses — still editable afterward either way.
+              const durMatch = name.match(/(\d+)\s*min/i);
               set("addons", [...(form.addons||[]), {
                 id: `${Date.now()}`,
                 serviceName: name,
@@ -2547,6 +2583,10 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                 tipPaymentType: "",
                 countsAsRevenue: null,
                 ticketCurrent: null,
+                hasCav: null,
+                cavTherapist: "",
+                duration: durMatch ? Number(durMatch[1]) : 0,
+                cavMins: 15,
               }]);
             }} style={{ ...inputStyle, fontSize: 12, color: "#888" }}>
               <option value="">+ Add a menu item for a different therapist</option>
@@ -2615,15 +2655,72 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                       </select>
                     </div>
 
-                    {/* Price + Tip inputs */}
+                    {/* Machine (cav) portion — an add-on can involve a second therapist for just
+                        the machine minutes, same as a regular visit, but there's only one lump
+                        price/tip entered for the whole add-on, so the split has to be computed
+                        from the duration ratio (see splitAddonAmount) rather than typed in directly. */}
+                    <div style={{ marginBottom: 6 }}>
+                      <div style={{ fontSize: 10, color: addon.hasCav === null ? "#C62828" : "#888", marginBottom: 3, fontWeight: addon.hasCav === null ? 700 : 400 }}>
+                        Machine (cav) portion?{addon.hasCav === null && " ⚠️ Not selected"}
+                      </div>
+                      <div style={{ display: "flex", gap: 6 }}>
+                        <button onClick={() => upd({ hasCav: false, cavTherapist: "" })}
+                          style={{ flex: 1, padding: "6px 4px", borderRadius: 8, border: `2px solid ${addon.hasCav === false ? "#0D4F4F" : "#DDD"}`, background: addon.hasCav === false ? "#E0F2F1" : "#fff", cursor: "pointer", fontWeight: 700, fontSize: 11, color: addon.hasCav === false ? "#0D4F4F" : "#888" }}>
+                          No machine
+                        </button>
+                        <button onClick={() => upd({ hasCav: true })}
+                          style={{ flex: 1, padding: "6px 4px", borderRadius: 8, border: `2px solid ${addon.hasCav === true ? "#6A1B9A" : "#DDD"}`, background: addon.hasCav === true ? "#F3E5F5" : "#fff", cursor: "pointer", fontWeight: 700, fontSize: 11, color: addon.hasCav === true ? "#6A1B9A" : "#888" }}>
+                          ⚡ Machine involved
+                        </button>
+                      </div>
+                      {addon.hasCav === true && (
+                        <div style={{ marginTop: 6, background: "#F9F0FF", borderRadius: 8, padding: 8, border: "1px dashed #D9B3EC" }}>
+                          <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>Machine Therapist</div>
+                          <select value={addon.cavTherapist||""} onChange={e => upd({ cavTherapist: e.target.value })}
+                            style={{ ...inputStyle, fontSize: 12, marginBottom: 6 }}>
+                            <option value="">— Select —</option>
+                            {THERAPISTS.filter(t => t !== addon.therapist).map(t => <option key={t} value={t}>{t}</option>)}
+                          </select>
+                          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                            <div>
+                              <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>Total Duration (min)</div>
+                              <input type="number" value={addon.duration||""} onChange={e => upd({ duration: e.target.value })}
+                                style={{ ...inputStyle, fontSize: 12 }} placeholder="e.g. 90" />
+                            </div>
+                            <div>
+                              <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>Machine Minutes</div>
+                              <input type="number" value={addon.cavMins||""} onChange={e => upd({ cavMins: e.target.value })}
+                                style={{ ...inputStyle, fontSize: 12 }} placeholder="15" />
+                            </div>
+                          </div>
+                          {addon.cavTherapist && Number(addon.duration) > 0 && (Number(addon.price||0) > 0 || Number(addon.tip||0) > 0) && (() => {
+                            const hasTip = Number(addon.tip||0) > 0;
+                            const svcSplit = splitAddonAmount(addon.price, addon.duration, addon.cavMins);
+                            const tipSplit = hasTip ? splitAddonAmount(addon.tip, addon.duration, addon.cavMins) : { body: 0, cav: 0 };
+                            return (
+                              <div style={{ marginTop: 6, fontSize: 11, color: "#6A1B9A" }}>
+                                Split: {addon.therapist || "(body)"} ${svcSplit.body}{hasTip ? ` + tip $${tipSplit.body}` : ""} / {addon.cavTherapist} ${svcSplit.cav}{hasTip ? ` + tip $${tipSplit.cav}` : ""}
+                              </div>
+                            );
+                          })()}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Price + Tip inputs — when a machine portion is involved, these are the
+                        COMBINED total for both therapists; splitAddonAmount divides it by minutes. */}
                     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 6 }}>
                       <div>
-                        <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>Treatment Price ($)</div>
+                        <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>
+                          {addon.hasCav === true ? "Total Treatment Price ($, both)" : "Treatment Price ($)"}
+                        </div>
                         <input type="number" value={addon.price||""} onChange={e => upd({ price: e.target.value })}
                           style={{ ...inputStyle, fontSize: 12 }} placeholder="0" />
                       </div>
                       <div>
-                        <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>Tip ($)</div>
+                        <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>
+                          {addon.hasCav === true ? "Total Tip ($, both)" : "Tip ($)"}
+                        </div>
                         <input type="number" value={addon.tip||""} onChange={e => upd({ tip: e.target.value })}
                           style={{ ...inputStyle, fontSize: 12 }} placeholder="0" />
                       </div>
@@ -5036,32 +5133,48 @@ function PayrollTab() {
     // Add-on services → attributed therapist (or fall back to main therapist)
     allAppts.filter(a => !a.isCavSlot && (a.addons || []).length > 0).forEach(a => {
       (a.addons || []).forEach(addon => {
-        const svc = Number(addon.price || 0);
-        const tip = Number(addon.tip || 0);
         const addonTherapist = addon.therapist || "";
-        const t = addonTherapist || a.therapist;
-        if (!t || !byTherapist[t]) return;
-        // Skip only if no explicit therapist AND no price (pure label with no data)
-        if (!addonTherapist && svc + tip === 0) return;
+        const hasCav = addon.hasCav === true && !!addon.cavTherapist;
         const isCard = addon.paymentType === "card";
         const isTipCard = addon.tipPaymentType === "card";
-        byTherapist[t].rows.push({
-          date: a.date,
-          client: a.clientName,
-          isTicket: false,
-          isGiftCard: a.isGiftCard,
-          ticketInfo: "",
-          duration: 0,
-          service: svc,
-          tip,
-          paymentType: a.isGiftCard ? "gc" : (addon.paymentType || "cash"),
-          tipPaymentType: a.isGiftCard ? "gc" : (addon.tipPaymentType || "cash"),
-          notes: `➕ ${addon.serviceName || addon.name || "Add-on"}${addon.ticketCurrent ? ` ${addon.ticketCurrent}/${a.ticketTotal||3}` : ""}`,
-        });
-        byTherapist[t].totalService += svc;
-        byTherapist[t].totalTip += tip;
-        if (isCard && !a.isGiftCard) byTherapist[t].totalServiceCard += svc;
-        if (isTipCard && !a.isGiftCard) byTherapist[t].totalTipCard += tip;
+        const addonLabel = `${addon.serviceName || addon.name || "Add-on"}${addon.ticketCurrent ? ` ${addon.ticketCurrent}/${a.ticketTotal||3}` : ""}`;
+
+        // A machine (cav) portion of the add-on is done by a second therapist — only one lump
+        // price/tip is entered for the whole add-on, so it's split by duration ratio (same
+        // convention as the regular-service deposit-inclusive split) rather than typed separately.
+        const svcSplit = hasCav ? splitAddonAmount(addon.price, addon.duration, addon.cavMins) : { body: Number(addon.price || 0), cav: 0 };
+        const tipSplit = hasCav ? splitAddonAmount(addon.tip, addon.duration, addon.cavMins) : { body: Number(addon.tip || 0), cav: 0 };
+
+        const pushRow = (t, svc, tip, noteSuffix) => {
+          if (!t || !byTherapist[t]) return;
+          // Skip only if no explicit therapist AND no price (pure label with no data)
+          if (!addonTherapist && svc + tip === 0) return;
+          byTherapist[t].rows.push({
+            date: a.date,
+            client: a.clientName,
+            isTicket: false,
+            isGiftCard: a.isGiftCard,
+            ticketInfo: "",
+            duration: 0,
+            service: svc,
+            tip,
+            paymentType: a.isGiftCard ? "gc" : (addon.paymentType || "cash"),
+            tipPaymentType: a.isGiftCard ? "gc" : (addon.tipPaymentType || "cash"),
+            notes: `➕ ${addonLabel}${noteSuffix}`,
+          });
+          byTherapist[t].totalService += svc;
+          byTherapist[t].totalTip += tip;
+          if (isCard && !a.isGiftCard) byTherapist[t].totalServiceCard += svc;
+          if (isTipCard && !a.isGiftCard) byTherapist[t].totalTipCard += tip;
+        };
+
+        const bodyT = addonTherapist || a.therapist;
+        if (hasCav) {
+          pushRow(bodyT, svcSplit.body, tipSplit.body, ` (body)`);
+          pushRow(addon.cavTherapist, svcSplit.cav, tipSplit.cav, ` (machine)`);
+        } else {
+          pushRow(bodyT, svcSplit.body, tipSplit.body, "");
+        }
       });
     });
 
