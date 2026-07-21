@@ -402,6 +402,11 @@ export default function SpaDailySheet() {
   const [reconcileLoading, setReconcileLoading] = useState(false);
   const [reconcileResult, setReconcileResult] = useState(null);
   const [dayLoading, setDayLoading] = useState(true);
+  // Past days that still have real data but were never (re-)locked — e.g. someone unlocked a
+  // finalized day to double-check something and forgot to lock it again. Shown regardless of
+  // which date is currently being viewed, so it surfaces the moment the app is opened rather
+  // than only when someone happens to navigate back to that specific date.
+  const [unlockedPastDays, setUnlockedPastDays] = useState([]);
 
   const showToast = (msg, type = "success") => { setToast({ msg, type }); setTimeout(() => setToast(null), 3000); };
 
@@ -506,6 +511,28 @@ export default function SpaDailySheet() {
     return () => { cancelled = true; };
   }, [editingAppt?.clientName]);
 
+  // Scans the last 30 days for ones that still have real data but aren't locked — see
+  // unlockedPastDays above for why. Re-run after any lock/unlock so the banner reflects it
+  // immediately, not just on next page load.
+  const checkUnlockedPastDays = useCallback(async () => {
+    try {
+      const end = new Date();
+      end.setDate(end.getDate() - 1); // today is still in progress — not "forgotten" yet
+      const start = new Date(end);
+      start.setDate(start.getDate() - 29);
+      const fmt = (d) => d.toISOString().slice(0, 10);
+      const { days } = await apiFetch(`/api/day-data-range?start=${fmt(start)}&end=${fmt(end)}`);
+      const unlocked = Object.entries(days || {})
+        .filter(([, d]) => !d.locked && (d.appointments || []).length > 0)
+        .map(([dt]) => dt)
+        .sort();
+      setUnlockedPastDays(unlocked);
+    } catch (e) {
+      console.error("Unlocked-day check failed:", e);
+    }
+  }, []);
+  useEffect(() => { checkUnlockedPastDays(); }, [checkUnlockedPastDays]);
+
   const save = useCallback(async (appts, rets, deps, tps, sps, refs, fts, ws) => {
     try {
       await apiFetch("/api/day-data", {
@@ -536,6 +563,7 @@ export default function SpaDailySheet() {
         }),
       });
       setLocked(newLocked);
+      checkUnlockedPastDays();
       return true;
     } catch (e) {
       console.error("Lock toggle error:", e);
@@ -1296,6 +1324,19 @@ export default function SpaDailySheet() {
         </div>
       )}
       {squareStatus && <div style={{ background: "#FFF3CD", padding: "8px 20px", fontSize: 13, color: "#856404" }}>⚠️ {squareStatus}</div>}
+      {/* Shown regardless of which date is currently open — someone unlocking a finalized day
+          to double-check something and forgetting to re-lock it is easy to miss otherwise. */}
+      {unlockedPastDays.length > 0 && (
+        <div style={{ background: "#FFF3E0", padding: "8px 20px", fontSize: 13, color: "#E65100", fontWeight: 700, borderBottom: "2px solid #FFB74D" }}>
+          🔓 {unlockedPastDays.length} past day{unlockedPastDays.length > 1 ? "s" : ""} still unlocked:{" "}
+          {unlockedPastDays.map((d, i) => (
+            <span key={d}>
+              {i > 0 && ", "}
+              <button onClick={() => setDate(d)} style={{ border: "none", background: "none", color: "#E65100", fontWeight: 700, textDecoration: "underline", cursor: "pointer", fontSize: 13, padding: 0 }}>{d}</button>
+            </span>
+          ))}
+        </div>
+      )}
 
       {reconcileResult && (() => {
         // Cash payments never go through Square's tip-prompt screen, so tip_money is always 0
