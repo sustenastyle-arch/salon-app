@@ -2384,8 +2384,24 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
 
   // Auto-fill prices from ticket selection
   const applyTicketPrices = (menu, total, version, cavTherapist, therapist) => {
-    const prices = PRICE_TABLE[version]?.[menu];
-    if (!prices) return;
+    let prices = PRICE_TABLE[version]?.[menu];
+    let effectiveVersion = version;
+    // Sculpted Facial and Micro Channeling only ever had "new" pricing — there's no "old"
+    // entry to fall back to when the form is still on the old price version (e.g. left over
+    // from a previously-selected Improving Posture/Weight Loss menu). Without this, clicking
+    // one of those treatment-menu buttons while on "old" silently did nothing at all — same
+    // dead-button feeling whether it's this case or truly missing price data below.
+    if (!prices) {
+      const fallbackVersion = version === "new" ? "old" : "new";
+      prices = PRICE_TABLE[fallbackVersion]?.[menu];
+      effectiveVersion = fallbackVersion;
+    }
+    if (!prices) {
+      // Still switch the selected menu even with no price data at all, so the click is never
+      // a no-op — staff can see the selection changed and enter the price by hand instead.
+      setForm(f => ({ ...f, ticketMenu: menu, ticketTotal: total }));
+      return;
+    }
     const dual = isDualLicense(therapist ?? form.therapist);
     const hasCavTherapist = cavTherapist ?? form.cavTherapist;
     // Split prices when: body-only therapist has picked a cav therapist
@@ -2394,7 +2410,7 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
       ...f,
       ticketMenu: menu,
       ticketTotal: total,
-      priceVersion: version,
+      priceVersion: effectiveVersion,
       // If dual-license or cav therapist selected: split body+cav
       // Otherwise: total = body.service + cav.service combined into price
       price: willSplit ? prices.body.service : (prices.combined?.service ?? (prices.body.service + (prices.cav?.service || 0))),
