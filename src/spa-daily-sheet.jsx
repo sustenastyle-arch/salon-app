@@ -1652,6 +1652,7 @@ export default function SpaDailySheet() {
                                 {addon.serviceName || "Add-on"}{addon.ticketCurrent ? ` ${addon.ticketCurrent}/${addon.ticketTotal || parentAppt.ticketTotal || 3}` : ""}
                               </div>
                               {hasCav && <div style={{ fontSize: 9, color: "#888" }}>with {isCavRole ? addon.therapist : addon.cavTherapist}</div>}
+                              {addon.notes && <div style={{ fontSize: 9, color: "#888", fontStyle: "italic" }}>{addon.notes}</div>}
                               {aTotal > 0 && (
                                 <div style={{ fontSize: 10, fontWeight: 700, color: aColor }}>
                                   <div>{aSvc}{svcIcon}</div>
@@ -2382,6 +2383,7 @@ function ApptCard({ appt, onClick, allAppointments }) {
                     <div key={addon.id} style={{ fontSize: 13, color: chipColor, fontWeight: 700 }}>
                       <div>➕ {label}{addon.ticketCurrent ? ` ${addon.ticketCurrent}/${addon.ticketTotal || appt.ticketTotal || 3}` : ""}{addon.countsAsRevenue === null && " ⚠️"}</div>
                       <div style={{ fontSize: 12, color: "#888", fontWeight: 400 }}>{addon.therapist}{hasCav ? ` + ${addon.cavTherapist} (machine)` : ""}</div>
+                      {addon.notes && <div style={{ fontSize: 11, color: "#888", fontStyle: "italic" }}>{addon.notes}</div>}
                       {aTotal > 0 && (
                         <>
                           <div>{aSvc}{svcIcon}</div>
@@ -2909,6 +2911,7 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                 cavMins: 15,
                 cavPriceLookupKey: "",
                 cavPriceVersion: "",
+                notes: "",
               }]);
             }} style={{ ...inputStyle, fontSize: 12, color: "#888" }}>
               <option value="">+ Add a menu item</option>
@@ -3131,11 +3134,19 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
 
                     {/* Tip payment type */}
                     {tipAmt > 0 && addon.countsAsRevenue !== false && (
-                      <div>
+                      <div style={{ marginBottom: 6 }}>
                         <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>Payment Method (Tip)</div>
                         <PaymentToggle value={addon.tipPaymentType} onChange={v => upd({ tipPaymentType: v })} small />
                       </div>
                     )}
+
+                    {/* Notes — a short memo distinct from the service name (e.g. "Neck add-on")
+                        so what the add-on actually covers stays clear on the card/payroll later. */}
+                    <div>
+                      <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>Notes</div>
+                      <input value={addon.notes||""} onChange={e => upd({ notes: e.target.value })}
+                        style={{ ...inputStyle, fontSize: 12 }} placeholder="e.g. Neck add-on" />
+                    </div>
 
                     {/* Sub-total */}
                     {(svcAmt + tipAmt) > 0 && (
@@ -5528,7 +5539,7 @@ function PayrollTab() {
         const hasCav = addon.hasCav === true && !!addon.cavTherapist;
         const isCard = addon.paymentType === "card";
         const isTipCard = addon.tipPaymentType === "card";
-        const addonLabel = `${addon.serviceName || addon.name || "Add-on"}${addon.ticketCurrent ? ` ${addon.ticketCurrent}/${addon.ticketTotal || a.ticketTotal || 3}` : ""}`;
+        const addonLabel = `${addon.serviceName || addon.name || "Add-on"}${addon.ticketCurrent ? ` ${addon.ticketCurrent}/${addon.ticketTotal || a.ticketTotal || 3}` : ""}${addon.notes ? ` (${addon.notes})` : ""}`;
 
         // A machine (cav) portion of the add-on is done by a second therapist — only one lump
         // price/tip is entered for the whole add-on, so it's split by duration ratio (same
