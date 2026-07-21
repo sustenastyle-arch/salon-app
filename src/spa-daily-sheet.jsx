@@ -1647,15 +1647,15 @@ export default function SpaDailySheet() {
                             <div key={`${parentAppt.id}-${addon.id}-${role}`}
                               onClick={e => { e.stopPropagation(); openApptForEdit(parentAppt); }}
                               style={{ background: isCavRole ? "#F9F0FF" : "#E0F2F1", border: `1.5px solid ${isCavRole ? "#9C27B0" : "#00796B"}`, borderRadius: 8, padding: "5px 7px", marginBottom: 3, cursor: "pointer" }}>
-                              <div style={{ fontSize: 10, fontWeight: 800, color: isCavRole ? "#6A1B9A" : "#00695C" }}>➕ Add-on{isCavRole ? " (machine)" : ""}</div>
-                              <div style={{ fontSize: 11, fontWeight: 700, color: "#004D40" }}>{parentAppt.clientName}</div>
-                              <div style={{ fontSize: 10, color: "#00796B" }}>
+                              <div style={{ fontSize: 13, fontWeight: 800, color: isCavRole ? "#6A1B9A" : "#00695C" }}>➕ Add-on{isCavRole ? " (machine)" : ""}</div>
+                              <div style={{ fontSize: 15, fontWeight: 700, color: "#004D40" }}>{parentAppt.clientName}</div>
+                              <div style={{ fontSize: 13, color: "#00796B" }}>
                                 {addon.serviceName || "Add-on"}{addon.ticketCurrent ? ` ${addon.ticketCurrent}/${addon.ticketTotal || parentAppt.ticketTotal || 3}` : ""}
                               </div>
-                              {hasCav && <div style={{ fontSize: 9, color: "#888" }}>with {isCavRole ? addon.therapist : addon.cavTherapist}</div>}
-                              {addon.notes && <div style={{ fontSize: 9, color: "#888", fontStyle: "italic" }}>{addon.notes}</div>}
+                              {hasCav && <div style={{ fontSize: 12, color: "#888" }}>with {isCavRole ? addon.therapist : addon.cavTherapist}</div>}
+                              {addon.notes && <div style={{ fontSize: 12, color: "#888", fontStyle: "italic" }}>{addon.notes}</div>}
                               {aTotal > 0 && (
-                                <div style={{ fontSize: 10, fontWeight: 700, color: aColor }}>
+                                <div style={{ fontSize: 14, fontWeight: 700, color: aColor }}>
                                   <div>{aSvc}{svcIcon}</div>
                                   {aTip > 0 && <div>{aTip}{tipIcon}</div>}
                                   <div style={{ fontWeight: 800 }}>{aTotal}</div>
@@ -2395,17 +2395,17 @@ function ApptCard({ appt, onClick, allAppointments }) {
                   const svcSplit = hasCav ? splitAddonAmount(addon.price, addon.duration, addon.cavMins) : null;
                   const tipSplit = hasCav ? splitAddonAmount(addon.tip, addon.duration, addon.cavMins) : null;
                   return (
-                    <div key={addon.id} style={{ fontSize: 13, color: chipColor, fontWeight: 700 }}>
+                    <div key={addon.id} style={{ fontSize: 16, color: chipColor, fontWeight: 700 }}>
                       <div>➕ {label}{addon.ticketCurrent ? ` ${addon.ticketCurrent}/${addon.ticketTotal || appt.ticketTotal || 3}` : ""}{addon.countsAsRevenue === null && " ⚠️"}</div>
-                      <div style={{ fontSize: 12, color: "#888", fontWeight: 400 }}>{addon.therapist}{hasCav ? ` + ${addon.cavTherapist} (machine)` : ""}</div>
-                      {addon.notes && <div style={{ fontSize: 11, color: "#888", fontStyle: "italic" }}>{addon.notes}</div>}
+                      <div style={{ fontSize: 14, color: "#888", fontWeight: 400 }}>{addon.therapist}{hasCav ? ` + ${addon.cavTherapist} (machine)` : ""}</div>
+                      {addon.notes && <div style={{ fontSize: 13, color: "#888", fontStyle: "italic" }}>{addon.notes}</div>}
                       {aTotal > 0 && (
                         <>
                           <div>{aSvc}{svcIcon}</div>
                           {aTip > 0 && <div>{aTip}{tipIcon}</div>}
                           <div style={{ fontWeight: 800 }}>{aTotal}</div>
                           {hasCav && (
-                            <div style={{ fontSize: 11, fontWeight: 400, color: "#888" }}>
+                            <div style={{ fontSize: 13, fontWeight: 400, color: "#888" }}>
                               {addon.therapist} ${svcSplit.body}{tipSplit.body > 0 ? `+${tipSplit.body}` : ""} / {addon.cavTherapist} ${svcSplit.cav}{tipSplit.cav > 0 ? `+${tipSplit.cav}` : ""}
                             </div>
                           )}
