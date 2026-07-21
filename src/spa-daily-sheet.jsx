@@ -2219,6 +2219,11 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
     ticketTotalChosen: !!appt.ticketMenu,
     priceVersionChosen: !!appt.ticketMenu,
     ...appt,
+    // Deposit ON/OFF is tracked separately from the dollar amount so that clearing the
+    // amount input (to retype a different number) doesn't also flip the toggle off —
+    // previously both were driven by `Number(depositApplied) > 0`, so an empty field
+    // mid-edit looked identical to the user having turned the deposit off.
+    depositOn: Number(appt.depositApplied || 0) > 0,
   });
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
   const [errors, setErrors] = useState([]);
@@ -2275,7 +2280,7 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
     if ((f.purchaseTags || []).includes("giftCard")) {
       if (Number(f.giftCardPurchaseAmount || 0) > 0 && !f.giftCardPurchasePaymentType) errs.push("giftCardPurchasePaymentType");
     }
-    if (Number(f.depositApplied || 0) > 0 && !f.depositPaidDate) errs.push("depositPaidDate");
+    if (f.depositOn && Number(f.depositApplied || 0) > 0 && !f.depositPaidDate) errs.push("depositPaidDate");
     return errs;
   };
 
@@ -2283,7 +2288,11 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
     const errs = validate(form);
     if (errs.length > 0) { setErrors(errs); return; }
     setErrors([]);
-    onSave(form);
+    // Every other consumer of a saved appointment (payroll totals, the schedule card's
+    // "Includes $X deposit" badge, etc.) still keys off `depositApplied > 0` alone, so
+    // when the toggle is off the amount must actually be zeroed before saving.
+    const { depositOn, ...toSave } = form;
+    onSave(depositOn ? toSave : { ...toSave, depositApplied: 0 });
   };
 
   const ErrorBanner = () => errors.length === 0 ? null : (
@@ -2419,7 +2428,7 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                 {d.notes ? ` — ${d.notes}` : ""}
               </div>
               {d.type === "deposit" && (
-                <button onClick={() => setForm(f => ({ ...f, depositApplied: Number(d.amount) || 0, depositPaidDate: d.sheetDate }))}
+                <button onClick={() => setForm(f => ({ ...f, depositOn: true, depositApplied: Number(d.amount) || 0, depositPaidDate: d.sheetDate }))}
                   style={{ flexShrink: 0, padding: "4px 10px", borderRadius: 8, border: "none", background: "#E65100", color: "#fff", fontWeight: 700, cursor: "pointer", fontSize: 11 }}>
                   Use This
                 </button>
@@ -3131,12 +3140,15 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
               <div style={{ background: "#E8F5E9", borderRadius: 10, padding: 12, border: "1.5px solid #A5D6A7" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                   <span style={{ fontWeight: 700, fontSize: 13, color: "#2E7D32" }}>💰 Deposit Used</span>
-                  <button onClick={() => set("depositApplied", Number(form.depositApplied) > 0 ? 0 : 20)}
-                    style={{ padding: "4px 12px", borderRadius: 8, border: "none", background: Number(form.depositApplied) > 0 ? "#2E7D32" : "#C8E6C9", color: "#fff", fontWeight: 700, cursor: "pointer", fontSize: 12 }}>
-                    {Number(form.depositApplied) > 0 ? "ON ✓" : "OFF"}
+                  <button onClick={() => setForm(f => {
+                    const turningOn = !f.depositOn;
+                    return { ...f, depositOn: turningOn, depositApplied: turningOn ? (Number(f.depositApplied) > 0 ? f.depositApplied : 20) : 0 };
+                  })}
+                    style={{ padding: "4px 12px", borderRadius: 8, border: "none", background: form.depositOn ? "#2E7D32" : "#C8E6C9", color: "#fff", fontWeight: 700, cursor: "pointer", fontSize: 12 }}>
+                    {form.depositOn ? "ON ✓" : "OFF"}
                   </button>
                 </div>
-                {Number(form.depositApplied) > 0 && (
+                {form.depositOn && (
                   <div style={{ marginTop: 8, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
                     <div>
                       <div style={{ fontSize: 10, color: "#2E7D32", marginBottom: 4 }}>Deposit Amount ($)</div>
@@ -3160,7 +3172,7 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
             <div style={{ background: "#F9F9F9", borderRadius: 10, padding: 12 }}>
               <div style={{ fontWeight: 700, fontSize: 13, color: "#333", marginBottom: 10 }}>
                 💆 Treatment Price / Tip (enter total)
-                {Number(form.depositApplied) > 0 && <span style={{ fontSize: 11, color: "#2E7D32", fontWeight: 600, marginLeft: 8 }}>← Enter the amount actually received</span>}
+                {form.depositOn && <span style={{ fontSize: 11, color: "#2E7D32", fontWeight: 600, marginLeft: 8 }}>← Enter the amount actually received</span>}
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
                 <Field label="Treatment Total ($)" error={errors.includes("price")}>
