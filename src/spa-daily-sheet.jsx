@@ -131,6 +131,17 @@ const MENU_OPTIONS = [
   { group: "Micro Channeling", prefix: "MC", durations: [60] },
 ];
 
+// Course/version combos that actually have a machine (cav) price — used by the "Previous unused
+// cav time" add-on to auto-fill the machine-only price/tip from the same table used for regular
+// ticket redemptions, instead of staff computing the split by hand.
+const CAV_ADDON_MENU_OPTIONS = MENU_OPTIONS.flatMap(({ group, prefix, durations }) =>
+  durations.flatMap(d => [3, 5].map(n => {
+    const key = `${prefix}-${d}-${n}`;
+    const hasCav = !!(PRICE_TABLE.new[key]?.cav || PRICE_TABLE.old[key]?.cav);
+    return hasCav ? { key, label: `${group} ${d}min (${n}-session)` } : null;
+  }))
+).filter(Boolean);
+
 // Staff capabilities
 const CAV_CAPABLE = ["Mami", "Betsy", "Megumi", "Yuka"]; // can operate machine
 const BODY_CAPABLE = ["Mami", "Betsy", "Megumi", "Aya", "Hiromi", "Mai", "Maki"]; // can do body massage
@@ -2884,12 +2895,14 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                 tip: 0,
                 paymentType: "",
                 tipPaymentType: "",
-                countsAsRevenue: null,
+                countsAsRevenue: name === "Previous unused cav time" ? false : null,
                 ticketCurrent: null,
-                hasCav: null,
+                hasCav: name === "Previous unused cav time" ? true : null,
                 cavTherapist: "",
                 duration: durMatch ? Number(durMatch[1]) : 0,
                 cavMins: 15,
+                cavPriceLookupKey: "",
+                cavPriceVersion: "",
               }]);
             }} style={{ ...inputStyle, fontSize: 12, color: "#888" }}>
               <option value="">+ Add a menu item for a different therapist</option>
@@ -2982,8 +2995,40 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                           <select value={addon.cavTherapist||""} onChange={e => upd({ cavTherapist: e.target.value })}
                             style={{ ...inputStyle, fontSize: 12, marginBottom: 6 }}>
                             <option value="">— Select —</option>
-                            {THERAPISTS.filter(t => t !== addon.therapist).map(t => <option key={t} value={t}>{t}</option>)}
+                            {/* Same therapist as the body row is allowed here (unlike a regular
+                                visit's machine-therapist picker) — a dual-license therapist often
+                                does this catch-up machine session themselves, and since the price
+                                is split body/cav by duration ratio either way, crediting both
+                                portions to the same person still totals correctly. */}
+                            {THERAPISTS.map(t => <option key={t} value={t}>{t}</option>)}
                           </select>
+                          {addon.serviceName === "Previous unused cav time" && (
+                            <div style={{ marginBottom: 6, background: "#FFF8E1", borderRadius: 8, padding: 8, border: "1px dashed #FFD54F" }}>
+                              <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>Auto-fill machine price from ticket table</div>
+                              <select value={addon.cavPriceLookupKey || ""} onChange={e => upd({ cavPriceLookupKey: e.target.value })}
+                                style={{ ...inputStyle, fontSize: 12, marginBottom: 6 }}>
+                                <option value="">— Select course —</option>
+                                {CAV_ADDON_MENU_OPTIONS.map(o => <option key={o.key} value={o.key}>{o.label}</option>)}
+                              </select>
+                              {addon.cavPriceLookupKey && (
+                                <div style={{ display: "flex", gap: 6 }}>
+                                  {["new", "old"].map(v => {
+                                    const cav = PRICE_TABLE[v]?.[addon.cavPriceLookupKey]?.cav;
+                                    if (!cav) return null;
+                                    return (
+                                      <button key={v} onClick={() => {
+                                        const mins = Number(addon.cavMins) || 15;
+                                        upd({ cavPriceVersion: v, price: cav.service, tip: cav.tip, duration: mins, cavMins: mins });
+                                      }}
+                                        style={{ flex: 1, padding: "6px 4px", borderRadius: 8, border: `2px solid ${addon.cavPriceVersion===v?"#F57F17":"#DDD"}`, background: addon.cavPriceVersion===v?"#FFECB3":"#fff", cursor: "pointer", fontWeight: 700, fontSize: 11, color: addon.cavPriceVersion===v?"#F57F17":"#888" }}>
+                                        {v === "new" ? "New" : "Old"} pricing (${cav.service}+${cav.tip})
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                            </div>
+                          )}
                           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
                             <div>
                               <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>Total Duration (min)</div>
