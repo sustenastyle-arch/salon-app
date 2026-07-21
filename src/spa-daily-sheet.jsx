@@ -2851,9 +2851,10 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
             </div>
           )}
 
-          {/* Extra menu(s) done by the SAME therapist in the same visit — name only, no separate
-              price/payment tracking (that combined amount goes straight into the treatment/tip
-              totals below). Use the Add-on section instead when a DIFFERENT therapist is involved. */}
+          {/* Extra menu(s) added on an older appointment via the since-removed "same therapist"
+              quick-add — kept read-only here so already-saved data still displays; new entries
+              always go through the unified Add-on list below instead (it now asks who did it,
+              same person or not, right there — no need for two separate entry points). */}
           {(form.extraServiceNames || []).map((name, idx) => (
             <div key={idx} style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 6 }}>
               <div style={{ flex: 1, fontSize: 12, fontWeight: 600, color: "#0D4F4F", background: "#EAF6F4", borderRadius: 8, padding: "6px 10px" }}>
@@ -2863,23 +2864,12 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                 style={{ border: "none", background: "none", cursor: "pointer", fontSize: 16, color: "#AAA" }}>✕</button>
             </div>
           ))}
-          <select value="" onChange={e => {
-            const name = e.target.value;
-            if (!name) return;
-            set("extraServiceNames", [...(form.extraServiceNames || []), name]);
-          }} style={{ ...inputStyle, marginTop: 6, fontSize: 12, color: "#888" }}>
-            <option value="">+ Add a menu item for the same therapist</option>
-            {ADDON_PRESETS.map(p => <option key={p} value={p}>{p}</option>)}
-            {SQUARE_SERVICES.map(s => (
-              <option key={s.name} value={s.name}>{s.name}</option>
-            ))}
-          </select>
         </Field>
 
-        {/* ── Add-on (a different therapist's extra treatment, previous unused cav time, etc.) ── */}
+        {/* ── Add-on: any extra menu item done this visit (same therapist or a different one —
+              picked per add-on below, not via separate entry points) ── */}
         <div>
-          {/* Service picker — selecting immediately adds the row (same one-step pattern as
-              the same-therapist menu-add dropdown above) */}
+          {/* Service picker — selecting immediately adds the row */}
           <div style={{ marginBottom: 8 }}>
             <select value="" onChange={e => {
               const name = e.target.value;
@@ -2905,7 +2895,7 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                 cavPriceVersion: "",
               }]);
             }} style={{ ...inputStyle, fontSize: 12, color: "#888" }}>
-              <option value="">+ Add a menu item for a different therapist</option>
+              <option value="">+ Add a menu item</option>
               {ADDON_PRESETS.map(p => <option key={p} value={p}>{p}</option>)}
               {SQUARE_SERVICES.map(s => <option key={s.name} value={s.name}>{s.name}</option>)}
             </select>
