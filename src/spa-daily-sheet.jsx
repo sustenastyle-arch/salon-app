@@ -990,8 +990,11 @@ export default function SpaDailySheet() {
     const tip = Number(a.tip || 0);
     const retail = (a.purchaseTags?.includes("retail")) ? getRetailItems(a).reduce((s, it) => s + Number(it.amount || 0), 0) : 0;
     const gcSvc = Math.min(gc, svc);
-    const gcTip = Math.min(gc - gcSvc, tip);
-    const gcRetail = Math.min(gc - gcSvc - gcTip, retail);
+    // r2 here matters: e.g. 195.6 - 163 is 32.599999999999994 in floating point, which would
+    // fail a "gcTip >= tip" full-coverage check elsewhere even though it's really an exact
+    // match — same rounding-artifact class as the tip-total display bug fixed earlier.
+    const gcTip = Math.min(r2(gc - gcSvc), tip);
+    const gcRetail = Math.min(r2(gc - gcSvc - gcTip), retail);
     return { gcSvc, gcTip, gcRetail };
   };
   // Same allocation, but for a same-day ticket *purchase*'s package price/tip (giftCardUsed there
@@ -1001,7 +1004,7 @@ export default function SpaDailySheet() {
     const svc = Number(a.packagePrice || 0);
     const tip = Number(a.packageTip ?? a.tip ?? 0);
     const gcSvc = Math.min(gc, svc);
-    const gcTip = Math.min(gc - gcSvc, tip);
+    const gcTip = Math.min(r2(gc - gcSvc), tip);
     return { gcSvc, gcTip };
   };
 
@@ -1918,7 +1921,7 @@ export default function SpaDailySheet() {
                 const pkgSvc = Number(a.packagePrice||0);
                 const gc = Number(a.giftCardUsed||0);
                 const gcSvc = Math.min(gc, pkgSvc);
-                const gcTip = Math.min(gc - gcSvc, pkgTip);
+                const gcTip = Math.min(r2(gc - gcSvc), pkgTip);
                 const extra = Number(a.extraTip||0);
                 const extraSvc = Number(a.extraPrice||0);
                 const total = pkgSvc + pkgTip - gcSvc - gcTip + extra + extraSvc;
@@ -2250,7 +2253,7 @@ function ApptCard({ appt, onClick, allAppointments }) {
         // today") double-counted money that isn't actually new revenue today.
         const gc = (!isGiftCard && !isPromo) ? Number(appt.giftCardUsed||0) : 0;
         const gcSvcAmt = Math.min(gc, dispSvc);
-        const gcTipAmt = Math.min(Math.max(0, gc - gcSvcAmt), dispTip);
+        const gcTipAmt = Math.min(Math.max(0, r2(gc - gcSvcAmt)), dispTip);
         const receivedTodayTotal = r2((dispSvc - gcSvcAmt) + (dispTip - gcTipAmt));
         // Line items show the net (post-gift-card) amount too — showing the gross entered
         // number next to a total that's already netted out looked like the two didn't add up.
@@ -2507,7 +2510,7 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
       const svc = Number(f.price || 0);
       const tip = Number(f.tip || 0);
       const gcSvc = Math.min(gc, svc);
-      const gcTip = Math.min(Math.max(0, gc - gcSvc), tip);
+      const gcTip = Math.min(Math.max(0, r2(gc - gcSvc)), tip);
       if (svc > 0 && gcSvc < svc && !f.svcSplitPayment && !f.paymentType) errs.push("paymentType");
       if (tip > 0 && gcTip < tip && !f.tipSplitPayment && !f.tipPaymentType) errs.push("tipPaymentType");
     }
@@ -3646,7 +3649,7 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                 }
                 const gc = Number(form.giftCardUsed || 0);
                 const gcSvc = Math.min(gc, svc);
-                const gcTip = Math.min(Math.max(0, gc - gcSvc), tip);
+                const gcTip = Math.min(Math.max(0, r2(gc - gcSvc)), tip);
                 const receivedToday = r2((svc - gcSvc) + (tip - gcTip));
                 const dep = Number(form.depositApplied || 0);
                 // Payroll (deposit-inclusive) split per therapist — Weight Loss keeps the machine
@@ -3771,7 +3774,7 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                 const svc = Number(form.price || 0);
                 const tip = Number(form.tip || 0);
                 const gcSvc = Math.min(gc, svc);
-                const gcTip = Math.min(Math.max(0, gc - gcSvc), tip);
+                const gcTip = Math.min(Math.max(0, r2(gc - gcSvc)), tip);
                 const tipCovered = gc > 0 && tip > 0 && gcTip >= tip;
                 return (
                   <div style={{ marginTop: 8 }}>
