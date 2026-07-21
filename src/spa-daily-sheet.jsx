@@ -284,31 +284,33 @@ const RETAIL_TAX_RATE = 0.04712;
 // instead of crediting the full pre-tax amount only when nobody bothered to fill in a split.
 const afterTaxAmount = (amt) => Math.round(Number(amt || 0) * (1 - RETAIL_TAX_RATE) * 100) / 100;
 
+// Kept alphabetical by name so staff can find a product quickly in the dropdown.
 const RETAIL_PRODUCTS = [
-  { name: "Sheet Mask", price: 10 },
-  { name: "Epicutis Sheet Mask", price: 30 },
+  { name: "Arctigenin Brightening Treatment", price: 175 },
+  { name: "Belly Bliss Gut Renewal Tea 4oz", price: 30 },
+  { name: "Botanical Beauty Tea 4oz", price: 30 },
+  { name: "Cleansing Essentials Set", price: 105 },
+  { name: "Detox Herbal Tea 4oz", price: 30 },
+  { name: "Epicutis Lipid Shield", price: 90 },
   { name: "Epicutis Sample Set", price: 42 },
+  { name: "Epicutis Sheet Mask", price: 30 },
+  { name: "Hydrobiome Mist", price: 75 },
+  { name: "Hyvia Creme", price: 195 },
+  { name: "Koso Drink", price: 99 },
   { name: "Koso Shot", price: 10 },
   { name: "Koso Shot Campaign", price: 5 },
-  { name: "Koso Drink", price: 99 },
-  { name: "Belly Bliss Gut Renewal Tea 4oz", price: 30 },
-  { name: "Detox Herbal Tea 4oz", price: 30 },
-  { name: "Botanical Beauty Tea 4oz", price: 30 },
+  { name: "Liftech Cream", price: 0 },
+  { name: "Lipid Body Treatment", price: 225 },
+  { name: "Lipid Recovery Mask", price: 125 },
+  { name: "Lipid Serum", price: 250 },
+  { name: "Luxury Skin Care Set", price: 395 },
   { name: "Lymph Love Herbal Tea 4oz", price: 30 },
-  { name: "Tea Bag (100ct)", price: 10 },
-  { name: "Hydrobiome Mist", price: 75 },
   { name: "Muscle Rub 5oz", price: 35 },
   { name: "Muscle Rub 8oz", price: 55 },
   { name: "Oil Cleanser", price: 85 },
-  { name: "Lipid Serum", price: 250 },
-  { name: "Hyvia Creme", price: 195 },
-  { name: "Arctigenin Brightening Treatment", price: 175 },
-  { name: "Lipid Recovery Mask", price: 125 },
-  { name: "Lipid Body Treatment", price: 225 },
   { name: "Post Procedure Set", price: 75 },
-  { name: "Cleansing Essentials Set", price: 105 },
-  { name: "Luxury Skin Care Set", price: 395 },
-  { name: "Liftech Cream", price: 0 },
+  { name: "Sheet Mask", price: 10 },
+  { name: "Tea Bag (100ct)", price: 10 },
   { name: "電気バリブラシ", price: 2095 },
 ];
 // Stored value stays "電気バリブラシ" (already-saved retail sales are matched against it by exact
@@ -320,18 +322,18 @@ const RETAIL_PRODUCT_LABELS = { "電気バリブラシ": "Electric Facial Brush"
 // buy the backbar/professional-size version at a different price than what's sold up front.
 // Pulled by hand from Square's Catalog API (2026-07-20) — keep in sync if that category's
 // items or prices change in Square, same as the other pricing tables in this file.
+// Kept alphabetical by name so staff can find a product quickly in the dropdown.
 const STAFF_PURCHASE_PRODUCTS = [
-  { name: "Backbar Oil Cleanser (16oz)", price: 100 },
+  { name: "Arctigenin Brightening Treatment (4oz)", price: 120 },
+  { name: "Back Bar Lipid Shield SPF 30", price: 135 },
   { name: "Backbar Enzyme Powder (32g)", price: 45 },
   { name: "Backbar Lipid Body Treatment", price: 175 },
-  { name: "Arctigenin Brightening Treatment (4oz)", price: 120 },
+  { name: "Backbar Oil Cleanser (16oz)", price: 100 },
+  { name: "Ice Globes", price: 100 },
+  { name: "Lipid Recovery Mask - Eyes (10pcs)", price: 80 },
   { name: "Lipid Recovery Mask - Face (10pcs)", price: 90 },
   { name: "Lipid Recovery Mask - Neck (10pcs)", price: 100 },
-  { name: "Lipid Recovery Mask - Eyes (10pcs)", price: 80 },
-  { name: "Ice Globes", price: 100 },
-  { name: "Back Bar Lipid Shield SPF 30", price: 135 },
   { name: "Luxury Set", price: 100 },
-  { name: "Epicutis Lipid Shield", price: 90 },
 ];
 
 const formatCurrency = (n) => `$${Number(n || 0).toLocaleString("en-US", { minimumFractionDigits: 0 })}`;
