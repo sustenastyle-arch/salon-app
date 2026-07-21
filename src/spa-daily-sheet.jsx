@@ -2259,12 +2259,18 @@ function ApptCard({ appt, onClick, allAppointments }) {
         // number next to a total that's already netted out looked like the two didn't add up.
         const netSvc = r2(dispSvc - gcSvcAmt);
         const netTip = r2(dispTip - gcTipAmt);
+        // A gift card that fully covers the service/tip nets to $0 — correct for "today's
+        // revenue," but showing a bare $0 here gave no way to tell the visit still counts for
+        // payroll. Show the gross (pre-GC) reference amount instead once it's fully covered,
+        // same as how a チケット消化 redemption shows its full reference price, not $0.
+        const svcFullyCovered = dispSvc > 0 && gcSvcAmt >= dispSvc;
+        const tipFullyCovered = dispTip > 0 && gcTipAmt >= dispTip;
 
         const svcText = isSameDay
-          ? (appt.packageSplitPayment ? `💵$${appt.packageCashPortion||0}＋💳$${appt.packageCardPortion||0}` : `${netSvc}${gcSvcAmt >= dispSvc && dispSvc > 0 ? "🎁" : paidIcon}`)
-          : !isRedemption && appt.svcSplitPayment ? `💵$${appt.svcCashPortion||0}＋💳$${appt.svcCardPortion||0}` : `${netSvc}${gcSvcAmt >= dispSvc && dispSvc > 0 ? "🎁" : paidIcon}`;
+          ? (appt.packageSplitPayment ? `💵$${appt.packageCashPortion||0}＋💳$${appt.packageCardPortion||0}` : `${svcFullyCovered ? dispSvc : netSvc}${svcFullyCovered ? "🎁" : paidIcon}`)
+          : !isRedemption && appt.svcSplitPayment ? `💵$${appt.svcCashPortion||0}＋💳$${appt.svcCardPortion||0}` : `${svcFullyCovered ? dispSvc : netSvc}${svcFullyCovered ? "🎁" : paidIcon}`;
         const tipText = !isRedemption && !isSameDay && appt.tipSplitPayment
-          ? `💵$${appt.tipCashPortion||0}＋💳$${appt.tipCardPortion||0}` : `${netTip}${gcTipAmt >= dispTip && dispTip > 0 ? "🎁" : tipIcon}`;
+          ? `💵$${appt.tipCashPortion||0}＋💳$${appt.tipCardPortion||0}` : `${tipFullyCovered ? dispTip : netTip}${tipFullyCovered ? "🎁" : tipIcon}`;
 
         const courseName = isTicket ? (stripJpAnnotation(appt.serviceName) || appt.ticketMenu) : (stripJpAnnotation(appt.serviceName) || `${appt.duration}min`);
         const sessionSuffix = isRedemption && appt.ticketCurrent > 0 ? ` ${appt.ticketCurrent}/${appt.ticketTotal}`
@@ -2283,7 +2289,7 @@ function ApptCard({ appt, onClick, allAppointments }) {
                 <div>{svcText}</div>
                 {dispTip > 0 && <div>{tipText}</div>}
                 <div style={{ fontWeight: 800 }}>
-                  {gc > 0 ? receivedTodayTotal : dispTotal}
+                  {svcFullyCovered && (dispTip <= 0 || tipFullyCovered) ? dispTotal : (gc > 0 ? receivedTodayTotal : dispTotal)}
                   {extraSvc > 0 && <span style={{ color: REVENUE_COLOR }}> +Extra ${extraSvc}{appt.extraPricePaymentType==="card"?"💳":"💵"}</span>}
                   {extra > 0 && <span style={{ color: REVENUE_COLOR }}> +Extra tip{extra}💝{appt.extraTipPaymentType==="card"?"💳":"💵"}</span>}
                 </div>
@@ -2306,17 +2312,7 @@ function ApptCard({ appt, onClick, allAppointments }) {
               <div style={{ color: "#2E7D32", fontSize: 13 }}>💰Deposit ${dep} paid (not included in today's total received){depDate ? ` ${depDate}` : ""}</div>
             )}
             {gc > 0 && (
-              <div style={{ color: "#2E7D32", fontSize: 13 }}>
-                GC used ${gc}
-                {/* Revenue nets out the GC-covered amount (it was already counted as revenue on
-                    the day the card was purchased), but the therapist's payroll allocation does
-                    NOT — PayrollTab still credits the full price/tip regardless of how it was
-                    paid. Spelled out here since the card above only ever shows $0 in that case,
-                    which otherwise reads like the visit isn't being counted for payroll at all. */}
-                {(gcSvcAmt >= dispSvc && dispSvc > 0) || (gcTipAmt >= dispTip && dispTip > 0) ? (
-                  <div style={{ fontSize: 11, fontWeight: 400 }}>Payroll still credits {appt.therapist}: ${dispSvc} treatment + ${dispTip} tip</div>
-                ) : null}
-              </div>
+              <div style={{ color: "#2E7D32", fontSize: 13 }}>GC used ${gc}</div>
             )}
             {(appt.addons || []).length > 0 && (
               <div style={{ display: "flex", flexDirection: "column", gap: 3, marginTop: 3 }}>
