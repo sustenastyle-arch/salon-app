@@ -297,6 +297,7 @@ const ADDON_PRESETS = [
   "Cav add-on +20min",
   "Cav add-on +30min",
   "Cav add-on +40min",
+  "Micro Channeling - Neck",
 ];
 
 // Sales tax subtracted before splitting a retail sale's commission-eligible amount among sellers.
