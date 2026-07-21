@@ -2306,7 +2306,17 @@ function ApptCard({ appt, onClick, allAppointments }) {
               <div style={{ color: "#2E7D32", fontSize: 13 }}>💰Deposit ${dep} paid (not included in today's total received){depDate ? ` ${depDate}` : ""}</div>
             )}
             {gc > 0 && (
-              <div style={{ color: "#2E7D32", fontSize: 13 }}>GC used ${gc}</div>
+              <div style={{ color: "#2E7D32", fontSize: 13 }}>
+                GC used ${gc}
+                {/* Revenue nets out the GC-covered amount (it was already counted as revenue on
+                    the day the card was purchased), but the therapist's payroll allocation does
+                    NOT — PayrollTab still credits the full price/tip regardless of how it was
+                    paid. Spelled out here since the card above only ever shows $0 in that case,
+                    which otherwise reads like the visit isn't being counted for payroll at all. */}
+                {(gcSvcAmt >= dispSvc && dispSvc > 0) || (gcTipAmt >= dispTip && dispTip > 0) ? (
+                  <div style={{ fontSize: 11, fontWeight: 400 }}>Payroll still credits {appt.therapist}: ${dispSvc} treatment + ${dispTip} tip</div>
+                ) : null}
+              </div>
             )}
             {(appt.addons || []).length > 0 && (
               <div style={{ display: "flex", flexDirection: "column", gap: 3, marginTop: 3 }}>
