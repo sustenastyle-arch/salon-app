@@ -80,14 +80,21 @@ export default async function handler(req, res) {
       for (const p of data.payments || []) {
         if (p.status !== 'COMPLETED') continue;
         const total = (p.total_money?.amount || 0) / 100;
+        // Square keeps a refunded payment's status COMPLETED and total_money unchanged —
+        // the refund only shows up in refunded_money — so without this a fully-refunded
+        // sale still counted as real revenue here even though the customer got it all back.
+        const refunded = (p.refunded_money?.amount || 0) / 100;
+        const netTotal = Math.max(0, total - refunded);
         let tip = (p.tip_money?.amount || 0) / 100;
         if (tip === 0 && p.order_id) tip = await getOrderTipLineItems(p.order_id);
+        // A fully refunded payment kept no money at all, tip included.
+        const netTip = netTotal > 0 ? tip : 0;
         if (p.source_type === 'CASH') {
-          cashTotal += total;
-          cashTip += tip;
+          cashTotal += netTotal;
+          cashTip += netTip;
         } else {
-          cardTotal += total;
-          cardTip += tip;
+          cardTotal += netTotal;
+          cardTip += netTip;
         }
       }
       cursor = data.cursor;
