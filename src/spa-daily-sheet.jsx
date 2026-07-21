@@ -4589,7 +4589,11 @@ function StaffPurchaseModal({ sp, onSave, onDelete, onClose }) {
           </select>
         </Field>
         {items.map((item, idx) => {
-          const isOtherProduct = !!item.productName && !STAFF_PURCHASE_PRODUCTS.find(p => p.name === item.productName);
+          // Staff also sometimes buy a regular customer-facing retail item (not just the
+          // 業務用/backbar size) at a staff discount, so both lists are offered here — the
+          // regular-retail price shown is the full price, same as RETAIL_PRODUCTS elsewhere;
+          // the actual discounted amount is still typed/edited by hand below.
+          const isOtherProduct = !!item.productName && !STAFF_PURCHASE_PRODUCTS.find(p => p.name === item.productName) && !RETAIL_PRODUCTS.find(p => p.name === item.productName);
           return (
             <div key={idx} style={{ display: "flex", flexDirection: "column", gap: 8, ...(idx > 0 ? { background: "#F5F5F5", borderRadius: 8, padding: 10, border: "1px dashed #CCC" } : {}) }}>
               {idx > 0 && (
@@ -4602,13 +4606,20 @@ function StaffPurchaseModal({ sp, onSave, onDelete, onClose }) {
                 <select value={isOtherProduct ? "__other__" : (item.productName || "")} onChange={e => {
                   const val = e.target.value;
                   if (val === "__other__") { updateItem(idx, { productName: "" }); return; }
-                  const prod = STAFF_PURCHASE_PRODUCTS.find(p => p.name === val);
+                  const prod = STAFF_PURCHASE_PRODUCTS.find(p => p.name === val) || RETAIL_PRODUCTS.find(p => p.name === val);
                   updateItem(idx, { productName: val, amount: prod?.price > 0 ? prod.price : item.amount });
                 }} style={inputStyle}>
                   <option value="">— Select a product/treatment —</option>
-                  {STAFF_PURCHASE_PRODUCTS.map(p => (
-                    <option key={p.name} value={p.name}>{p.name}{p.price > 0 ? ` ($${p.price})` : ""}</option>
-                  ))}
+                  <optgroup label="Employee Discount（社販）">
+                    {STAFF_PURCHASE_PRODUCTS.map(p => (
+                      <option key={p.name} value={p.name}>{p.name}{p.price > 0 ? ` ($${p.price})` : ""}</option>
+                    ))}
+                  </optgroup>
+                  <optgroup label="Retail Products（通常物販）">
+                    {RETAIL_PRODUCTS.map(p => (
+                      <option key={p.name} value={p.name}>{RETAIL_PRODUCT_LABELS[p.name] || p.name}{p.price > 0 ? ` ($${p.price})` : ""}</option>
+                    ))}
+                  </optgroup>
                   <option value="__other__">Other (enter treatment name, etc. directly)</option>
                 </select>
                 {isOtherProduct && (
