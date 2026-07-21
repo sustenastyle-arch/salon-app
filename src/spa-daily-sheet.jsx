@@ -2375,9 +2375,15 @@ function ApptCard({ appt, onClick, allAppointments }) {
                 )}
               </div>
             )}
-            {(appt.addons || []).length > 0 && (
+            {/* An add-on done by a DIFFERENT therapist already gets its own card under that
+                therapist's column (see the Schedule tab's addonItems grouping) — showing it
+                here too, on the main appointment's own card, looked like it was also being
+                credited to this card's therapist. Only show it here when it's the same
+                therapist (or no therapist chosen yet), so each add-on appears in exactly
+                one place. */}
+            {(appt.addons || []).filter(addon => !addon.therapist || addon.therapist === appt.therapist).length > 0 && (
               <div style={{ display: "flex", flexDirection: "column", gap: 3, marginTop: 3 }}>
-                {(appt.addons || []).map(addon => {
+                {(appt.addons || []).filter(addon => !addon.therapist || addon.therapist === appt.therapist).map(addon => {
                   const label = addon.serviceName || addon.name || "Add-on";
                   const aSvc = Number(addon.price||0);
                   const aTip = Number(addon.tip||0);
