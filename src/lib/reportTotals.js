@@ -7,6 +7,8 @@
 
 export const REFERRAL_SOURCES = ["Google / Website", "Google Map", "Instagram", "Yelp", "紹介"];
 
+const r2 = (n) => Math.round(n * 100) / 100;
+
 // Inline 物販購入 (within an appointment) supports multiple products in the same visit — the first
 // item lives directly on the appointment (retailProductName/retailPurchaseAmount/...), any further
 // items live in extraRetailItems[] so existing saved appointments (single item) keep working as-is.
@@ -95,8 +97,11 @@ export function computeDayTotals(data) {
     const tip = Number(a.tip || 0);
     const retail = (a.purchaseTags?.includes("retail")) ? getRetailItems(a).reduce((s, it) => s + Number(it.amount || 0), 0) : 0;
     const gcSvc = Math.min(gc, svc);
-    const gcTip = Math.min(gc - gcSvc, tip);
-    const gcRetail = Math.min(gc - gcSvc - gcTip, retail);
+    // r2 avoids a floating-point artifact (e.g. 195.6 - 163 = 32.599999999999994) that would
+    // otherwise leave a fractional-cent residual instead of a clean $0 — same fix already
+    // applied to the equivalent gcAlloc in spa-daily-sheet.jsx.
+    const gcTip = Math.min(r2(gc - gcSvc), tip);
+    const gcRetail = Math.min(r2(gc - gcSvc - gcTip), retail);
     return { gcSvc, gcTip, gcRetail };
   };
   // Retail sold inline during a visit (物販 tag on the appointment, up to 3 items via
@@ -124,7 +129,7 @@ export function computeDayTotals(data) {
     const svc = Number(a.packagePrice || 0);
     const tip = Number(a.packageTip ?? a.tip ?? 0);
     const gcSvc = Math.min(gc, svc);
-    const gcTip = Math.min(gc - gcSvc, tip);
+    const gcTip = Math.min(r2(gc - gcSvc), tip);
     return { gcSvc, gcTip };
   };
 
