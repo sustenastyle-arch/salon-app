@@ -2948,7 +2948,7 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                         </button>
                         <button onClick={() => upd({ countsAsRevenue: false })}
                           style={{ flex: 1, padding: "6px 4px", borderRadius: 8, border: `2px solid ${addon.countsAsRevenue === false ? NON_REVENUE_COLOR : "#DDD"}`, background: addon.countsAsRevenue === false ? "#E3F2FD" : "#fff", cursor: "pointer", fontWeight: 700, fontSize: 11, color: addon.countsAsRevenue === false ? NON_REVENUE_COLOR : "#888" }}>
-                          🎫 Ticket Redemption (previous unused session, etc.)
+                          🎫 Ticket Redemption (this ticket or another one)
                         </button>
                       </div>
                     </div>
