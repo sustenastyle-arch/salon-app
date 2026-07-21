@@ -2317,6 +2317,15 @@ function ApptCard({ appt, onClick, allAppointments }) {
         const tipText = !isRedemption && !isSameDay && appt.tipSplitPayment
           ? `💵$${appt.tipCashPortion||0}＋💳$${appt.tipCardPortion||0}` : `${tipFullyCovered ? dispTip : netTip}${tipFullyCovered ? "🎁" : tipIcon}`;
 
+        // A service/tip that's fully covered by an existing gift card balance is non-revenue
+        // (already counted the day the card was purchased) even when the OTHER line isn't —
+        // e.g. service paid entirely by gift card but tip paid today in cash. The blanket
+        // amountColor only looks at whether the whole visit nets to non-revenue, so it stayed
+        // red on a fully-GC-covered service line just because a separately-paid tip existed.
+        const svcColor = svcFullyCovered ? NON_REVENUE_COLOR : amountColor;
+        const tipColor = tipFullyCovered ? NON_REVENUE_COLOR : amountColor;
+        const totalColor = (svcFullyCovered && (dispTip <= 0 || tipFullyCovered)) ? NON_REVENUE_COLOR : amountColor;
+
         const courseName = isTicket ? (stripJpAnnotation(appt.serviceName) || appt.ticketMenu) : (stripJpAnnotation(appt.serviceName) || `${appt.duration}min`);
         const sessionSuffix = isRedemption && appt.ticketCurrent > 0 ? ` ${appt.ticketCurrent}/${appt.ticketTotal}`
           : isSameDay ? ` x${appt.ticketTotal}` : "";
@@ -2330,10 +2339,10 @@ function ApptCard({ appt, onClick, allAppointments }) {
               {(appt.extraServiceNames || []).map(n => ` + ${n}`).join("")}
             </div>
             {(dispSvc > 0 || dispTip > 0) && (
-              <div style={{ color: amountColor, fontWeight: 700 }}>
-                <div>{svcText}</div>
-                {dispTip > 0 && <div>{tipText}</div>}
-                <div style={{ fontWeight: 800 }}>
+              <div style={{ fontWeight: 700 }}>
+                <div style={{ color: svcColor }}>{svcText}</div>
+                {dispTip > 0 && <div style={{ color: tipColor }}>{tipText}</div>}
+                <div style={{ fontWeight: 800, color: totalColor }}>
                   {svcFullyCovered && (dispTip <= 0 || tipFullyCovered) ? dispTotal : (gc > 0 ? receivedTodayTotal : dispTotal)}
                   {extraSvc > 0 && <span style={{ color: REVENUE_COLOR }}> +Extra ${extraSvc}{appt.extraPricePaymentType==="card"?"💳":"💵"}</span>}
                   {extra > 0 && <span style={{ color: REVENUE_COLOR }}> +Extra tip{extra}💝{appt.extraTipPaymentType==="card"?"💳":"💵"}</span>}
