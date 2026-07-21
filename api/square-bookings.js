@@ -8,7 +8,7 @@ const TEAM_MEMBER_MAP = {
   'TMhfddQBlrnZkR9n': 'Aya',
   'TMu1v7kb0cgbl5mn': 'Mai',
   'TMwBMik2I8Xpyog2': 'Maki',
-  'TMW8eccMtM4pdMiM': 'Hitomi',
+  'TMW8eccMtM4pdMiM': 'Hiromi',
 };
 
 export default async function handler(req, res) {
