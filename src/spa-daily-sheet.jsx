@@ -1261,6 +1261,24 @@ export default function SpaDailySheet() {
             <div style={{ fontSize: 11, color: "#999", marginTop: 8 }}>
               ※ Cash tips aren't broken out separately on Square's side, so they're excluded from this check (only the cash total is compared).
             </div>
+            {/* Individual refunds found on Square that day — surfaced so staff can match each
+                one back to the sheet entry that needs a correction (e.g. a mis-entered price
+                that was fixed with a Square refund), rather than only seeing the net total
+                already excludes them. */}
+            {(reconcileResult.refunds || []).length > 0 && (
+              <div style={{ marginTop: 12, background: "#FFF3E0", borderRadius: 8, padding: 10 }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: "#E65100", marginBottom: 6 }}>
+                  🔙 {reconcileResult.refunds.length} refund{reconcileResult.refunds.length > 1 ? "s" : ""} found on Square this day — check these against the sheet
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                  {reconcileResult.refunds.map((r, i) => (
+                    <div key={i} style={{ fontSize: 12, color: "#BF360C" }}>
+                      {r.tender === "cash" ? "💵" : "💳"} {formatCurrency(r.amount)} refunded — payment at {r.time}{r.label ? ` (${r.label})` : ""}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         );
       })()}

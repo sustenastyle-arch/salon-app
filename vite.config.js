@@ -254,32 +254,53 @@ function squarePaymentsApi(env) {
           // the total, so it has to be recovered from the order's line items instead. Cash
           // payments never go through the tip-prompt flow at all (so tip_money is always 0
           // for them), but staff sometimes still itemize a "Tip" line inside a cash order —
-          // checked for both tenders for that reason.
+          // checked for both tenders for that reason. The same order fetch also gives us the
+          // non-tip line item names, used below to label refunded payments so staff can match
+          // a refund back to the appointment/retail entry that needs correcting.
           //
           // Use gross_sales_money (the line item's price as entered), not total_money — an
           // order-level discount gets auto-prorated across every line item including "Tip" by
           // Square, but a discount off the service price shouldn't silently shrink the tip
           // figure staff actually typed in.
-          const orderTipCache = {}
-          const getOrderTipLineItems = async (orderId) => {
-            if (orderTipCache[orderId] !== undefined) return orderTipCache[orderId]
+          const orderCache = {}
+          const getOrder = async (orderId) => {
+            if (orderCache[orderId] !== undefined) return orderCache[orderId]
             try {
               const r = await fetch(`https://connect.squareup.com/v2/orders/${orderId}`, { headers })
               const d = await r.json()
-              if (!r.ok) { orderTipCache[orderId] = 0; return 0 }
-              const lineItems = d.order?.line_items || []
-              const tip = lineItems
-                .filter(li => (li.name || '').trim().toLowerCase() === 'tip')
-                .reduce((s, li) => s + (Number(li.gross_sales_money?.amount || 0)) / 100, 0)
-              orderTipCache[orderId] = tip
-              return tip
+              orderCache[orderId] = r.ok ? (d.order || null) : null
             } catch {
-              orderTipCache[orderId] = 0
-              return 0
+              orderCache[orderId] = null
             }
+            return orderCache[orderId]
+          }
+          const getOrderTipLineItems = async (orderId) => {
+            const order = await getOrder(orderId)
+            const lineItems = order?.line_items || []
+            return lineItems
+              .filter(li => (li.name || '').trim().toLowerCase() === 'tip')
+              .reduce((s, li) => s + (Number(li.gross_sales_money?.amount || 0)) / 100, 0)
+          }
+          const getOrderItemLabel = async (orderId) => {
+            const order = await getOrder(orderId)
+            const lineItems = order?.line_items || []
+            return lineItems
+              .filter(li => (li.name || '').trim().toLowerCase() !== 'tip')
+              .map(li => li.name)
+              .filter(Boolean)
+              .join(', ')
+          }
+          // Hawaii is UTC-10, no DST — same rule as the day-boundary math above.
+          const formatHawaiiTime = (isoString) => {
+            const d = new Date(isoString)
+            const h = (d.getUTCHours() + 24 - 10) % 24
+            const m = d.getUTCMinutes()
+            const ampm = h < 12 ? 'AM' : 'PM'
+            return `${h % 12 || 12}:${String(m).padStart(2, '0')} ${ampm}`
           }
 
           let cashTotal = 0, cardTotal = 0, cashTip = 0, cardTip = 0
+          const refunds = []
           let cursor
           do {
             const params = new URLSearchParams({
@@ -319,6 +340,14 @@ function squarePaymentsApi(env) {
                 cardTotal += netTotal
                 cardTip += netTip
               }
+              if (refunded > 0) {
+                refunds.push({
+                  amount: Math.round(refunded * 100) / 100,
+                  tender: p.source_type === 'CASH' ? 'cash' : 'card',
+                  time: formatHawaiiTime(p.created_at),
+                  label: p.order_id ? await getOrderItemLabel(p.order_id) : '',
+                })
+              }
             }
             cursor = data.cursor
           } while (cursor)
@@ -327,6 +356,7 @@ function squarePaymentsApi(env) {
           res.end(JSON.stringify({
             cashTotal: Math.round(cashTotal * 100) / 100,
             cardTotal: Math.round(cardTotal * 100) / 100,
+            refunds,
             cashTip: Math.round(cashTip * 100) / 100,
             cardTip: Math.round(cardTip * 100) / 100,
           }))
