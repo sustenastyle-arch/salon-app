@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
+import { createPortal } from "react-dom";
 import * as XLSX from "xlsx";
 import { REFERRAL_SOURCES, getRetailItems, getStaffPurchaseItems, computeDayTotals } from "./lib/reportTotals.js";
 
@@ -4836,10 +4837,23 @@ function DatePicker({ value, onChange, style, allowClear = true }) {
   const [y, m, d] = value ? value.split("-").map(Number) : [null, null, null];
   const [viewYear, setViewYear] = useState(y || today.getFullYear());
   const [viewMonth, setViewMonth] = useState(m || today.getMonth() + 1); // 1-12
+  const buttonRef = useRef(null);
+  const [pos, setPos] = useState(null);
 
+  // Rendered through a portal at a fixed (viewport-relative) position instead of as a normal
+  // absolutely-positioned child — this field is often used inside a modal with its own
+  // horizontal scroll area (e.g. the Deposit section), and a plain absolute dropdown gets
+  // clipped by that ancestor's overflow boundary, silently cutting off whichever columns
+  // (Saturday, in the reported case) fall past the currently-scrolled-into-view edge.
+  const POPUP_WIDTH = 230;
   const openPicker = () => {
     setViewYear(y || today.getFullYear());
     setViewMonth(m || today.getMonth() + 1);
+    const rect = buttonRef.current?.getBoundingClientRect();
+    if (rect) {
+      const left = Math.min(rect.left, window.innerWidth - POPUP_WIDTH - 8);
+      setPos({ top: rect.bottom + 4, left: Math.max(8, left) });
+    }
     setOpen(true);
   };
 
@@ -4862,13 +4876,13 @@ function DatePicker({ value, onChange, style, allowClear = true }) {
 
   return (
     <div style={{ position: "relative", display: "inline-block" }}>
-      <button type="button" onClick={() => open ? setOpen(false) : openPicker()} style={{ ...style, cursor: "pointer", whiteSpace: "nowrap" }}>
+      <button type="button" ref={buttonRef} onClick={() => open ? setOpen(false) : openPicker()} style={{ ...style, cursor: "pointer", whiteSpace: "nowrap" }}>
         📅 {displayText}
       </button>
-      {open && (
+      {open && pos && createPortal(
         <>
           <div onClick={() => setOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 1000 }} />
-          <div style={{ position: "absolute", top: "100%", left: 0, marginTop: 4, background: "#fff", borderRadius: 10, boxShadow: "0 4px 16px rgba(0,0,0,0.25)", padding: 12, zIndex: 1001, width: 230 }}>
+          <div style={{ position: "fixed", top: pos.top, left: pos.left, background: "#fff", borderRadius: 10, boxShadow: "0 4px 16px rgba(0,0,0,0.25)", padding: 12, zIndex: 1001, width: POPUP_WIDTH }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
               <button type="button" onClick={() => changeMonth(-1)} style={{ border: "none", background: "none", cursor: "pointer", fontSize: 16, color: "#0D4F4F", fontWeight: 700, padding: "0 8px" }}>‹</button>
               <span style={{ fontWeight: 700, fontSize: 13, color: "#0D4F4F" }}>{MONTH_NAMES[viewMonth - 1]} {viewYear}</span>
@@ -4898,7 +4912,8 @@ function DatePicker({ value, onChange, style, allowClear = true }) {
               </button>
             )}
           </div>
-        </>
+        </>,
+        document.body
       )}
     </div>
   );
