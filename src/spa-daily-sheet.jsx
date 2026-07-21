@@ -2672,6 +2672,39 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [form.cavTherapist, form.duration, form.isTicket]);
 
+  // If a total service/tip was already typed in (via 💆 Treatment Price / Tip above), keep
+  // its body/cav dollar split in sync whenever the minute ratio changes afterward — e.g. staff
+  // types the total while the course is still showing the wrong duration (spotted from Square
+  // as 120min when the visit was actually 90min), then corrects the course. Without this the
+  // dollar split stayed frozen at whatever ratio was in effect when the total was first typed,
+  // silently wrong even after bodyMins/cavMins updated for the corrected duration — staff had
+  // to notice and retype the total from scratch to fix it.
+  useEffect(() => {
+    if (form.isTicket || !form.cavTherapist || isRegularWeightLoss) return;
+    const svcTotal = Number(form.totalServiceInput || 0);
+    const tipTotal = Number(form.totalTipInput || 0);
+    if (svcTotal <= 0 && tipTotal <= 0) return;
+    const bodyMins = Number(form.bodyMins || form.duration);
+    const cavMins = Number(form.cavMins || 0);
+    const allMins = bodyMins + cavMins;
+    if (cavMins <= 0 || allMins <= 0) return;
+    setForm(f => {
+      const patch = {};
+      if (svcTotal > 0) {
+        const cavPrice = Math.round(svcTotal * cavMins / allMins * 100) / 100;
+        patch.cavPrice = cavPrice;
+        patch.price = Math.round((svcTotal - cavPrice) * 100) / 100;
+      }
+      if (tipTotal > 0) {
+        const cavTip = Math.round(tipTotal * cavMins / allMins * 100) / 100;
+        patch.cavTip = cavTip;
+        patch.tip = Math.round((tipTotal - cavTip) * 100) / 100;
+      }
+      return { ...f, ...patch };
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form.bodyMins, form.cavMins, form.cavTherapist, form.isTicket, isRegularWeightLoss]);
+
   return (
     <Modal onClose={onClose}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
