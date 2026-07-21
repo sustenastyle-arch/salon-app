@@ -21,6 +21,19 @@ export const getRetailItems = (a) => {
   return items;
 };
 
+// 社販 (staff self-purchase) — same pattern as getRetailItems: first item lives directly on the
+// record (productName/amount/paymentType), further items live in extraItems[].
+export const getStaffPurchaseItems = (sp) => {
+  const items = [];
+  if (Number(sp.amount || 0) > 0 || sp.productName) {
+    items.push({ productName: sp.productName || "", amount: Number(sp.amount || 0), paymentType: sp.paymentType });
+  }
+  (sp.extraItems || []).forEach(it => {
+    if (Number(it.amount || 0) > 0 || it.productName) items.push(it);
+  });
+  return items;
+};
+
 // Per-day cash/card/tip/clients breakdown used by the monthly sales report — both the in-app
 // export and the local Excel-patch script call this so the two can never silently diverge.
 export function computeDayTotals(data) {
@@ -34,6 +47,13 @@ export function computeDayTotals(data) {
   const retails = data.retails || [];
   const refunds = data.refunds || [];
   const forgottenTips = data.forgottenTips || [];
+  // Staff self-purchases (社販) are a real sale (the salon is still paid for the product) and
+  // the in-app 📊集計 tab already folds them into its cash/card product totals — this export
+  // hadn't mirrored that, so a day with a staff purchase reported a lower total here than the
+  // tab's own "Today's GRAND TOTAL" for the same day.
+  const staffPurchaseItems = (data.staffPurchases || []).flatMap(sp => getStaffPurchaseItems(sp));
+  const spCash = staffPurchaseItems.filter(it => it.paymentType === "cash").reduce((s, it) => s + Number(it.amount || 0), 0);
+  const spCard = staffPurchaseItems.filter(it => it.paymentType === "card").reduce((s, it) => s + Number(it.amount || 0), 0);
   const ticketSaleEvents = [];
   const localVisitEvents = [];
   appts.forEach(a => {
@@ -124,7 +144,7 @@ export function computeDayTotals(data) {
     + depositCash
     + forgottenServiceCash
     - refundServiceCash;
-  const cashProduct = retails.filter(r => r.paymentType === "cash").reduce((s,r) => s + Number(r.price||0), 0) + inlineRetailCash;
+  const cashProduct = retails.filter(r => r.paymentType === "cash").reduce((s,r) => s + Number(r.price||0), 0) + inlineRetailCash + spCash;
   const cashTip = revenueAppts.filter(a => !a.tipSplitPayment && a.tipPaymentType === "cash").reduce((s,a) => s + Number(a.tip||0) - gcAlloc(a).gcTip, 0)
     + revenueAppts.filter(a => a.tipSplitPayment).reduce((s,a) => s + Number(a.tipCashPortion||0), 0)
     + sameDayTicketAppts.filter(a => a.tipPaymentType === "cash").reduce((s,a) => s + Number(a.packageTip ?? a.tip ?? 0) - gcAllocPackage(a).gcTip, 0)
@@ -145,7 +165,7 @@ export function computeDayTotals(data) {
     + depositCard
     + forgottenServiceCard
     - refundServiceCard;
-  const cardProduct = retails.filter(r => r.paymentType === "card").reduce((s,r) => s + Number(r.price||0), 0) + inlineRetailCard;
+  const cardProduct = retails.filter(r => r.paymentType === "card").reduce((s,r) => s + Number(r.price||0), 0) + inlineRetailCard + spCard;
   const cardTip = revenueAppts.filter(a => !a.tipSplitPayment && a.tipPaymentType === "card").reduce((s,a) => s + Number(a.tip||0) - gcAlloc(a).gcTip, 0)
     + revenueAppts.filter(a => a.tipSplitPayment).reduce((s,a) => s + Number(a.tipCardPortion||0), 0)
     + sameDayTicketAppts.filter(a => a.tipPaymentType === "card").reduce((s,a) => s + Number(a.packageTip ?? a.tip ?? 0) - gcAllocPackage(a).gcTip, 0)

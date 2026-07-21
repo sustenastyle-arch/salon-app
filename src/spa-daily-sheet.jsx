@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import * as XLSX from "xlsx";
-import { REFERRAL_SOURCES, getRetailItems, computeDayTotals } from "./lib/reportTotals.js";
+import { REFERRAL_SOURCES, getRetailItems, getStaffPurchaseItems, computeDayTotals } from "./lib/reportTotals.js";
 
 const THERAPISTS = ["Mami", "Aya", "Megumi", "Hiromi", "Maki", "Yuka", "Mai", "Betsy"];
 const CUSTOMER_TYPES = ["RL", "RT", "NL", "NT"];
@@ -26,19 +26,6 @@ const stripJpAnnotation = (name) => {
   const ctaIdx = s.search(/(please\s+)?(call|text)\s+us|\d{3}[-.\s]\d{3}[-.\s]\d{4}/i);
   if (ctaIdx !== -1) s = s.slice(0, ctaIdx);
   return s.split(/\s+/).filter(t => t && !/[぀-ヿ一-鿿]/.test(t)).join(" ").trim();
-};
-
-// 社販 (staff self-purchase) — same pattern as getRetailItems: first item lives directly on the
-// record (productName/amount/paymentType), further items live in extraItems[].
-const getStaffPurchaseItems = (sp) => {
-  const items = [];
-  if (Number(sp.amount || 0) > 0 || sp.productName) {
-    items.push({ productName: sp.productName || "", amount: Number(sp.amount || 0), paymentType: sp.paymentType });
-  }
-  (sp.extraItems || []).forEach(it => {
-    if (Number(it.amount || 0) > 0 || it.productName) items.push(it);
-  });
-  return items;
 };
 
 // ============================================================
