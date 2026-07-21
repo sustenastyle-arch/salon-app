@@ -142,6 +142,18 @@ const CAV_ADDON_MENU_OPTIONS = MENU_OPTIONS.flatMap(({ group, prefix, durations 
   }))
 ).filter(Boolean);
 
+// Every course/version/session-count combo with a defined price — used by an add-on that's
+// redeeming a session from a SEPARATE ticket (e.g. a Facial-ticket session redeemed alongside
+// today's main Improving Posture ticket appointment), so its own course/total/session number
+// don't have to reuse (and collide with) the main appointment's own ticket fields.
+const ADDON_TICKET_MENU_OPTIONS = MENU_OPTIONS.flatMap(({ group, prefix, durations }) =>
+  durations.flatMap(d => [3, 5].map(n => {
+    const key = `${prefix}-${d}-${n}`;
+    const exists = !!(PRICE_TABLE.new[key] || PRICE_TABLE.old[key]);
+    return exists ? { key, total: n, label: `${group} ${d}min (${n}-session)` } : null;
+  }))
+).filter(Boolean);
+
 // Staff capabilities
 const CAV_CAPABLE = ["Mami", "Betsy", "Megumi", "Yuka"]; // can operate machine
 const BODY_CAPABLE = ["Mami", "Betsy", "Megumi", "Aya", "Hiromi", "Mai", "Maki"]; // can do body massage
@@ -1637,7 +1649,7 @@ export default function SpaDailySheet() {
                               <div style={{ fontSize: 10, fontWeight: 800, color: isCavRole ? "#6A1B9A" : "#00695C" }}>➕ Add-on{isCavRole ? " (machine)" : ""}</div>
                               <div style={{ fontSize: 11, fontWeight: 700, color: "#004D40" }}>{parentAppt.clientName}</div>
                               <div style={{ fontSize: 10, color: "#00796B" }}>
-                                {addon.serviceName || "Add-on"}{addon.ticketCurrent ? ` ${addon.ticketCurrent}/${parentAppt.ticketTotal||3}` : ""}
+                                {addon.serviceName || "Add-on"}{addon.ticketCurrent ? ` ${addon.ticketCurrent}/${addon.ticketTotal || parentAppt.ticketTotal || 3}` : ""}
                               </div>
                               {hasCav && <div style={{ fontSize: 9, color: "#888" }}>with {isCavRole ? addon.therapist : addon.cavTherapist}</div>}
                               {aTotal > 0 && (
@@ -2368,7 +2380,7 @@ function ApptCard({ appt, onClick, allAppointments }) {
                   const tipSplit = hasCav ? splitAddonAmount(addon.tip, addon.duration, addon.cavMins) : null;
                   return (
                     <div key={addon.id} style={{ fontSize: 13, color: chipColor, fontWeight: 700 }}>
-                      <div>➕ {label}{addon.ticketCurrent ? ` ${addon.ticketCurrent}/${appt.ticketTotal||3}` : ""}{addon.countsAsRevenue === null && " ⚠️"}</div>
+                      <div>➕ {label}{addon.ticketCurrent ? ` ${addon.ticketCurrent}/${addon.ticketTotal || appt.ticketTotal || 3}` : ""}{addon.countsAsRevenue === null && " ⚠️"}</div>
                       <div style={{ fontSize: 12, color: "#888", fontWeight: 400 }}>{addon.therapist}{hasCav ? ` + ${addon.cavTherapist} (machine)` : ""}</div>
                       {aTotal > 0 && (
                         <>
@@ -2872,8 +2884,9 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
           {/* Service picker — selecting immediately adds the row */}
           <div style={{ marginBottom: 8 }}>
             <select value="" onChange={e => {
-              const name = e.target.value;
-              if (!name) return;
+              const val = e.target.value;
+              if (!val) return;
+              const name = val === "__other__" ? "" : val;
               // Auto-fill duration from a "NNmin" name (e.g. "Improving Posture 90min"), same
               // pattern the main service field uses — still editable afterward either way.
               const durMatch = name.match(/(\d+)\s*min/i);
@@ -2887,6 +2900,9 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                 tipPaymentType: "",
                 countsAsRevenue: name === "Previous unused cav time" ? false : null,
                 ticketCurrent: null,
+                ticketMenu: "",
+                priceVersion: "",
+                ticketTotal: null,
                 hasCav: name === "Previous unused cav time" ? false : null,
                 cavTherapist: "",
                 duration: durMatch ? Number(durMatch[1]) : 0,
@@ -2898,6 +2914,7 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
               <option value="">+ Add a menu item</option>
               {ADDON_PRESETS.map(p => <option key={p} value={p}>{p}</option>)}
               {SQUARE_SERVICES.map(s => <option key={s.name} value={s.name}>{s.name}</option>)}
+              <option value="__other__">Other (type manually)</option>
             </select>
           </div>
 
@@ -2936,15 +2953,57 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                       </div>
                     </div>
 
-                    {/* Session number — only when this addon is itself a ticket redemption */}
-                    {addon.countsAsRevenue === false && form.isTicket && (
+                    {/* Course/version picker for redeeming a session from a SEPARATE ticket (e.g.
+                        a Facial-ticket session redeemed alongside today's main ticket appointment)
+                        — has its own course + total, independent of the main appointment's own
+                        ticket. Not shown for "Previous unused cav time", which always belongs to
+                        the main appointment's own ticket (see the cav-only auto-fill below). */}
+                    {addon.countsAsRevenue === false && addon.serviceName !== "Previous unused cav time" && (
+                      <div style={{ marginBottom: 6, background: "#E3F2FD", borderRadius: 8, padding: 8, border: "1px dashed #90CAF9" }}>
+                        <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>Which ticket/course is this from? (optional — auto-fills price)</div>
+                        <select value={addon.ticketMenu || ""} onChange={e => {
+                          const opt = ADDON_TICKET_MENU_OPTIONS.find(o => o.key === e.target.value);
+                          upd({ ticketMenu: e.target.value, ticketTotal: opt?.total || null, priceVersion: "", ticketCurrent: null });
+                        }} style={{ ...inputStyle, fontSize: 12, marginBottom: 6 }}>
+                          <option value="">— Select course —</option>
+                          {ADDON_TICKET_MENU_OPTIONS.map(o => <option key={o.key} value={o.key}>{o.label}</option>)}
+                        </select>
+                        {addon.ticketMenu && (
+                          <div style={{ display: "flex", gap: 6 }}>
+                            {["new", "old"].map(v => {
+                              const entry = PRICE_TABLE[v]?.[addon.ticketMenu];
+                              if (!entry) return null;
+                              const svc = entry.body.service + (entry.cav ? entry.cav.service : 0);
+                              const tip = entry.body.tip + (entry.cav ? entry.cav.tip : 0);
+                              const [prefix, durStr] = addon.ticketMenu.split("-");
+                              return (
+                                <button key={v} onClick={() => upd({
+                                  priceVersion: v, price: svc, tip, hasCav: !!entry.cav,
+                                  duration: Number(durStr) || 0,
+                                  cavMins: entry.cav ? (prefix === "WL" ? 40 : 15) : addon.cavMins,
+                                })}
+                                  style={{ flex: 1, padding: "6px 4px", borderRadius: 8, border: `2px solid ${addon.priceVersion===v?"#1565C0":"#DDD"}`, background: addon.priceVersion===v?"#BBDEFB":"#fff", cursor: "pointer", fontWeight: 700, fontSize: 11, color: addon.priceVersion===v?"#1565C0":"#888" }}>
+                                  {v === "new" ? "New" : "Old"} pricing (${svc}+${tip})
+                                </button>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Session number — only when this addon is itself a ticket redemption.
+                        Uses the addon's own ticketTotal when a separate ticket/course was picked
+                        above, otherwise falls back to the main appointment's own ticket total
+                        (the "Previous unused cav time" / same-ticket catch-up case). */}
+                    {addon.countsAsRevenue === false && (form.isTicket || addon.ticketTotal) && (
                       <div style={{ marginBottom: 6 }}>
                         <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>Which session is this?</div>
                         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                          {Array.from({ length: form.ticketTotal||3 }, (_,i) => i+1).map(n => (
+                          {Array.from({ length: addon.ticketTotal || form.ticketTotal || 3 }, (_,i) => i+1).map(n => (
                             <button key={n} onClick={() => upd({ ticketCurrent: n })}
                               style={{ padding: "5px 10px", borderRadius: 8, border: `2px solid ${addon.ticketCurrent===n?"#0D4F4F":"#DDD"}`, background: addon.ticketCurrent===n?"#0D4F4F":"#fff", cursor: "pointer", fontWeight: 700, fontSize: 11, color: addon.ticketCurrent===n?"#fff":"#888" }}>
-                              {n}/{form.ticketTotal||3}
+                              {n}/{addon.ticketTotal || form.ticketTotal || 3}
                             </button>
                           ))}
                         </div>
@@ -5469,7 +5528,7 @@ function PayrollTab() {
         const hasCav = addon.hasCav === true && !!addon.cavTherapist;
         const isCard = addon.paymentType === "card";
         const isTipCard = addon.tipPaymentType === "card";
-        const addonLabel = `${addon.serviceName || addon.name || "Add-on"}${addon.ticketCurrent ? ` ${addon.ticketCurrent}/${a.ticketTotal||3}` : ""}`;
+        const addonLabel = `${addon.serviceName || addon.name || "Add-on"}${addon.ticketCurrent ? ` ${addon.ticketCurrent}/${addon.ticketTotal || a.ticketTotal || 3}` : ""}`;
 
         // A machine (cav) portion of the add-on is done by a second therapist — only one lump
         // price/tip is entered for the whole add-on, so it's split by duration ratio (same
