@@ -331,6 +331,7 @@ const STAFF_PURCHASE_PRODUCTS = [
   { name: "Ice Globes", price: 100 },
   { name: "Back Bar Lipid Shield SPF 30", price: 135 },
   { name: "Luxury Set", price: 100 },
+  { name: "Epicutis Lipid Shield", price: 90 },
 ];
 
 const formatCurrency = (n) => `$${Number(n || 0).toLocaleString("en-US", { minimumFractionDigits: 0 })}`;
