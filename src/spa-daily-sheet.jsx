@@ -313,6 +313,24 @@ const RETAIL_PRODUCTS = [
 // name equality) — this only translates it for display, same pattern as REFERRAL_LABELS above.
 const RETAIL_PRODUCT_LABELS = { "電気バリブラシ": "Electric Facial Brush" };
 
+// 社販 (staff self-purchase) uses Square's own "Employee Discount（社販）" catalog category —
+// separate items/prices from RETAIL_PRODUCTS (the customer-facing retail menu), since staff
+// buy the backbar/professional-size version at a different price than what's sold up front.
+// Pulled by hand from Square's Catalog API (2026-07-20) — keep in sync if that category's
+// items or prices change in Square, same as the other pricing tables in this file.
+const STAFF_PURCHASE_PRODUCTS = [
+  { name: "Backbar Oil Cleanser (16oz)", price: 100 },
+  { name: "Backbar Enzyme Powder (32g)", price: 45 },
+  { name: "Backbar Lipid Body Treatment", price: 175 },
+  { name: "Arctigenin Brightening Treatment (4oz)", price: 120 },
+  { name: "Lipid Recovery Mask - Face (10pcs)", price: 90 },
+  { name: "Lipid Recovery Mask - Neck (10pcs)", price: 100 },
+  { name: "Lipid Recovery Mask - Eyes (10pcs)", price: 80 },
+  { name: "Ice Globes", price: 100 },
+  { name: "Back Bar Lipid Shield SPF 30", price: 135 },
+  { name: "Luxury Set", price: 100 },
+];
+
 const formatCurrency = (n) => `$${Number(n || 0).toLocaleString("en-US", { minimumFractionDigits: 0 })}`;
 const r2 = (n) => Math.round(n * 100) / 100;
 const formatTime = (hour) => { const h = hour % 12 || 12; return `${h}:00 ${hour < 12 ? "AM" : "PM"}`; };
@@ -4364,7 +4382,7 @@ function StaffPurchaseModal({ sp, onSave, onDelete, onClose }) {
           </select>
         </Field>
         {items.map((item, idx) => {
-          const isOtherProduct = !!item.productName && !RETAIL_PRODUCTS.find(p => p.name === item.productName);
+          const isOtherProduct = !!item.productName && !STAFF_PURCHASE_PRODUCTS.find(p => p.name === item.productName);
           return (
             <div key={idx} style={{ display: "flex", flexDirection: "column", gap: 8, ...(idx > 0 ? { background: "#F5F5F5", borderRadius: 8, padding: 10, border: "1px dashed #CCC" } : {}) }}>
               {idx > 0 && (
@@ -4377,12 +4395,12 @@ function StaffPurchaseModal({ sp, onSave, onDelete, onClose }) {
                 <select value={isOtherProduct ? "__other__" : (item.productName || "")} onChange={e => {
                   const val = e.target.value;
                   if (val === "__other__") { updateItem(idx, { productName: "" }); return; }
-                  const prod = RETAIL_PRODUCTS.find(p => p.name === val);
+                  const prod = STAFF_PURCHASE_PRODUCTS.find(p => p.name === val);
                   updateItem(idx, { productName: val, amount: prod?.price > 0 ? prod.price : item.amount });
                 }} style={inputStyle}>
                   <option value="">— Select a product/treatment —</option>
-                  {RETAIL_PRODUCTS.map(p => (
-                    <option key={p.name} value={p.name}>{RETAIL_PRODUCT_LABELS[p.name] || p.name}{p.price > 0 ? ` ($${p.price})` : ""}</option>
+                  {STAFF_PURCHASE_PRODUCTS.map(p => (
+                    <option key={p.name} value={p.name}>{p.name}{p.price > 0 ? ` ($${p.price})` : ""}</option>
                   ))}
                   <option value="__other__">Other (enter treatment name, etc. directly)</option>
                 </select>
