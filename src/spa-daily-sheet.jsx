@@ -3076,9 +3076,10 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                     const tip = Math.round((tipTotal - cavTip) * 100) / 100;
                     setForm(f => ({ ...f, cavTherapist: cav, price, cavPrice, tip, cavTip }));
                   } else if (cav && !isRegularWeightLoss && svcTotal > 0) {
-                    // Everything else (e.g. Improving Posture) defaults to a fixed 15min machine
+                    // Everything else (e.g. Improving Posture) always uses a fixed 15min machine
                     // slot, rest to body — same idea as Weight Loss's fixed 40min, just a different
-                    // number. Still editable afterward in the minutes box.
+                    // number. Not staff-editable; the split is a fixed business rule, not something
+                    // that varies visit to visit.
                     const cavMins = Number(form.cavMins) || 15;
                     const bodyMins = Math.max(0, Number(form.duration) - cavMins);
                     const allMins = bodyMins + cavMins;
@@ -3491,72 +3492,6 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                   </div>
                 );
               })()}
-
-              {/* Minutes split. Weight Loss always uses a fixed 40min machine / rest-to-body split
-                  (auto-filled elsewhere, no manual entry needed) — this UI is only for everything
-                  else, where minutes actually drive the $ split. */}
-              {form.cavTherapist && !isRegularWeightLoss && (
-                <div style={{ marginTop: 10, background: "#EEF4FF", borderRadius: 8, padding: 10 }}>
-                  <div style={{ fontSize: 12, fontWeight: 700, color: "#1565C0", marginBottom: 8 }}>⏱️ Enter each therapist's minutes → auto-split</div>
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-                    <Field label={`${form.therapist} (min)`}>
-                      <input type="number" value={form.bodyMins || ""}
-                        onChange={e => {
-                          const bodyMins = Number(e.target.value);
-                          const cavMins = Number(form.duration) - bodyMins;
-                          const allMins = Number(form.duration);
-                          if (isRegularWeightLoss) { setForm(f => ({ ...f, bodyMins, cavMins })); return; }
-                          const svcTotal = Number(form.totalServiceInput ?? (Number(form.price) + Number(form.cavPrice || 0)));
-                          const tipTotal = Number(form.totalTipInput ?? (Number(form.tip) + Number(form.cavTip || 0)));
-                          // Round the machine side first, body gets the exact remainder — rounding
-                          // both sides independently can overshoot the entered total by a cent.
-                          const cavPrice = allMins > 0 ? Math.round(svcTotal * cavMins / allMins * 100) / 100 : form.cavPrice;
-                          const price = allMins > 0 ? Math.round((svcTotal - cavPrice) * 100) / 100 : form.price;
-                          const cavTip = allMins > 0 ? Math.round(tipTotal * cavMins / allMins * 100) / 100 : form.cavTip;
-                          const tip = allMins > 0 ? Math.round((tipTotal - cavTip) * 100) / 100 : form.tip;
-                          setForm(f => ({
-                            ...f,
-                            bodyMins,
-                            cavMins,
-                            price,
-                            cavPrice,
-                            tip,
-                            cavTip,
-                          }));
-                        }}
-                        style={inputStyle} placeholder={`e.g. ${form.duration - (isRegularWeightLoss ? 40 : 15)}`} />
-                    </Field>
-                    <Field label={`${form.cavTherapist} (min)`}>
-                      <input type="number" value={form.cavMins || ""}
-                        onChange={e => {
-                          const cavMins = Number(e.target.value);
-                          const bodyMins = Number(form.duration) - cavMins;
-                          const allMins = Number(form.duration);
-                          if (isRegularWeightLoss) { setForm(f => ({ ...f, bodyMins, cavMins })); return; }
-                          const svcTotal = Number(form.totalServiceInput ?? (Number(form.price) + Number(form.cavPrice || 0)));
-                          const tipTotal = Number(form.totalTipInput ?? (Number(form.tip) + Number(form.cavTip || 0)));
-                          // Round the machine side first, body gets the exact remainder — rounding
-                          // both sides independently can overshoot the entered total by a cent.
-                          const cavPrice = allMins > 0 ? Math.round(svcTotal * cavMins / allMins * 100) / 100 : form.cavPrice;
-                          const price = allMins > 0 ? Math.round((svcTotal - cavPrice) * 100) / 100 : form.price;
-                          const cavTip = allMins > 0 ? Math.round(tipTotal * cavMins / allMins * 100) / 100 : form.cavTip;
-                          const tip = allMins > 0 ? Math.round((tipTotal - cavTip) * 100) / 100 : form.tip;
-                          setForm(f => ({
-                            ...f,
-                            bodyMins,
-                            cavMins,
-                            price,
-                            cavPrice,
-                            tip,
-                            cavTip,
-                          }));
-                        }}
-                        style={inputStyle} placeholder={isRegularWeightLoss ? "e.g. 40" : "e.g. 15"} />
-                    </Field>
-                  </div>
-
-                </div>
-              )}
 
             </div>
 
