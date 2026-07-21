@@ -4186,7 +4186,7 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                             recomputes the amount automatically instead of needing 4 separate rows. */}
                         <div>
                           <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>Quantity</div>
-                          <input type="number" min="1" value={item.quantity || 1} onChange={e => {
+                          <input type="number" min="1" value={item.quantity || 1} onFocus={e => e.target.select()} onChange={e => {
                             const qty = Math.max(1, Number(e.target.value) || 1);
                             const prod = RETAIL_PRODUCTS.find(p => p.name === item.productName);
                             updateItem(idx, { quantity: e.target.value, amount: prod?.price > 0 ? r2(prod.price * qty) : item.amount });
@@ -4351,7 +4351,7 @@ function RetailModal({ retail, onSave, onClose }) {
             entries. Only auto-multiplies for a known product's price; a custom item still needs
             the total typed in by hand since there's no per-unit price to multiply. */}
         <Field label="Quantity">
-          <input type="number" min="1" value={form.quantity || 1} onChange={e => {
+          <input type="number" min="1" value={form.quantity || 1} onFocus={e => e.target.select()} onChange={e => {
             const qty = Math.max(1, Number(e.target.value) || 1);
             const prod = RETAIL_PRODUCTS.find(p => p.name === form.item);
             setForm(f => ({ ...f, quantity: e.target.value, price: prod?.price > 0 ? r2(prod.price * qty) : f.price }));
