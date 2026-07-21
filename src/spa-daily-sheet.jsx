@@ -4681,7 +4681,7 @@ function StaffPurchaseModal({ sp, onSave, onDelete, onClose }) {
   const [paymentError, setPaymentError] = useState(false);
 
   const items = [
-    { productName: form.productName, amount: form.amount, paymentType: form.paymentType },
+    { productName: form.productName, amount: form.amount, paymentType: form.paymentType, quantity: form.quantity },
     ...(form.extraItems || []),
   ];
   const updateItem = (idx, patch) => {
@@ -4689,12 +4689,13 @@ function StaffPurchaseModal({ sp, onSave, onDelete, onClose }) {
       if ("productName" in patch) set("productName", patch.productName);
       if ("amount" in patch) set("amount", patch.amount);
       if ("paymentType" in patch) set("paymentType", patch.paymentType);
+      if ("quantity" in patch) set("quantity", patch.quantity);
     } else {
       const extras = form.extraItems || [];
       set("extraItems", extras.map((it, i) => i === idx - 1 ? { ...it, ...patch } : it));
     }
   };
-  const addItem = () => set("extraItems", [...(form.extraItems || []), { productName: "", amount: 0, paymentType: "" }]);
+  const addItem = () => set("extraItems", [...(form.extraItems || []), { productName: "", amount: 0, paymentType: "", quantity: 1 }]);
   const removeItem = (idx) => {
     if (idx === 0) return;
     const extras = form.extraItems || [];
@@ -4761,6 +4762,13 @@ function StaffPurchaseModal({ sp, onSave, onDelete, onClose }) {
                   <input type="text" value={item.productName || ""} placeholder="e.g. ProCell" style={{ ...inputStyle, marginTop: 4 }}
                     onChange={e => updateItem(idx, { productName: e.target.value })} />
                 )}
+              </Field>
+              <Field label="Quantity">
+                <input type="number" min="1" value={item.quantity || 1} onFocus={e => e.target.select()} onChange={e => {
+                  const qty = Math.max(1, Number(e.target.value) || 1);
+                  const prod = STAFF_PURCHASE_PRODUCTS.find(p => p.name === item.productName) || RETAIL_PRODUCTS.find(p => p.name === item.productName);
+                  updateItem(idx, { quantity: e.target.value, amount: prod?.price > 0 ? r2(prod.price * qty) : item.amount });
+                }} style={inputStyle} placeholder="e.g. 4" />
               </Field>
               <Field label="Amount ($)"><input type="number" value={item.amount || ""} onChange={e => updateItem(idx, { amount: e.target.value })} style={inputStyle} /></Field>
               <Field label="Payment Method" error={paymentError && Number(item.amount || 0) > 0 && !item.paymentType}>
