@@ -295,6 +295,7 @@ const RETAIL_PRODUCTS = [
   { name: "Botanical Beauty Tea 4oz", price: 30 },
   { name: "Lymph Love Herbal Tea 4oz", price: 30 },
   { name: "Tea Bag (100ct)", price: 10 },
+  { name: "Hydrobiome Mist", price: 75 },
   { name: "Muscle Rub 5oz", price: 35 },
   { name: "Muscle Rub 8oz", price: 55 },
   { name: "Oil Cleanser", price: 85 },
