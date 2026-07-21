@@ -2312,7 +2312,20 @@ function ApptCard({ appt, onClick, allAppointments }) {
               <div style={{ color: "#2E7D32", fontSize: 13 }}>💰Deposit ${dep} paid (not included in today's total received){depDate ? ` ${depDate}` : ""}</div>
             )}
             {gc > 0 && (
-              <div style={{ color: "#2E7D32", fontSize: 13 }}>GC used ${gc}</div>
+              <div style={{ color: "#2E7D32", fontSize: 13 }}>
+                GC used ${gc}
+                {/* Red above must stay "what should match the register today" — it can't
+                    include the GC-covered portion without double-counting revenue that was
+                    already booked on the day the card was bought. But a partial GC + partial
+                    real-money visit still needs its FULL payroll figure spelled out somewhere,
+                    or it just looks like the staff's allocation is only the smaller red number. */}
+                {!(svcFullyCovered && (dispTip <= 0 || tipFullyCovered)) && (
+                  <div style={{ fontSize: 11, fontWeight: 400 }}>
+                    Payroll: ${dispSvc} treatment{gcSvcAmt > 0 && netSvc > 0 ? ` ($${gcSvcAmt} GC + $${netSvc})` : ""}
+                    {dispTip > 0 && <> + ${dispTip} tip{gcTipAmt > 0 && netTip > 0 ? ` ($${gcTipAmt} GC + $${netTip})` : ""}</>}
+                  </div>
+                )}
+              </div>
             )}
             {(appt.addons || []).length > 0 && (
               <div style={{ display: "flex", flexDirection: "column", gap: 3, marginTop: 3 }}>
