@@ -2305,7 +2305,7 @@ function ApptCard({ appt, onClick, allAppointments }) {
                 <div style={{ fontWeight: 800 }}>{r2(svc + tip)}</div>
               </div>
             )}
-            {appt.cavTherapist && !isDualLicense(appt.therapist) && (
+            {appt.cavTherapist && (
               <div style={{ color: "#6A1B9A", fontSize: 13 }}>with {appt.cavTherapist}</div>
             )}
             {dep > 0 && (
@@ -2575,8 +2575,10 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
 
   const therapistIsDual = isDualLicense(form.therapist);
   const menuHasCav = form.isTicket && form.ticketMenu ? !!PRICE_TABLE[form.priceVersion]?.[form.ticketMenu]?.cav : false;
-  // Split only when body-only therapist + cav therapist selected
-  const showSplitPrices = menuHasCav && isBodyOnly(form.therapist) && !!form.cavTherapist;
+  // Split when a cav therapist is selected — normally only a body-only therapist needs one, but
+  // a dual-license therapist occasionally still gets paired with a separate machine therapist
+  // (e.g. a booking-schedule conflict), so it's not exclusively body-only anymore.
+  const showSplitPrices = menuHasCav && (isBodyOnly(form.therapist) || therapistIsDual) && !!form.cavTherapist;
 
   // Auto-fill prices from ticket selection
   const applyTicketPrices = (menu, total, version, cavTherapist, therapist) => {
@@ -2598,10 +2600,11 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
       setForm(f => ({ ...f, ticketMenu: menu, ticketTotal: total }));
       return;
     }
-    const dual = isDualLicense(therapist ?? form.therapist);
     const hasCavTherapist = cavTherapist ?? form.cavTherapist;
-    // Split prices when: body-only therapist has picked a cav therapist
-    const willSplit = prices.cav && !dual && hasCavTherapist;
+    // Split prices whenever a cav therapist is actually selected — normally only a body-only
+    // therapist has one, but a dual-license therapist can also be explicitly paired with a
+    // separate machine therapist (e.g. a booking conflict), and that split needs crediting too.
+    const willSplit = prices.cav && !!hasCavTherapist;
     setForm(f => ({
       ...f,
       ticketMenu: menu,
@@ -3076,8 +3079,10 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
           <div style={{ background: "#EEF4FF", borderRadius: 10, padding: 12 }}>
             <div style={{ fontWeight: 700, fontSize: 13, color: "#1565C0", marginBottom: 10 }}>🎟️ Ticket Settings</div>
 
-            {/* Cav therapist — shown first; selecting triggers full auto-fill */}
-            {isBodyOnly(form.therapist) && (!form.isSameDayTicket || form.useToday !== false) && (
+            {/* Cav therapist — shown first; selecting triggers full auto-fill. Also offered for a
+                dual-license therapist (normally does the machine themselves) — occasionally a
+                different staff member ends up doing the machine part instead. */}
+            {(isBodyOnly(form.therapist) || isDualLicense(form.therapist)) && (!form.isSameDayTicket || form.useToday !== false) && (
               <div style={{ background: "#F3E5F5", borderRadius: 8, padding: 10, marginBottom: 10, border: `2px solid ${form.cavTherapist ? "#6A1B9A" : "#CE93D8"}` }}>
                 <div style={{ fontSize: 11, fontWeight: 700, color: "#6A1B9A", marginBottom: 6 }}>
                   ⚡ Machine Therapist
@@ -3454,8 +3459,10 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
         {/* Regular service */}
         {!form.isTicket && (
           <>
-            {/* Cav therapist picker for regular service */}
-            {!isCavCapable(form.therapist) && (
+            {/* Cav therapist picker for regular service — also offered for a dual-license
+                therapist, who normally runs the machine themselves but occasionally still gets
+                paired with a separate machine therapist (e.g. a booking conflict). */}
+            {(!isCavCapable(form.therapist) || isDualLicense(form.therapist)) && (
               <Field label="Machine Therapist (optional)">
                 <select value={form.cavTherapist} onChange={e => {
                   const cav = e.target.value;
@@ -3635,7 +3642,7 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                     <div style={{ marginTop: 10, background: "#78350F", borderRadius: 8, padding: "10px 14px", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
                       <div style={{ fontSize: 11, color: "#FDE68A" }}>
                         🎁 Treatment <strong style={{ color: "#fff" }}>${svc}</strong>　Tip <strong style={{ color: "#fff" }}>${tip}</strong>
-                        {form.cavTherapist && !isDualLicense(form.therapist) && (
+                        {form.cavTherapist && (
                           <span style={{ fontSize: 10, color: "#FDE68A", display: "block" }}>
                             {form.therapist} ${form.price||0}{Number(form.tip||0) > 0 ? ` +Tip $${form.tip}` : ""} / {form.cavTherapist} ${form.cavPrice||0}{Number(form.cavTip||0) > 0 ? ` +Tip $${form.cavTip}` : ""}
                           </span>
@@ -3653,7 +3660,7 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                     <div style={{ marginTop: 10, background: "#0D47A1", borderRadius: 8, padding: "10px 14px", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
                       <div style={{ fontSize: 11, color: "#BBDEFB" }}>
                         📸 Treatment <strong style={{ color: "#fff" }}>${svc}</strong>　Tip <strong style={{ color: "#fff" }}>${tip}</strong>
-                        {form.cavTherapist && !isDualLicense(form.therapist) && (
+                        {form.cavTherapist && (
                           <span style={{ fontSize: 10, color: "#BBDEFB", display: "block" }}>
                             {form.therapist} ${form.price||0}{Number(form.tip||0) > 0 ? ` +Tip $${form.tip}` : ""} / {form.cavTherapist} ${form.cavPrice||0}{Number(form.cavTip||0) > 0 ? ` +Tip $${form.cavTip}` : ""}
                           </span>
@@ -3714,7 +3721,7 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                         <span style={{ color: "#fff", fontSize: 22, fontWeight: 800 }}>${gc > 0 ? receivedToday : r2(svc + tip)}</span>
                       </div>
                     </div>
-                    {form.cavTherapist && !isDualLicense(form.therapist) && (
+                    {form.cavTherapist && (
                       <div style={{ marginTop: 10, display: "flex", gap: 8, flexWrap: "wrap" }}>
                         <div style={{ flex: 1, minWidth: 130, background: "rgba(255,255,255,0.14)", borderRadius: 6, padding: "6px 10px" }}>
                           <div style={{ fontSize: 13, fontWeight: 800, color: "#fff" }}>{form.therapist}</div>
