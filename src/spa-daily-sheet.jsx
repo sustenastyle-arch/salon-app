@@ -268,7 +268,7 @@ const matchServiceName = (rawName) => {
 // (up to 3) attributes each their own dollar share for payroll purposes — commission rates differ
 // per staff member, so the split is entered manually rather than assumed equal (see loadPayroll's
 // "Retail — standalone" block).
-const EMPTY_RETAIL = { id: Date.now(), item: "", price: 0, sellers: [{ therapist: "", amount: 0 }], paymentType: "" };
+const EMPTY_RETAIL = { id: Date.now(), clientName: "", item: "", price: 0, sellers: [{ therapist: "", amount: 0 }], paymentType: "" };
 const EMPTY_DEPOSIT = { id: Date.now(), type: "deposit", amount: 0, clientName: "", paymentType: "", appointmentDate: "", appointmentTime: "", tip: 0, tipPaymentType: "", notes: "" };
 const EMPTY_TICKET_PURCHASE = { id: Date.now(), clientName: "", packageName: "", ticketMenu: "", priceVersion: "new", ticketTotal: 3, amount: 0, paymentType: "", splitPayment: false, cashPortion: 0, cardPortion: 0, tip: 0, tipPaymentType: "", notes: "" };
 const EMPTY_STAFF_PURCHASE = { id: Date.now(), staffName: "", productName: "", amount: 0, paymentType: "", notes: "", extraItems: [] };
@@ -1736,6 +1736,7 @@ export default function SpaDailySheet() {
             {retails.length === 0 && <p style={{ color: "#AAA", fontSize: 13 }}>None</p>}
             {retails.map(r => (
               <div key={r.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: "1px solid #F0F0F0", flexWrap: "wrap" }}>
+                {r.clientName && <span style={{ fontWeight: 700, fontSize: 14 }}>{r.clientName}</span>}
                 <span style={{ flex: 1, fontSize: 14 }}>{r.item || "(not entered)"}</span>
                 <span style={{ fontWeight: 700, color: "#6A1B9A" }}>{formatCurrency(r.price)}</span>
                 <PayBadge type={r.paymentType} />
@@ -1759,6 +1760,10 @@ export default function SpaDailySheet() {
                 <span style={{ flex: 1, fontSize: 14 }}>{d.clientName || "—"}</span>
                 <span style={{ fontWeight: 700 }}>{formatCurrency(d.amount)}</span>
                 <PayBadge type={d.paymentType} />
+                {d.appointmentDate && (
+                  <span style={{ fontSize: 11, color: "#888" }}>🕐 Visit: {d.appointmentDate}{d.appointmentTime ? ` ${d.appointmentTime}` : ""}</span>
+                )}
+                {d.notes && <span style={{ fontSize: 11, color: "#888" }}>{d.notes}</span>}
                 <button onClick={() => setEditingDeposit(d)} disabled={locked} style={{...iconBtn, opacity: locked ? 0.35 : 1, cursor: locked ? "not-allowed" : "pointer"}}>✏️</button>
                 <button onClick={() => deleteDeposit(d.id)} disabled={locked} style={{...iconBtn, opacity: locked ? 0.35 : 1, cursor: locked ? "not-allowed" : "pointer"}}>🗑️</button>
               </div>
@@ -1847,6 +1852,7 @@ export default function SpaDailySheet() {
                   {tp.splitPayment
                     ? <span style={{ fontSize: 11, color: "#B71C1C", background: "#FFEBEE", borderRadius: 8, padding: "2px 8px" }}>💵{formatCurrency(tp.cashPortion||0)}＋💳{formatCurrency(tp.cardPortion||0)}</span>
                     : <PayBadge type={tp.paymentType} />}
+                  {tp.notes && <span style={{ fontSize: 11, color: "#888" }}>{tp.notes}</span>}
                   <button onClick={() => setEditingTicketPurchase(tp)} disabled={locked} style={{...iconBtn, opacity: locked ? 0.35 : 1, cursor: locked ? "not-allowed" : "pointer"}}>✏️</button>
                   <button onClick={() => deleteTicketPurchase(tp.id)} disabled={locked} style={{...iconBtn, opacity: locked ? 0.35 : 1, cursor: locked ? "not-allowed" : "pointer"}}>🗑️</button>
                 </div>
@@ -4501,6 +4507,9 @@ function RetailModal({ retail, onSave, onClose }) {
         <button onClick={onClose} style={{ border: "none", background: "none", fontSize: 22, cursor: "pointer" }}>✕</button>
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        <Field label="Client Name (optional)">
+          <input value={form.clientName || ""} onChange={e => set("clientName", e.target.value)} style={inputStyle} placeholder="e.g. Mayumi" />
+        </Field>
         <Field label="Product Name">
           <select value={RETAIL_PRODUCTS.find(p => p.name === form.item) ? form.item : (form.item ? "__other__" : "")}
             onChange={e => {
