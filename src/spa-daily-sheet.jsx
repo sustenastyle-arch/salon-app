@@ -28,6 +28,19 @@ const splitAddonAmount = (amount, duration, cavMins) => {
   const body = Math.round(total * bodyMins / dur * 100) / 100;
   return { body, cav: Math.round((total - body) * 100) / 100 };
 };
+// Only some courses have a machine (cav) option at all (Improving Posture 90/120min, any Weight
+// Loss duration, Sculpted Face Lift 60min — matches the cav:null vs cav:{...} split already in
+// PRICE_TABLE's ticket-package entries above). Everything else (a plain Facial/Massage — no
+// machine component in the menu) should never even ask "is a machine involved?" when added on.
+const ADDON_CAV_CAPABLE_NAMES = [
+  "Improving Posture 90min", "Improving Posture 120min",
+  "Weight Loss 75min", "Weight Loss 90min", "Weight Loss 115min",
+  "Sculpted Face Lift 60min",
+];
+const addonHasCavOption = (name) => ADDON_CAV_CAPABLE_NAMES.includes(name);
+// True only for a course we KNOW for certain has no machine option (matched against the real
+// menu) — an "Other" custom name or an unlisted preset still gets asked, since we can't be sure.
+const isKnownNonCavAddon = (name) => SQUARE_SERVICES.some(s => s.name === name) && !addonHasCavOption(name);
 // Appointments synced from Square before the item-name cleanup in the booking sync (see
 // vite.config.js/api/square-bookings.js) may still have serviceName saved with extra junk
 // the catalog item's Name field was never meant to carry: a Japanese translation in
@@ -3025,7 +3038,7 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                 ticketMenu: "",
                 priceVersion: "",
                 ticketTotal: null,
-                hasCav: name === "Previous unused cav time" ? false : null,
+                hasCav: (name === "Previous unused cav time" || isKnownNonCavAddon(name)) ? false : null,
                 cavTherapist: "",
                 duration: durMatch ? Number(durMatch[1]) : 0,
                 cavMins: 15,
@@ -3061,78 +3074,114 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                         style={{ border: "none", background: "none", cursor: "pointer", fontSize: 16, color: "#AAA", marginLeft: 6, flexShrink: 0 }}>✕</button>
                     </div>
 
-                    {/* Revenue vs. ticket-consumption toggle */}
-                    <div style={{ marginBottom: 6 }}>
-                      <div style={{ fontSize: 10, color: addon.countsAsRevenue === null ? "#C62828" : "#888", marginBottom: 3, fontWeight: addon.countsAsRevenue === null ? 700 : 400 }}>
-                        How to treat this{addon.countsAsRevenue === null && " ⚠️ Not selected"}
-                      </div>
-                      <div style={{ display: "flex", gap: 6 }}>
-                        <button onClick={() => upd({ countsAsRevenue: true, ticketCurrent: null })}
-                          style={{ flex: 1, padding: "6px 4px", borderRadius: 8, border: `2px solid ${addon.countsAsRevenue === true ? REVENUE_COLOR : "#DDD"}`, background: addon.countsAsRevenue === true ? "#FFEBEE" : "#fff", cursor: "pointer", fontWeight: 700, fontSize: 11, color: addon.countsAsRevenue === true ? REVENUE_COLOR : "#888" }}>
-                          💰 Pay-as-you-go (new payment)
+                    {/* Gift Card Used — paid from an existing gift card balance is its own
+                        category: that money was already collected as revenue whenever the gift
+                        card was purchased/loaded, so it's neither a new "Pay-as-you-go" payment
+                        nor a ticket redemption. Turning this on skips the classification step
+                        below entirely (and silently marks it as revenue under the hood so the
+                        gift-card exclusion math in payroll/reporting still applies to it). */}
+                    <div style={{ background: "#E0F2F1", borderRadius: 8, padding: 8, marginBottom: 6 }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                        <span style={{ fontSize: 11, fontWeight: 700, color: "#00796B" }}>🎁 Gift Card Used</span>
+                        <button onClick={() => {
+                          const turningOn = !addon.gcOn;
+                          upd({
+                            gcOn: turningOn,
+                            giftCardUsed: turningOn ? (Number(addon.giftCardUsed) > 0 ? addon.giftCardUsed : (svcAmt + tipAmt || 20)) : 0,
+                            countsAsRevenue: turningOn ? true : addon.countsAsRevenue,
+                          });
+                        }}
+                          style={{ padding: "3px 10px", borderRadius: 8, border: "none", background: addon.gcOn ? "#00796B" : "#B2DFDB", color: "#fff", fontWeight: 700, cursor: "pointer", fontSize: 11 }}>
+                          {addon.gcOn ? "ON ✓" : "OFF"}
                         </button>
-                        <button onClick={() => upd({ countsAsRevenue: false })}
-                          style={{ flex: 1, padding: "6px 4px", borderRadius: 8, border: `2px solid ${addon.countsAsRevenue === false ? NON_REVENUE_COLOR : "#DDD"}`, background: addon.countsAsRevenue === false ? "#E3F2FD" : "#fff", cursor: "pointer", fontWeight: 700, fontSize: 11, color: addon.countsAsRevenue === false ? NON_REVENUE_COLOR : "#888" }}>
-                          🎫 Ticket Redemption (this ticket or another one)
-                        </button>
                       </div>
+                      {addon.gcOn && (
+                        <div style={{ marginTop: 6 }}>
+                          <div style={{ fontSize: 10, color: "#00796B", marginBottom: 3 }}>Amount Used ($)</div>
+                          <input type="number" value={addon.giftCardUsed||""}
+                            onFocus={e => e.target.select()}
+                            onChange={e => upd({ giftCardUsed: e.target.value })}
+                            style={{ ...inputStyle, fontSize: 12, borderColor: "#80CBC4" }} placeholder="e.g. 65" />
+                        </div>
+                      )}
                     </div>
 
-                    {/* Course/version picker for redeeming a session from a SEPARATE ticket (e.g.
-                        a Facial-ticket session redeemed alongside today's main ticket appointment)
-                        — has its own course + total, independent of the main appointment's own
-                        ticket. Not shown for "Previous unused cav time", which always belongs to
-                        the main appointment's own ticket (see the cav-only auto-fill below). */}
-                    {addon.countsAsRevenue === false && addon.serviceName !== "Previous unused cav time" && (
-                      <div style={{ marginBottom: 6, background: "#E3F2FD", borderRadius: 8, padding: 8, border: "1px dashed #90CAF9" }}>
-                        <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>Which ticket/course is this from? (optional — auto-fills price)</div>
-                        <select value={addon.ticketMenu || ""} onChange={e => {
-                          const opt = ADDON_TICKET_MENU_OPTIONS.find(o => o.key === e.target.value);
-                          upd({ ticketMenu: e.target.value, ticketTotal: opt?.total || null, priceVersion: "", ticketCurrent: null });
-                        }} style={{ ...inputStyle, fontSize: 12, marginBottom: 6 }}>
-                          <option value="">— Select course —</option>
-                          {ADDON_TICKET_MENU_OPTIONS.map(o => <option key={o.key} value={o.key}>{o.label}</option>)}
-                        </select>
-                        {addon.ticketMenu && (
+                    {!addon.gcOn && (
+                      <>
+                        {/* Revenue vs. ticket-consumption toggle */}
+                        <div style={{ marginBottom: 6 }}>
+                          <div style={{ fontSize: 10, color: addon.countsAsRevenue === null ? "#C62828" : "#888", marginBottom: 3, fontWeight: addon.countsAsRevenue === null ? 700 : 400 }}>
+                            How to treat this{addon.countsAsRevenue === null && " ⚠️ Not selected"}
+                          </div>
                           <div style={{ display: "flex", gap: 6 }}>
-                            {["new", "old"].map(v => {
-                              const entry = PRICE_TABLE[v]?.[addon.ticketMenu];
-                              if (!entry) return null;
-                              const svc = entry.body.service + (entry.cav ? entry.cav.service : 0);
-                              const tip = entry.body.tip + (entry.cav ? entry.cav.tip : 0);
-                              const [prefix, durStr] = addon.ticketMenu.split("-");
-                              return (
-                                <button key={v} onClick={() => upd({
-                                  priceVersion: v, price: svc, tip, hasCav: !!entry.cav,
-                                  duration: Number(durStr) || 0,
-                                  cavMins: entry.cav ? (prefix === "WL" ? 40 : 15) : addon.cavMins,
+                            <button onClick={() => upd({ countsAsRevenue: true, ticketCurrent: null })}
+                              style={{ flex: 1, padding: "6px 4px", borderRadius: 8, border: `2px solid ${addon.countsAsRevenue === true ? REVENUE_COLOR : "#DDD"}`, background: addon.countsAsRevenue === true ? "#FFEBEE" : "#fff", cursor: "pointer", fontWeight: 700, fontSize: 11, color: addon.countsAsRevenue === true ? REVENUE_COLOR : "#888" }}>
+                              💰 Pay-as-you-go (new payment)
+                            </button>
+                            <button onClick={() => upd({ countsAsRevenue: false })}
+                              style={{ flex: 1, padding: "6px 4px", borderRadius: 8, border: `2px solid ${addon.countsAsRevenue === false ? NON_REVENUE_COLOR : "#DDD"}`, background: addon.countsAsRevenue === false ? "#E3F2FD" : "#fff", cursor: "pointer", fontWeight: 700, fontSize: 11, color: addon.countsAsRevenue === false ? NON_REVENUE_COLOR : "#888" }}>
+                              🎫 Ticket Redemption (this ticket or another one)
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Course/version picker for redeeming a session from a SEPARATE ticket (e.g.
+                            a Facial-ticket session redeemed alongside today's main ticket appointment)
+                            — has its own course + total, independent of the main appointment's own
+                            ticket. Not shown for "Previous unused cav time", which always belongs to
+                            the main appointment's own ticket (see the cav-only auto-fill below). */}
+                        {addon.countsAsRevenue === false && addon.serviceName !== "Previous unused cav time" && (
+                          <div style={{ marginBottom: 6, background: "#E3F2FD", borderRadius: 8, padding: 8, border: "1px dashed #90CAF9" }}>
+                            <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>Which ticket/course is this from? (optional — auto-fills price)</div>
+                            <select value={addon.ticketMenu || ""} onChange={e => {
+                              const opt = ADDON_TICKET_MENU_OPTIONS.find(o => o.key === e.target.value);
+                              upd({ ticketMenu: e.target.value, ticketTotal: opt?.total || null, priceVersion: "", ticketCurrent: null });
+                            }} style={{ ...inputStyle, fontSize: 12, marginBottom: 6 }}>
+                              <option value="">— Select course —</option>
+                              {ADDON_TICKET_MENU_OPTIONS.map(o => <option key={o.key} value={o.key}>{o.label}</option>)}
+                            </select>
+                            {addon.ticketMenu && (
+                              <div style={{ display: "flex", gap: 6 }}>
+                                {["new", "old"].map(v => {
+                                  const entry = PRICE_TABLE[v]?.[addon.ticketMenu];
+                                  if (!entry) return null;
+                                  const svc = entry.body.service + (entry.cav ? entry.cav.service : 0);
+                                  const tip = entry.body.tip + (entry.cav ? entry.cav.tip : 0);
+                                  const [prefix, durStr] = addon.ticketMenu.split("-");
+                                  return (
+                                    <button key={v} onClick={() => upd({
+                                      priceVersion: v, price: svc, tip, hasCav: !!entry.cav,
+                                      duration: Number(durStr) || 0,
+                                      cavMins: entry.cav ? (prefix === "WL" ? 40 : 15) : addon.cavMins,
+                                    })}
+                                      style={{ flex: 1, padding: "6px 4px", borderRadius: 8, border: `2px solid ${addon.priceVersion===v?"#1565C0":"#DDD"}`, background: addon.priceVersion===v?"#BBDEFB":"#fff", cursor: "pointer", fontWeight: 700, fontSize: 11, color: addon.priceVersion===v?"#1565C0":"#888" }}>
+                                      {v === "new" ? "New" : "Old"} pricing (${svc}+${tip})
+                                    </button>
+                                  );
                                 })}
-                                  style={{ flex: 1, padding: "6px 4px", borderRadius: 8, border: `2px solid ${addon.priceVersion===v?"#1565C0":"#DDD"}`, background: addon.priceVersion===v?"#BBDEFB":"#fff", cursor: "pointer", fontWeight: 700, fontSize: 11, color: addon.priceVersion===v?"#1565C0":"#888" }}>
-                                  {v === "new" ? "New" : "Old"} pricing (${svc}+${tip})
-                                </button>
-                              );
-                            })}
+                              </div>
+                            )}
                           </div>
                         )}
-                      </div>
-                    )}
 
-                    {/* Session number — only when this addon is itself a ticket redemption.
-                        Uses the addon's own ticketTotal when a separate ticket/course was picked
-                        above, otherwise falls back to the main appointment's own ticket total
-                        (the "Previous unused cav time" / same-ticket catch-up case). */}
-                    {addon.countsAsRevenue === false && (form.isTicket || addon.ticketTotal) && (
-                      <div style={{ marginBottom: 6 }}>
-                        <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>Which session is this?</div>
-                        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                          {Array.from({ length: addon.ticketTotal || form.ticketTotal || 3 }, (_,i) => i+1).map(n => (
-                            <button key={n} onClick={() => upd({ ticketCurrent: n })}
-                              style={{ padding: "5px 10px", borderRadius: 8, border: `2px solid ${addon.ticketCurrent===n?"#0D4F4F":"#DDD"}`, background: addon.ticketCurrent===n?"#0D4F4F":"#fff", cursor: "pointer", fontWeight: 700, fontSize: 11, color: addon.ticketCurrent===n?"#fff":"#888" }}>
-                              {n}/{addon.ticketTotal || form.ticketTotal || 3}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
+                        {/* Session number — only when this addon is itself a ticket redemption.
+                            Uses the addon's own ticketTotal when a separate ticket/course was picked
+                            above, otherwise falls back to the main appointment's own ticket total
+                            (the "Previous unused cav time" / same-ticket catch-up case). */}
+                        {addon.countsAsRevenue === false && (form.isTicket || addon.ticketTotal) && (
+                          <div style={{ marginBottom: 6 }}>
+                            <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>Which session is this?</div>
+                            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                              {Array.from({ length: addon.ticketTotal || form.ticketTotal || 3 }, (_,i) => i+1).map(n => (
+                                <button key={n} onClick={() => upd({ ticketCurrent: n })}
+                                  style={{ padding: "5px 10px", borderRadius: 8, border: `2px solid ${addon.ticketCurrent===n?"#0D4F4F":"#DDD"}`, background: addon.ticketCurrent===n?"#0D4F4F":"#fff", cursor: "pointer", fontWeight: 700, fontSize: 11, color: addon.ticketCurrent===n?"#fff":"#888" }}>
+                                  {n}/{addon.ticketTotal || form.ticketTotal || 3}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </>
                     )}
 
                     {/* Therapist */}
@@ -3173,11 +3222,13 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                           </div>
                         )}
                       </div>
-                    ) : (
+                    ) : isKnownNonCavAddon(addon.serviceName) ? null : (
                       /* Machine (cav) portion — an add-on can involve a second therapist for just
                          the machine minutes, same as a regular visit, but there's only one lump
                          price/tip entered for the whole add-on, so the split has to be computed
-                         from the duration ratio (see splitAddonAmount) rather than typed in directly. */
+                         from the duration ratio (see splitAddonAmount) rather than typed in directly.
+                         Skipped entirely for a course known to have no machine option in the menu
+                         (see ADDON_CAV_CAPABLE_NAMES) — a plain Facial/Massage never does. */
                       <div style={{ marginBottom: 6 }}>
                         <div style={{ fontSize: 10, color: addon.hasCav === null ? "#C62828" : "#888", marginBottom: 3, fontWeight: addon.hasCav === null ? 700 : 400 }}>
                           Machine (cav) portion?{addon.hasCav === null && " ⚠️ Not selected"}
