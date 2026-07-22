@@ -4345,11 +4345,11 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                             recomputes the amount automatically instead of needing 4 separate rows. */}
                         <div>
                           <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>Quantity</div>
-                          <input type="number" min="1" value={item.quantity || 1} onFocus={e => e.target.select()} onChange={e => {
+                          <input type="number" min="1" value={item.quantity || ""} onChange={e => {
                             const qty = Math.max(1, Number(e.target.value) || 1);
                             const prod = RETAIL_PRODUCTS.find(p => p.name === item.productName);
                             updateItem(idx, { quantity: e.target.value, amount: prod?.price > 0 ? r2(prod.price * qty) : item.amount });
-                          }} style={{ ...inputStyle, borderColor: "#CE93D8" }} placeholder="e.g. 4" />
+                          }} style={{ ...inputStyle, borderColor: "#CE93D8" }} placeholder="1" />
                         </div>
                         <div>
                           <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>Amount ($)</div>
@@ -4510,11 +4510,11 @@ function RetailModal({ retail, onSave, onClose }) {
             entries. Only auto-multiplies for a known product's price; a custom item still needs
             the total typed in by hand since there's no per-unit price to multiply. */}
         <Field label="Quantity">
-          <input type="number" min="1" value={form.quantity || 1} onFocus={e => e.target.select()} onChange={e => {
+          <input type="number" min="1" value={form.quantity || ""} onChange={e => {
             const qty = Math.max(1, Number(e.target.value) || 1);
             const prod = RETAIL_PRODUCTS.find(p => p.name === form.item);
             setForm(f => ({ ...f, quantity: e.target.value, price: prod?.price > 0 ? r2(prod.price * qty) : f.price }));
-          }} style={inputStyle} placeholder="e.g. 4" />
+          }} style={inputStyle} placeholder="1" />
         </Field>
         <Field label="Amount ($)"><input type="number" value={form.price || ""} onChange={e => set("price", e.target.value)} style={inputStyle} /></Field>
         <Field label={`Split between (up to 3 people, splitting the tax-excluded amount of $${afterTaxTotal})${Number(form.price) > 0 && Math.abs(sellersTotal - afterTaxTotal) > 0.15 ? " ⚠️ The total is significantly off from the tax-excluded amount" : ""}`}>
@@ -4923,11 +4923,11 @@ function StaffPurchaseModal({ sp, onSave, onDelete, onClose }) {
                 )}
               </Field>
               <Field label="Quantity">
-                <input type="number" min="1" value={item.quantity || 1} onFocus={e => e.target.select()} onChange={e => {
+                <input type="number" min="1" value={item.quantity || ""} onChange={e => {
                   const qty = Math.max(1, Number(e.target.value) || 1);
                   const prod = STAFF_PURCHASE_PRODUCTS.find(p => p.name === item.productName) || RETAIL_PRODUCTS.find(p => p.name === item.productName);
                   updateItem(idx, { quantity: e.target.value, amount: prod?.price > 0 ? r2(prod.price * qty) : item.amount });
-                }} style={inputStyle} placeholder="e.g. 4" />
+                }} style={inputStyle} placeholder="1" />
               </Field>
               <Field label="Amount ($)"><input type="number" value={item.amount || ""} onChange={e => updateItem(idx, { amount: e.target.value })} style={inputStyle} /></Field>
               <Field label="Payment Method" error={paymentError && Number(item.amount || 0) > 0 && !item.paymentType}>
