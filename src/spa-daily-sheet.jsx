@@ -3325,21 +3325,34 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                       </div>
                     )}
 
-                    {/* Payment type — real money only when this is a new (revenue) payment, not a ticket redemption */}
-                    {addon.countsAsRevenue !== false && (
-                      <div style={{ marginBottom: tipAmt > 0 ? 6 : 0 }}>
-                        <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>Payment Method (Treatment)</div>
-                        <PaymentToggle value={addon.paymentType} onChange={v => upd({ paymentType: v })} small />
-                      </div>
-                    )}
-
-                    {/* Tip payment type */}
-                    {tipAmt > 0 && addon.countsAsRevenue !== false && (
-                      <div style={{ marginBottom: 6 }}>
-                        <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>Payment Method (Tip)</div>
-                        <PaymentToggle value={addon.tipPaymentType} onChange={v => upd({ tipPaymentType: v })} small />
-                      </div>
-                    )}
+                    {/* Payment type — real money only when this is a new (revenue) payment, not a
+                        ticket redemption, AND only for whatever balance the gift card doesn't
+                        already cover (e.g. $100 gift card + remaining $50 on a credit card still
+                        needs a cash/card choice for that $50; a fully gift-card-covered amount
+                        doesn't need one at all). */}
+                    {(() => {
+                      const addonGc = Number(addon.giftCardUsed || 0);
+                      const addonGcSvc = Math.min(addonGc, svcAmt);
+                      const addonGcTip = Math.min(Math.max(0, addonGc - addonGcSvc), tipAmt);
+                      const svcRemaining = svcAmt > addonGcSvc;
+                      const tipRemaining = tipAmt > addonGcTip;
+                      return (
+                        <>
+                          {addon.countsAsRevenue !== false && svcRemaining && (
+                            <div style={{ marginBottom: (tipAmt > 0 && tipRemaining) ? 6 : 0 }}>
+                              <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>Payment Method (Treatment)</div>
+                              <PaymentToggle value={addon.paymentType} onChange={v => upd({ paymentType: v })} small />
+                            </div>
+                          )}
+                          {tipAmt > 0 && addon.countsAsRevenue !== false && tipRemaining && (
+                            <div style={{ marginBottom: 6 }}>
+                              <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>Payment Method (Tip)</div>
+                              <PaymentToggle value={addon.tipPaymentType} onChange={v => upd({ tipPaymentType: v })} small />
+                            </div>
+                          )}
+                        </>
+                      );
+                    })()}
 
                     {/* Notes — a short memo distinct from the service name (e.g. "Neck add-on")
                         so what the add-on actually covers stays clear on the card/payroll later. */}
