@@ -99,6 +99,16 @@ export function computeDayTotals(data) {
     const gcRetail = Math.min(gc - gcSvc - gcTip, retail);
     return { gcSvc, gcTip, gcRetail };
   };
+  // An add-on can also be paid from an existing gift card balance — same exclusion rule as
+  // gcAlloc above, just against the add-on's own price/tip instead of the main service's.
+  const addonGcAlloc = (ad) => {
+    const gc = Number(ad.giftCardUsed || 0);
+    const svc = Number(ad.price || 0);
+    const tip = Number(ad.tip || 0);
+    const gcSvc = Math.min(gc, svc);
+    const gcTip = Math.min(gc - gcSvc, tip);
+    return { gcSvc, gcTip };
+  };
   // Retail sold inline during a visit (物販 tag on the appointment, up to 3 items via
   // getRetailItems) lives on the appointment record itself, not in the standalone `retails`
   // array — missed here entirely before this fix (matches the in-app 📊集計 tab's own
@@ -139,7 +149,7 @@ export function computeDayTotals(data) {
     + sameDayTicketAppts.filter(a => a.packageSplitPayment).reduce((s,a) => s + Number(a.packageCashPortion||0), 0)
     + pureTicketAppts.filter(a => a.extraPricePaymentType === "cash").reduce((s,a) => s + Number(a.extraPrice||0), 0)
     + sameDayTicketAppts.filter(a => a.extraPricePaymentType === "cash").reduce((s,a) => s + Number(a.extraPrice||0), 0)
-    + revenueAddons.filter(ad => ad.paymentType === "cash").reduce((s,ad) => s + Number(ad.price||0), 0)
+    + revenueAddons.filter(ad => ad.paymentType === "cash").reduce((s,ad) => s + Number(ad.price||0) - addonGcAlloc(ad).gcSvc, 0)
     + cavSlotAppts.filter(a => a.paymentType === "cash").reduce((s,a) => s + Number(a.price||0), 0)
     + depositCash
     + forgottenServiceCash
@@ -150,7 +160,7 @@ export function computeDayTotals(data) {
     + sameDayTicketAppts.filter(a => a.tipPaymentType === "cash").reduce((s,a) => s + Number(a.packageTip ?? a.tip ?? 0) - gcAllocPackage(a).gcTip, 0)
     + pureTicketAppts.filter(a => a.extraTipPaymentType === "cash").reduce((s,a) => s + Number(a.extraTip||0), 0)
     + sameDayTicketAppts.filter(a => a.extraTipPaymentType === "cash").reduce((s,a) => s + Number(a.extraTip||0), 0)
-    + revenueAddons.filter(ad => ad.tipPaymentType === "cash").reduce((s,ad) => s + Number(ad.tip||0), 0)
+    + revenueAddons.filter(ad => ad.tipPaymentType === "cash").reduce((s,ad) => s + Number(ad.tip||0) - addonGcAlloc(ad).gcTip, 0)
     + cavSlotAppts.filter(a => a.tipPaymentType === "cash").reduce((s,a) => s + Number(a.tip||0), 0)
     + forgottenTipCash
     - refundTipCash;
@@ -160,7 +170,7 @@ export function computeDayTotals(data) {
     + sameDayTicketAppts.filter(a => a.packageSplitPayment).reduce((s,a) => s + Number(a.packageCardPortion||0), 0)
     + pureTicketAppts.filter(a => a.extraPricePaymentType === "card").reduce((s,a) => s + Number(a.extraPrice||0), 0)
     + sameDayTicketAppts.filter(a => a.extraPricePaymentType === "card").reduce((s,a) => s + Number(a.extraPrice||0), 0)
-    + revenueAddons.filter(ad => ad.paymentType !== "cash").reduce((s,ad) => s + Number(ad.price||0), 0)
+    + revenueAddons.filter(ad => ad.paymentType !== "cash").reduce((s,ad) => s + Number(ad.price||0) - addonGcAlloc(ad).gcSvc, 0)
     + cavSlotAppts.filter(a => a.paymentType !== "cash").reduce((s,a) => s + Number(a.price||0), 0)
     + depositCard
     + forgottenServiceCard
@@ -171,7 +181,7 @@ export function computeDayTotals(data) {
     + sameDayTicketAppts.filter(a => a.tipPaymentType === "card").reduce((s,a) => s + Number(a.packageTip ?? a.tip ?? 0) - gcAllocPackage(a).gcTip, 0)
     + pureTicketAppts.filter(a => a.extraTipPaymentType === "card").reduce((s,a) => s + Number(a.extraTip||0), 0)
     + sameDayTicketAppts.filter(a => a.extraTipPaymentType === "card").reduce((s,a) => s + Number(a.extraTip||0), 0)
-    + revenueAddons.filter(ad => ad.tipPaymentType !== "cash").reduce((s,ad) => s + Number(ad.tip||0), 0)
+    + revenueAddons.filter(ad => ad.tipPaymentType !== "cash").reduce((s,ad) => s + Number(ad.tip||0) - addonGcAlloc(ad).gcTip, 0)
     + cavSlotAppts.filter(a => a.tipPaymentType !== "cash").reduce((s,a) => s + Number(a.tip||0), 0)
     + forgottenTipCard
     - refundTipCard;

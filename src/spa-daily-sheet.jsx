@@ -956,11 +956,21 @@ export default function SpaDailySheet() {
     const gcTip = Math.min(gc - gcSvc, tip);
     return { gcSvc, gcTip };
   };
+  // An add-on can also be paid from an existing gift card balance — same exclusion rule as
+  // gcAlloc above, just against the add-on's own price/tip instead of the main service's.
+  const addonGcAlloc = (ad) => {
+    const gc = Number(ad.giftCardUsed || 0);
+    const svc = Number(ad.price || 0);
+    const tip = Number(ad.tip || 0);
+    const gcSvc = Math.min(gc, svc);
+    const gcTip = Math.min(gc - gcSvc, tip);
+    return { gcSvc, gcTip };
+  };
 
   const totalRevenue = regularAppts.reduce((s, a) => s + Number(a.price || 0) - gcAlloc(a).gcSvc, 0)
     + sameDayAppts.reduce((s, a) => s + Number(a.packagePrice || 0) - gcAllocPackage(a).gcSvc, 0)
     + ticketAppts.reduce((s, a) => s + Number(a.extraPrice || 0), 0)
-    + revenueAddons.reduce((s, ad) => s + Number(ad.price || 0), 0)
+    + revenueAddons.reduce((s, ad) => s + Number(ad.price || 0) - addonGcAlloc(ad).gcSvc, 0)
     + totalForgottenService
     - totalRefundService;
   const totalCavRevenue = regularAppts.reduce((s, a) => s + Number(a.cavPrice || 0), 0)
@@ -968,19 +978,20 @@ export default function SpaDailySheet() {
   const totalTips = regularAppts.reduce((s, a) => s + Number(a.tip || 0) - gcAlloc(a).gcTip, 0)
     + sameDayAppts.reduce((s, a) => s + Number(a.packageTip ?? a.tip ?? 0) - gcAllocPackage(a).gcTip, 0)
     + ticketAppts.reduce((s, a) => s + Number(a.extraTip || 0), 0)
-    + revenueAddons.reduce((s, ad) => s + Number(ad.tip || 0), 0)
+    + revenueAddons.reduce((s, ad) => s + Number(ad.tip || 0) - addonGcAlloc(ad).gcTip, 0)
     + totalForgottenTip
     - totalRefundTip;
   const totalCavTips = regularAppts.reduce((s, a) => s + Number(a.cavTip || 0), 0)
     + cavSlotAppts.reduce((s, a) => s + Number(a.tip || 0), 0);
   const totalGCUsed = regularAppts.reduce((s, a) => s + Number(a.giftCardUsed || 0), 0)
-    + sameDayAppts.reduce((s, a) => s + Number(a.giftCardUsed || 0), 0);
+    + sameDayAppts.reduce((s, a) => s + Number(a.giftCardUsed || 0), 0)
+    + revenueAddons.reduce((s, ad) => s + Number(ad.giftCardUsed || 0), 0);
   const totalCash = regularAppts.filter(a => !a.svcSplitPayment && a.paymentType === "cash").reduce((s, a) => s + Math.max(0, Number(a.price || 0) - gcAlloc(a).gcSvc), 0)
     + regularAppts.filter(a => a.svcSplitPayment).reduce((s, a) => s + Number(a.svcCashPortion || 0), 0)
     + sameDayAppts.filter(a => !a.packageSplitPayment && a.paymentType === "cash").reduce((s, a) => s + Math.max(0, Number(a.packagePrice || 0) - gcAllocPackage(a).gcSvc), 0)
     + sameDayAppts.filter(a => a.packageSplitPayment).reduce((s, a) => s + Number(a.packageCashPortion || 0), 0)
     + ticketAppts.filter(a => a.extraPricePaymentType === "cash").reduce((s, a) => s + Number(a.extraPrice || 0), 0)
-    + revenueAddons.filter(ad => ad.paymentType === "cash").reduce((s, ad) => s + Number(ad.price || 0), 0)
+    + revenueAddons.filter(ad => ad.paymentType === "cash").reduce((s, ad) => s + Number(ad.price || 0) - addonGcAlloc(ad).gcSvc, 0)
     + cavSlotAppts.filter(a => a.paymentType === "cash").reduce((s, a) => s + Number(a.price || 0), 0)
     + totalForgottenCash
     - totalRefundCash;
@@ -989,7 +1000,7 @@ export default function SpaDailySheet() {
     + sameDayAppts.filter(a => !a.packageSplitPayment && a.paymentType === "card").reduce((s, a) => s + Math.max(0, Number(a.packagePrice || 0) - gcAllocPackage(a).gcSvc), 0)
     + sameDayAppts.filter(a => a.packageSplitPayment).reduce((s, a) => s + Number(a.packageCardPortion || 0), 0)
     + ticketAppts.filter(a => a.extraPricePaymentType === "card").reduce((s, a) => s + Number(a.extraPrice || 0), 0)
-    + revenueAddons.filter(ad => ad.paymentType !== "cash").reduce((s, ad) => s + Number(ad.price || 0), 0)
+    + revenueAddons.filter(ad => ad.paymentType !== "cash").reduce((s, ad) => s + Number(ad.price || 0) - addonGcAlloc(ad).gcSvc, 0)
     + cavSlotAppts.filter(a => a.paymentType !== "cash").reduce((s, a) => s + Number(a.price || 0), 0)
     + totalForgottenCard
     - totalRefundCard;
@@ -997,7 +1008,7 @@ export default function SpaDailySheet() {
     + regularAppts.filter(a => a.tipSplitPayment).reduce((s, a) => s + Number(a.tipCashPortion || 0), 0)
     + sameDayAppts.filter(a => a.tipPaymentType === "cash").reduce((s, a) => s + Math.max(0, Number(a.packageTip ?? a.tip ?? 0) - gcAllocPackage(a).gcTip), 0)
     + ticketAppts.filter(a => a.extraTipPaymentType === "cash").reduce((s, a) => s + Number(a.extraTip || 0), 0)
-    + revenueAddons.filter(ad => ad.tipPaymentType === "cash").reduce((s, ad) => s + Number(ad.tip || 0), 0)
+    + revenueAddons.filter(ad => ad.tipPaymentType === "cash").reduce((s, ad) => s + Number(ad.tip || 0) - addonGcAlloc(ad).gcTip, 0)
     + cavSlotAppts.filter(a => a.tipPaymentType === "cash").reduce((s, a) => s + Number(a.tip || 0), 0)
     + deposits.filter(d => d.tipPaymentType === "cash" || !d.tipPaymentType).reduce((s, d) => s + Number(d.tip || 0), 0)
     + totalForgottenTipCash
@@ -1006,7 +1017,7 @@ export default function SpaDailySheet() {
     + regularAppts.filter(a => a.tipSplitPayment).reduce((s, a) => s + Number(a.tipCardPortion || 0), 0)
     + sameDayAppts.filter(a => a.tipPaymentType === "card").reduce((s, a) => s + Math.max(0, Number(a.packageTip ?? a.tip ?? 0) - gcAllocPackage(a).gcTip), 0)
     + ticketAppts.filter(a => a.extraTipPaymentType === "card").reduce((s, a) => s + Number(a.extraTip || 0), 0)
-    + revenueAddons.filter(ad => ad.tipPaymentType !== "cash").reduce((s, ad) => s + Number(ad.tip || 0), 0)
+    + revenueAddons.filter(ad => ad.tipPaymentType !== "cash").reduce((s, ad) => s + Number(ad.tip || 0) - addonGcAlloc(ad).gcTip, 0)
     + cavSlotAppts.filter(a => a.tipPaymentType === "card").reduce((s, a) => s + Number(a.tip || 0), 0)
     + deposits.filter(d => d.tipPaymentType === "card").reduce((s, d) => s + Number(d.tip || 0), 0)
     + totalForgottenTipCard
@@ -2103,8 +2114,16 @@ function ApptCard({ appt, onClick, allAppointments }) {
                   const aTip = Number(addon.tip||0);
                   const aTotal = r2(aSvc + aTip);
                   const chipColor = addon.countsAsRevenue === true ? REVENUE_COLOR : addon.countsAsRevenue === false ? NON_REVENUE_COLOR : "#00695C";
-                  const svcIcon = addon.paymentType === "card" ? "💳" : addon.paymentType === "cash" ? "💵" : "";
-                  const tipIcon = addon.tipPaymentType === "card" ? "💳" : addon.tipPaymentType === "cash" ? "💵" : "";
+                  // A gift card used for this add-on was already counted as revenue on the (possibly
+                  // earlier) day it was purchased/loaded — same rule as gcAlloc above.
+                  const aGc = addon.countsAsRevenue === true ? Number(addon.giftCardUsed||0) : 0;
+                  const aGcSvc = Math.min(aGc, aSvc);
+                  const aGcTip = Math.min(Math.max(0, aGc - aGcSvc), aTip);
+                  const aNetSvc = r2(aSvc - aGcSvc);
+                  const aNetTip = r2(aTip - aGcTip);
+                  const aReceivedTotal = r2(aNetSvc + aNetTip);
+                  const svcIcon = aGcSvc >= aSvc && aSvc > 0 ? "🎁" : addon.paymentType === "card" ? "💳" : addon.paymentType === "cash" ? "💵" : "";
+                  const tipIcon = aGcTip >= aTip && aTip > 0 ? "🎁" : addon.tipPaymentType === "card" ? "💳" : addon.tipPaymentType === "cash" ? "💵" : "";
                   const hasCav = addon.hasCav === true && !!addon.cavTherapist;
                   const svcSplit = hasCav ? splitAddonAmount(addon.price, addon.duration, addon.cavMins) : null;
                   const tipSplit = hasCav ? splitAddonAmount(addon.tip, addon.duration, addon.cavMins) : null;
@@ -2114,13 +2133,16 @@ function ApptCard({ appt, onClick, allAppointments }) {
                       <div style={{ fontSize: 12, color: "#888", fontWeight: 400 }}>{addon.therapist}{hasCav ? ` + ${addon.cavTherapist} (machine)` : ""}</div>
                       {aTotal > 0 && (
                         <>
-                          <div>{aSvc}{svcIcon}</div>
-                          {aTip > 0 && <div>{aTip}{tipIcon}</div>}
-                          <div style={{ fontWeight: 800 }}>{aTotal}</div>
+                          <div>{aNetSvc}{svcIcon}</div>
+                          {aTip > 0 && <div>{aNetTip}{tipIcon}</div>}
+                          <div style={{ fontWeight: 800 }}>{aGc > 0 ? aReceivedTotal : aTotal}</div>
                           {hasCav && (
                             <div style={{ fontSize: 11, fontWeight: 400, color: "#888" }}>
                               {addon.therapist} ${svcSplit.body}{tipSplit.body > 0 ? `+${tipSplit.body}` : ""} / {addon.cavTherapist} ${svcSplit.cav}{tipSplit.cav > 0 ? `+${tipSplit.cav}` : ""}
                             </div>
+                          )}
+                          {aGc > 0 && (
+                            <div style={{ fontSize: 11, fontWeight: 400, color: "#2E7D32" }}>🎁GC used ${aGc}</div>
                           )}
                         </>
                       )}
@@ -2257,6 +2279,8 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
     // previously both were driven by `Number(depositApplied) > 0`, so an empty field
     // mid-edit looked identical to the user having turned the deposit off.
     depositOn: Number(appt.depositApplied || 0) > 0,
+    // Same reasoning per add-on: gcOn tracks ON/OFF separately from the dollar amount.
+    addons: (appt.addons || []).map(a => ({ ...a, gcOn: Number(a.giftCardUsed || 0) > 0 })),
   });
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
   const [errors, setErrors] = useState([]);
@@ -2325,7 +2349,11 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
     // "Includes $X deposit" badge, etc.) still keys off `depositApplied > 0` alone, so
     // when the toggle is off the amount must actually be zeroed before saving.
     const { depositOn, ...toSave } = form;
-    onSave(depositOn ? toSave : { ...toSave, depositApplied: 0 });
+    const cleanedAddons = (toSave.addons || []).map(a => {
+      const { gcOn, ...addonRest } = a;
+      return gcOn ? addonRest : { ...addonRest, giftCardUsed: 0 };
+    });
+    onSave({ ...(depositOn ? toSave : { ...toSave, depositApplied: 0 }), addons: cleanedAddons });
   };
 
   const ErrorBanner = () => errors.length === 0 ? null : (
@@ -2587,6 +2615,8 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                 cavTherapist: "",
                 duration: durMatch ? Number(durMatch[1]) : 0,
                 cavMins: 15,
+                gcOn: false,
+                giftCardUsed: 0,
               }]);
             }} style={{ ...inputStyle, fontSize: 12, color: "#888" }}>
               <option value="">+ Add a menu item for a different therapist</option>
@@ -2725,6 +2755,34 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                           style={{ ...inputStyle, fontSize: 12 }} placeholder="0" />
                       </div>
                     </div>
+
+                    {/* Gift Card Used — an add-on can be paid from an existing gift card balance
+                        just like the main service; that money was already counted as revenue on
+                        the (possibly earlier) day the gift card was purchased, so it must be
+                        tracked here to avoid double-counting it as new cash/card revenue. */}
+                    {addon.countsAsRevenue !== false && (
+                      <div style={{ background: "#E0F2F1", borderRadius: 8, padding: 8, marginBottom: 6 }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                          <span style={{ fontSize: 11, fontWeight: 700, color: "#00796B" }}>🎁 Gift Card Used</span>
+                          <button onClick={() => {
+                            const turningOn = !addon.gcOn;
+                            upd({ gcOn: turningOn, giftCardUsed: turningOn ? (Number(addon.giftCardUsed) > 0 ? addon.giftCardUsed : (svcAmt + tipAmt || 20)) : 0 });
+                          }}
+                            style={{ padding: "3px 10px", borderRadius: 8, border: "none", background: addon.gcOn ? "#00796B" : "#B2DFDB", color: "#fff", fontWeight: 700, cursor: "pointer", fontSize: 11 }}>
+                            {addon.gcOn ? "ON ✓" : "OFF"}
+                          </button>
+                        </div>
+                        {addon.gcOn && (
+                          <div style={{ marginTop: 6 }}>
+                            <div style={{ fontSize: 10, color: "#00796B", marginBottom: 3 }}>Amount Used ($)</div>
+                            <input type="number" value={addon.giftCardUsed||""}
+                              onFocus={e => e.target.select()}
+                              onChange={e => upd({ giftCardUsed: e.target.value })}
+                              style={{ ...inputStyle, fontSize: 12, borderColor: "#80CBC4" }} placeholder="e.g. 65" />
+                          </div>
+                        )}
+                      </div>
+                    )}
 
                     {/* Payment type — real money only when this is a new (revenue) payment, not a ticket redemption */}
                     {addon.countsAsRevenue !== false && (
@@ -5138,6 +5196,7 @@ function PayrollTab() {
         const isCard = addon.paymentType === "card";
         const isTipCard = addon.tipPaymentType === "card";
         const addonLabel = `${addon.serviceName || addon.name || "Add-on"}${addon.ticketCurrent ? ` ${addon.ticketCurrent}/${a.ticketTotal||3}` : ""}`;
+        const addonGcNote = Number(addon.giftCardUsed || 0) > 0 ? `　🎁Used $${Number(addon.giftCardUsed)} gift card` : "";
 
         // A machine (cav) portion of the add-on is done by a second therapist — only one lump
         // price/tip is entered for the whole add-on, so it's split by duration ratio (same
@@ -5160,7 +5219,7 @@ function PayrollTab() {
             tip,
             paymentType: a.isGiftCard ? "gc" : (addon.paymentType || "cash"),
             tipPaymentType: a.isGiftCard ? "gc" : (addon.tipPaymentType || "cash"),
-            notes: `➕ ${addonLabel}${noteSuffix}`,
+            notes: `➕ ${addonLabel}${noteSuffix}${addonGcNote}`,
           });
           byTherapist[t].totalService += svc;
           byTherapist[t].totalTip += tip;
