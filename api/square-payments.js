@@ -33,7 +33,12 @@ export default async function handler(req, res) {
     // it has to be recovered from the order's line items instead. Cash payments never go
     // through the tip-prompt flow at all (so tip_money is always 0 for them), but staff
     // sometimes still itemize a "Tip" line inside a cash order — checked for both tenders
-    // for that reason. The same order fetch also gives us the non-tip line item names, used
+    // for that reason. Always ADD the order's own "Tip" line item on top of tip_money rather
+    // than only falling back to it when tip_money is 0 — a split-card sale can genuinely have
+    // both (e.g. a same-day ticket purchase charged across two cards, with a separate top-up
+    // tip line rung up on the second card alongside its own tip-prompt amount); treating them
+    // as mutually exclusive silently dropped the line-item portion whenever tip_money was
+    // already nonzero. The same order fetch also gives us the non-tip line item names, used
     // below to label refunded payments so staff can match a refund back to the
     // appointment/retail entry that needs correcting.
     //
@@ -112,7 +117,7 @@ export default async function handler(req, res) {
         const refunded = (p.refunded_money?.amount || 0) / 100;
         const netTotal = Math.max(0, total - refunded);
         let tip = (p.tip_money?.amount || 0) / 100;
-        if (tip === 0 && p.order_id) tip = await getOrderTipLineItems(p.order_id);
+        if (p.order_id) tip += await getOrderTipLineItems(p.order_id);
         // A fully refunded payment kept no money at all, tip included.
         const netTip = netTotal > 0 ? tip : 0;
         const tender = p.source_type === 'CASH' ? 'cash' : 'card';
