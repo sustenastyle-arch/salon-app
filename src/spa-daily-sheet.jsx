@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
+import { createPortal } from "react-dom";
 import * as XLSX from "xlsx";
 import { REFERRAL_SOURCES, getRetailItems, getStaffPurchaseItems, computeDayTotals } from "./lib/reportTotals.js";
 
@@ -130,6 +131,29 @@ const MENU_OPTIONS = [
   { group: "Micro Channeling", prefix: "MC", durations: [60] },
 ];
 
+// Course/version combos that actually have a machine (cav) price — used by the "Previous unused
+// cav time" add-on to auto-fill the machine-only price/tip from the same table used for regular
+// ticket redemptions, instead of staff computing the split by hand.
+const CAV_ADDON_MENU_OPTIONS = MENU_OPTIONS.flatMap(({ group, prefix, durations }) =>
+  durations.flatMap(d => [3, 5].map(n => {
+    const key = `${prefix}-${d}-${n}`;
+    const hasCav = !!(PRICE_TABLE.new[key]?.cav || PRICE_TABLE.old[key]?.cav);
+    return hasCav ? { key, label: `${group} ${d}min (${n}-session)` } : null;
+  }))
+).filter(Boolean);
+
+// Every course/version/session-count combo with a defined price — used by an add-on that's
+// redeeming a session from a SEPARATE ticket (e.g. a Facial-ticket session redeemed alongside
+// today's main Improving Posture ticket appointment), so its own course/total/session number
+// don't have to reuse (and collide with) the main appointment's own ticket fields.
+const ADDON_TICKET_MENU_OPTIONS = MENU_OPTIONS.flatMap(({ group, prefix, durations }) =>
+  durations.flatMap(d => [3, 5].map(n => {
+    const key = `${prefix}-${d}-${n}`;
+    const exists = !!(PRICE_TABLE.new[key] || PRICE_TABLE.old[key]);
+    return exists ? { key, total: n, label: `${group} ${d}min (${n}-session)` } : null;
+  }))
+).filter(Boolean);
+
 // Staff capabilities
 const CAV_CAPABLE = ["Mami", "Betsy", "Megumi", "Yuka"]; // can operate machine
 const BODY_CAPABLE = ["Mami", "Betsy", "Megumi", "Aya", "Hiromi", "Mai", "Maki"]; // can do body massage
@@ -244,7 +268,7 @@ const matchServiceName = (rawName) => {
 // (up to 3) attributes each their own dollar share for payroll purposes — commission rates differ
 // per staff member, so the split is entered manually rather than assumed equal (see loadPayroll's
 // "Retail — standalone" block).
-const EMPTY_RETAIL = { id: Date.now(), item: "", price: 0, sellers: [{ therapist: "", amount: 0 }], paymentType: "" };
+const EMPTY_RETAIL = { id: Date.now(), clientName: "", item: "", price: 0, sellers: [{ therapist: "", amount: 0 }], paymentType: "" };
 const EMPTY_DEPOSIT = { id: Date.now(), type: "deposit", amount: 0, clientName: "", paymentType: "", appointmentDate: "", appointmentTime: "", tip: 0, tipPaymentType: "", notes: "" };
 const EMPTY_TICKET_PURCHASE = { id: Date.now(), clientName: "", packageName: "", ticketMenu: "", priceVersion: "new", ticketTotal: 3, amount: 0, paymentType: "", splitPayment: false, cashPortion: 0, cardPortion: 0, tip: 0, tipPaymentType: "", notes: "" };
 const EMPTY_STAFF_PURCHASE = { id: Date.now(), staffName: "", productName: "", amount: 0, paymentType: "", notes: "", extraItems: [] };
@@ -273,6 +297,7 @@ const ADDON_PRESETS = [
   "Cav add-on +20min",
   "Cav add-on +30min",
   "Cav add-on +40min",
+  "Micro Channeling - Neck",
 ];
 
 // Sales tax subtracted before splitting a retail sale's commission-eligible amount among sellers.
@@ -283,35 +308,57 @@ const RETAIL_TAX_RATE = 0.04712;
 // instead of crediting the full pre-tax amount only when nobody bothered to fill in a split.
 const afterTaxAmount = (amt) => Math.round(Number(amt || 0) * (1 - RETAIL_TAX_RATE) * 100) / 100;
 
+// Kept alphabetical by name so staff can find a product quickly in the dropdown.
 const RETAIL_PRODUCTS = [
-  { name: "Sheet Mask", price: 10 },
-  { name: "Epicutis Sheet Mask", price: 30 },
+  { name: "Arctigenin Brightening Treatment", price: 175 },
+  { name: "Belly Bliss Gut Renewal Tea 4oz", price: 30 },
+  { name: "Botanical Beauty Tea 4oz", price: 30 },
+  { name: "Cleansing Essentials Set", price: 105 },
+  { name: "Detox Herbal Tea 4oz", price: 30 },
+  { name: "Epicutis Lipid Shield", price: 90 },
   { name: "Epicutis Sample Set", price: 42 },
+  { name: "Epicutis Sheet Mask", price: 30 },
+  { name: "Hydrobiome Mist", price: 75 },
+  { name: "Hyvia Creme", price: 195 },
+  { name: "Koso Drink", price: 99 },
   { name: "Koso Shot", price: 10 },
   { name: "Koso Shot Campaign", price: 5 },
-  { name: "Koso Drink", price: 99 },
-  { name: "Belly Bliss Gut Renewal Tea 4oz", price: 30 },
-  { name: "Detox Herbal Tea 4oz", price: 30 },
-  { name: "Botanical Beauty Tea 4oz", price: 30 },
+  { name: "Liftech Cream", price: 0 },
+  { name: "Lipid Body Treatment", price: 225 },
+  { name: "Lipid Recovery Mask", price: 125 },
+  { name: "Lipid Serum", price: 250 },
+  { name: "Luxury Skin Care Set", price: 395 },
   { name: "Lymph Love Herbal Tea 4oz", price: 30 },
-  { name: "Tea Bag (100ct)", price: 10 },
   { name: "Muscle Rub 5oz", price: 35 },
   { name: "Muscle Rub 8oz", price: 55 },
   { name: "Oil Cleanser", price: 85 },
-  { name: "Lipid Serum", price: 250 },
-  { name: "Hyvia Creme", price: 195 },
-  { name: "Arctigenin Brightening Treatment", price: 175 },
-  { name: "Lipid Recovery Mask", price: 125 },
-  { name: "Lipid Body Treatment", price: 225 },
   { name: "Post Procedure Set", price: 75 },
-  { name: "Cleansing Essentials Set", price: 105 },
-  { name: "Luxury Skin Care Set", price: 395 },
-  { name: "Liftech Cream", price: 0 },
+  { name: "Sheet Mask", price: 10 },
+  { name: "Tea Bag (100ct)", price: 10 },
   { name: "電気バリブラシ", price: 2095 },
 ];
 // Stored value stays "電気バリブラシ" (already-saved retail sales are matched against it by exact
 // name equality) — this only translates it for display, same pattern as REFERRAL_LABELS above.
 const RETAIL_PRODUCT_LABELS = { "電気バリブラシ": "Electric Facial Brush" };
+
+// 社販 (staff self-purchase) uses Square's own "Employee Discount（社販）" catalog category —
+// separate items/prices from RETAIL_PRODUCTS (the customer-facing retail menu), since staff
+// buy the backbar/professional-size version at a different price than what's sold up front.
+// Pulled by hand from Square's Catalog API (2026-07-20) — keep in sync if that category's
+// items or prices change in Square, same as the other pricing tables in this file.
+// Kept alphabetical by name so staff can find a product quickly in the dropdown.
+const STAFF_PURCHASE_PRODUCTS = [
+  { name: "Arctigenin Brightening Treatment (4oz)", price: 120 },
+  { name: "Back Bar Lipid Shield SPF 30", price: 135 },
+  { name: "Backbar Enzyme Powder (32g)", price: 45 },
+  { name: "Backbar Lipid Body Treatment", price: 175 },
+  { name: "Backbar Oil Cleanser (16oz)", price: 100 },
+  { name: "Ice Globes", price: 100 },
+  { name: "Lipid Recovery Mask - Eyes (10pcs)", price: 80 },
+  { name: "Lipid Recovery Mask - Face (10pcs)", price: 90 },
+  { name: "Lipid Recovery Mask - Neck (10pcs)", price: 100 },
+  { name: "Luxury Set", price: 100 },
+];
 
 const formatCurrency = (n) => `$${Number(n || 0).toLocaleString("en-US", { minimumFractionDigits: 0 })}`;
 const r2 = (n) => Math.round(n * 100) / 100;
@@ -384,6 +431,11 @@ export default function SpaDailySheet() {
   const [reconcileLoading, setReconcileLoading] = useState(false);
   const [reconcileResult, setReconcileResult] = useState(null);
   const [dayLoading, setDayLoading] = useState(true);
+  // Past days that still have real data but were never (re-)locked — e.g. someone unlocked a
+  // finalized day to double-check something and forgot to lock it again. Shown regardless of
+  // which date is currently being viewed, so it surfaces the moment the app is opened rather
+  // than only when someone happens to navigate back to that specific date.
+  const [unlockedPastDays, setUnlockedPastDays] = useState([]);
 
   const showToast = (msg, type = "success") => { setToast({ msg, type }); setTimeout(() => setToast(null), 3000); };
 
@@ -488,6 +540,28 @@ export default function SpaDailySheet() {
     return () => { cancelled = true; };
   }, [editingAppt?.clientName]);
 
+  // Scans the last 30 days for ones that still have real data but aren't locked — see
+  // unlockedPastDays above for why. Re-run after any lock/unlock so the banner reflects it
+  // immediately, not just on next page load.
+  const checkUnlockedPastDays = useCallback(async () => {
+    try {
+      const end = new Date();
+      end.setDate(end.getDate() - 1); // today is still in progress — not "forgotten" yet
+      const start = new Date(end);
+      start.setDate(start.getDate() - 29);
+      const fmt = (d) => d.toISOString().slice(0, 10);
+      const { days } = await apiFetch(`/api/day-data-range?start=${fmt(start)}&end=${fmt(end)}`);
+      const unlocked = Object.entries(days || {})
+        .filter(([, d]) => !d.locked && (d.appointments || []).length > 0)
+        .map(([dt]) => dt)
+        .sort();
+      setUnlockedPastDays(unlocked);
+    } catch (e) {
+      console.error("Unlocked-day check failed:", e);
+    }
+  }, []);
+  useEffect(() => { checkUnlockedPastDays(); }, [checkUnlockedPastDays]);
+
   const save = useCallback(async (appts, rets, deps, tps, sps, refs, fts, ws) => {
     try {
       await apiFetch("/api/day-data", {
@@ -518,6 +592,7 @@ export default function SpaDailySheet() {
         }),
       });
       setLocked(newLocked);
+      checkUnlockedPastDays();
       return true;
     } catch (e) {
       console.error("Lock toggle error:", e);
@@ -942,8 +1017,11 @@ export default function SpaDailySheet() {
     const tip = Number(a.tip || 0);
     const retail = (a.purchaseTags?.includes("retail")) ? getRetailItems(a).reduce((s, it) => s + Number(it.amount || 0), 0) : 0;
     const gcSvc = Math.min(gc, svc);
-    const gcTip = Math.min(gc - gcSvc, tip);
-    const gcRetail = Math.min(gc - gcSvc - gcTip, retail);
+    // r2 here matters: e.g. 195.6 - 163 is 32.599999999999994 in floating point, which would
+    // fail a "gcTip >= tip" full-coverage check elsewhere even though it's really an exact
+    // match — same rounding-artifact class as the tip-total display bug fixed earlier.
+    const gcTip = Math.min(r2(gc - gcSvc), tip);
+    const gcRetail = Math.min(r2(gc - gcSvc - gcTip), retail);
     return { gcSvc, gcTip, gcRetail };
   };
   // Same allocation, but for a same-day ticket *purchase*'s package price/tip (giftCardUsed there
@@ -953,7 +1031,7 @@ export default function SpaDailySheet() {
     const svc = Number(a.packagePrice || 0);
     const tip = Number(a.packageTip ?? a.tip ?? 0);
     const gcSvc = Math.min(gc, svc);
-    const gcTip = Math.min(gc - gcSvc, tip);
+    const gcTip = Math.min(r2(gc - gcSvc), tip);
     return { gcSvc, gcTip };
   };
   // An add-on can also be paid from an existing gift card balance — same exclusion rule as
@@ -1104,6 +1182,94 @@ export default function SpaDailySheet() {
   const sheetCashTip = r2(tipCashAllSources);
   const sheetCardTip = r2(tipCardAllSources);
 
+  // Individual money-in events for the Square照合 payment-matching table below — each one
+  // should correspond to exactly one real Square payment (tender + amount combined), so a
+  // mismatch can point at the specific entry that's wrong instead of only an aggregate total
+  // being off (which previously had to be tracked down by manually re-adding everything).
+  // Best-effort: matches on tender + rounded dollar amount, so two unrelated entries that
+  // happen to charge the identical amount on the identical tender can't be told apart.
+  const moneyEvents = [];
+  const splitParts = (amt, isSplit, type, cashPortion, cardPortion) => {
+    const total = r2(Math.max(0, Number(amt || 0)));
+    if (total <= 0) return [];
+    if (isSplit) {
+      const parts = [];
+      if (Number(cashPortion || 0) > 0) parts.push({ amount: r2(Number(cashPortion)), tender: "cash" });
+      if (Number(cardPortion || 0) > 0) parts.push({ amount: r2(Number(cardPortion)), tender: "card" });
+      return parts;
+    }
+    if (!type) return [];
+    return [{ amount: total, tender: type }];
+  };
+  const addMoneyEvent = (label, svcAmt, svcSplit, svcType, svcCash, svcCard, tipAmt, tipSplit, tipType, tipCash, tipCard) => {
+    const svcParts = splitParts(svcAmt, svcSplit, svcType, svcCash, svcCard);
+    const tipParts = splitParts(tipAmt, tipSplit, tipType, tipCash, tipCard);
+    // Service and tip usually get rung up together as one Square charge when paid the same
+    // way — combine them so the matcher looks for one payment, not two.
+    if (svcParts.length === 1 && tipParts.length === 1 && svcParts[0].tender === tipParts[0].tender) {
+      moneyEvents.push({ label, amount: r2(svcParts[0].amount + tipParts[0].amount), tender: svcParts[0].tender });
+    } else {
+      svcParts.forEach(p => moneyEvents.push({ label, amount: p.amount, tender: p.tender }));
+      tipParts.forEach(p => moneyEvents.push({ label: `${label} (tip)`, amount: p.amount, tender: p.tender }));
+    }
+  };
+  regularAppts.forEach(a => {
+    const gc = gcAlloc(a);
+    addMoneyEvent(a.clientName || "(unnamed)",
+      Number(a.price || 0) - gc.gcSvc, a.svcSplitPayment, a.paymentType, a.svcCashPortion, a.svcCardPortion,
+      Number(a.tip || 0) - gc.gcTip, a.tipSplitPayment, a.tipPaymentType, a.tipCashPortion, a.tipCardPortion);
+  });
+  sameDayAppts.forEach(a => {
+    const gc = gcAllocPackage(a);
+    addMoneyEvent(`${a.clientName || "(unnamed)"} (ticket purchase)`,
+      Number(a.packagePrice || 0) - gc.gcSvc, a.packageSplitPayment, a.paymentType, a.packageCashPortion, a.packageCardPortion,
+      Number(a.packageTip ?? a.tip ?? 0) - gc.gcTip, false, a.tipPaymentType, 0, 0);
+  });
+  ticketAppts.forEach(a => {
+    if (Number(a.extraPrice || 0) > 0 || Number(a.extraTip || 0) > 0) {
+      addMoneyEvent(`${a.clientName || "(unnamed)"} (extra)`,
+        a.extraPrice, false, a.extraPricePaymentType, 0, 0,
+        a.extraTip, false, a.extraTipPaymentType, 0, 0);
+    }
+  });
+  revenueAddons.forEach(ad => {
+    const gc = addonGcAlloc(ad);
+    addMoneyEvent(ad.serviceName || "Add-on", Number(ad.price||0) - gc.gcSvc, false, ad.paymentType, 0, 0, Number(ad.tip||0) - gc.gcTip, false, ad.tipPaymentType, 0, 0);
+  });
+  cavSlotAppts.forEach(a => {
+    addMoneyEvent(`${a.clientName || "(unnamed)"} (machine)`, a.price, false, a.paymentType, 0, 0, a.tip, false, a.tipPaymentType, 0, 0);
+  });
+  deposits.forEach(d => {
+    const label = d.type === "giftcard" ? `${d.clientName || "Gift Card"} (gift card)` : d.type === "cancellation" ? `${d.clientName || "Cancellation"} (cancellation fee)` : `${d.clientName || "Deposit"} (deposit)`;
+    addMoneyEvent(label, d.amount, false, d.paymentType, 0, 0, d.tip, false, d.tipPaymentType || (Number(d.tip || 0) > 0 ? "cash" : ""), 0, 0);
+  });
+  ticketPurchases.forEach(tp => {
+    addMoneyEvent(tp.clientName ? `${tp.clientName} (ticket purchase)` : "Ticket Purchase",
+      tp.amount, tp.splitPayment, tp.paymentType, tp.cashPortion, tp.cardPortion,
+      tp.tip, false, tp.tipPaymentType || (Number(tp.tip || 0) > 0 ? "cash" : ""), 0, 0);
+  });
+  retails.forEach(r => {
+    addMoneyEvent(r.item || "Retail", r.price, false, r.paymentType, 0, 0, 0, false, "", 0, 0);
+  });
+  inlineRetailAppts.forEach(a => {
+    getRetailItems(a).forEach(it => {
+      addMoneyEvent(`${a.clientName || "(unnamed)"} (retail)`, it.amount, false, it.paymentType, 0, 0, 0, false, "", 0, 0);
+    });
+  });
+  inlineNewTicketAppts.forEach(a => {
+    addMoneyEvent(`${a.clientName || "(unnamed)"} (new ticket)`,
+      a.newTicketAmount, a.newTicketSplitPayment, a.newTicketPaymentType, a.newTicketCashPortion, a.newTicketCardPortion,
+      a.newTicketTip, false, a.newTicketTipPaymentType, 0, 0);
+  });
+  inlineGCAppts.forEach(a => {
+    addMoneyEvent(`${a.clientName || "(unnamed)"} (gift card sale)`, a.giftCardPurchaseAmount, false, a.giftCardPurchasePaymentType, 0, 0, 0, false, "", 0, 0);
+  });
+  staffPurchases.forEach(sp => {
+    getStaffPurchaseItems(sp).forEach(it => {
+      addMoneyEvent(`${sp.staffName || "Staff"} (staff purchase)`, it.amount, false, it.paymentType, 0, 0, 0, false, "", 0, 0);
+    });
+  });
+
   // 新規チケット販売（当日購入、または「当日の追加購入」→チケット新規購入タグ）— チケット消化とは別の集計。
   // 機械担当と2人で入って売れた場合は、件数・金額とも0.5ずつに割る。
   const newTicketByTherapist = {};
@@ -1202,6 +1368,19 @@ export default function SpaDailySheet() {
         </div>
       )}
       {squareStatus && <div style={{ background: "#FFF3CD", padding: "8px 20px", fontSize: 13, color: "#856404" }}>⚠️ {squareStatus}</div>}
+      {/* Shown regardless of which date is currently open — someone unlocking a finalized day
+          to double-check something and forgetting to re-lock it is easy to miss otherwise. */}
+      {unlockedPastDays.length > 0 && (
+        <div style={{ background: "#FFF3E0", padding: "8px 20px", fontSize: 13, color: "#E65100", fontWeight: 700, borderBottom: "2px solid #FFB74D" }}>
+          🔓 {unlockedPastDays.length} past day{unlockedPastDays.length > 1 ? "s" : ""} still unlocked:{" "}
+          {unlockedPastDays.map((d, i) => (
+            <span key={d}>
+              {i > 0 && ", "}
+              <button onClick={() => setDate(d)} style={{ border: "none", background: "none", color: "#E65100", fontWeight: 700, textDecoration: "underline", cursor: "pointer", fontSize: 13, padding: 0 }}>{d}</button>
+            </span>
+          ))}
+        </div>
+      )}
 
       {reconcileResult && (() => {
         // Cash payments never go through Square's tip-prompt screen, so tip_money is always 0
@@ -1216,6 +1395,51 @@ export default function SpaDailySheet() {
           { label: "Cash Tip", sheet: sheetCashTip, square: reconcileResult.cashTip },
           { label: "Card Tip", sheet: sheetCardTip, square: reconcileResult.cardTip },
         ];
+        // When the totals above don't match, try to pin down exactly which transaction(s) are
+        // responsible instead of leaving it as "the total is off by $X" — match each real Square
+        // payment against a sheet entry with the same tender + amount (best-effort; two entries
+        // that happen to charge the identical amount the identical way can't be told apart).
+        const anyMismatch = rows.some(r => Math.abs(r2(r.sheet - r.square)) > 0.01);
+        const usedEventIdx = new Set();
+        const unmatchedPayments = [];
+        (reconcileResult.payments || []).forEach(p => {
+          const idx = moneyEvents.findIndex((e, i) => !usedEventIdx.has(i) && e.tender === p.tender && Math.abs(e.amount - p.amount) < 0.01);
+          if (idx === -1) unmatchedPayments.push(p); else usedEventIdx.add(idx);
+        });
+        const unmatchedEvents = moneyEvents.filter((e, i) => !usedEventIdx.has(i));
+
+        // Beyond simple 1:1 matching: a single logical sale sometimes lands as TWO+ separate
+        // Square payments (e.g. a client splitting one purchase across two cards) or, less
+        // often, one Square payment covers two sheet entries rung up together — either way the
+        // 1:1 pass above leaves both sides "unmatched" even though they really do add up.
+        // Brute-force every 2–3 item combination within the same tender (the unmatched lists
+        // are always small, so this stays cheap) and surface any that sum to within a cent of
+        // something on the other side.
+        const combosSummingTo = (items, target, maxSize = 3) => {
+          const results = [];
+          const tryCombo = (start, combo, sum) => {
+            if (combo.length > 1 && Math.abs(r2(sum) - target) < 0.01) results.push([...combo]);
+            if (combo.length >= maxSize) return;
+            for (let i = start; i < items.length; i++) tryCombo(i + 1, [...combo, i], sum + items[i].amount);
+          };
+          tryCombo(0, [], 0);
+          return results;
+        };
+        const splitMatches = [];
+        ["cash", "card"].forEach(tender => {
+          const payPool = unmatchedPayments.filter(p => p.tender === tender);
+          const evPool = unmatchedEvents.filter(e => e.tender === tender);
+          unmatchedEvents.filter(e => e.tender === tender).forEach(ev => {
+            combosSummingTo(payPool, ev.amount).forEach(idxs => {
+              splitMatches.push({ tender, kind: "payments", target: ev, items: idxs.map(i => payPool[i]) });
+            });
+          });
+          unmatchedPayments.filter(p => p.tender === tender).forEach(p => {
+            combosSummingTo(evPool, p.amount).forEach(idxs => {
+              splitMatches.push({ tender, kind: "events", target: p, items: idxs.map(i => evPool[i]) });
+            });
+          });
+        });
         return (
           <div style={{ background: "#fff", margin: "10px 20px", borderRadius: 10, border: "1px solid #DDD", padding: 14 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
@@ -1254,6 +1478,93 @@ export default function SpaDailySheet() {
             <div style={{ fontSize: 11, color: "#999", marginTop: 8 }}>
               ※ Cash tips aren't broken out separately on Square's side, so they're excluded from this check (only the cash total is compared).
             </div>
+            {/* When staff charge the client's real card for the FULL visit total and only track
+                the gift-card portion internally (rather than redeeming it as a separate Square
+                gift-card tender), Square's own total naturally includes that GC-covered amount —
+                while the sheet deliberately excludes it (it was already counted as revenue on
+                the day the card was originally sold). This is the single most common source of
+                a Card Total mismatch, so it's called out explicitly rather than left for staff
+                to work out each time from the raw payment list above. */}
+            {totalGCUsed > 0 && (
+              <div style={{ fontSize: 11, color: "#5D4037", marginTop: 4, background: "#FFF8E1", borderRadius: 6, padding: "6px 10px" }}>
+                🎁 ${r2(totalGCUsed)} in gift cards was used today. If the client's card was charged the full visit total (with the gift-card portion tracked separately here rather than redeemed as a Square gift-card payment), Square's total will include that amount too — that alone can fully explain a Card Total difference close to ${r2(totalGCUsed)}.
+              </div>
+            )}
+            {/* Individual refunds found on Square that day — surfaced so staff can match each
+                one back to the sheet entry that needs a correction (e.g. a mis-entered price
+                that was fixed with a Square refund), rather than only seeing the net total
+                already excludes them. */}
+            {(reconcileResult.refunds || []).length > 0 && (
+              <div style={{ marginTop: 12, background: "#FFF3E0", borderRadius: 8, padding: 10 }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: "#E65100", marginBottom: 6 }}>
+                  🔙 {reconcileResult.refunds.length} refund{reconcileResult.refunds.length > 1 ? "s" : ""} found on Square this day — check these against the sheet
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                  {reconcileResult.refunds.map((r, i) => (
+                    <div key={i} style={{ fontSize: 12, color: "#BF360C" }}>
+                      {r.tender === "cash" ? "💵" : "💳"} {formatCurrency(r.amount)} refunded — payment at {r.time}{r.label ? ` (${r.label})` : ""}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            {/* Only shown when a total above didn't match — narrows the search down to specific
+                transactions instead of the whole day needing to be re-tallied by hand. */}
+            {anyMismatch && (unmatchedPayments.length > 0 || unmatchedEvents.length > 0) && (
+              <div style={{ marginTop: 12, background: "#E3F2FD", borderRadius: 8, padding: 10 }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: "#1565C0", marginBottom: 6 }}>
+                  🔎 Possible source of the mismatch — these didn't line up 1:1
+                </div>
+                {unmatchedPayments.length > 0 && (
+                  <div style={{ marginBottom: unmatchedEvents.length > 0 ? 8 : 0 }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: "#0D47A1", marginBottom: 3 }}>On Square, but no matching sheet entry found:</div>
+                    {unmatchedPayments.map((p, i) => (
+                      <div key={i} style={{ fontSize: 12, color: "#0D47A1" }}>
+                        {p.tender === "cash" ? "💵" : "💳"} {formatCurrency(p.amount)}{p.tip > 0 ? ` (incl. ${formatCurrency(p.tip)} tip)` : ""} — payment at {p.time}{p.label ? ` (${p.label})` : ""}
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {unmatchedEvents.length > 0 && (
+                  <div>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: "#0D47A1", marginBottom: 3 }}>On the sheet, but no matching Square payment found:</div>
+                    {unmatchedEvents.map((e, i) => (
+                      <div key={i} style={{ fontSize: 12, color: "#0D47A1" }}>
+                        {e.tender === "cash" ? "💵" : "💳"} {formatCurrency(e.amount)} — {e.label}
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div style={{ fontSize: 10, color: "#5C7A99", marginTop: 6 }}>
+                  ※ Best-effort match by tender + amount — two entries charging the exact same amount the same way can't always be told apart.
+                </div>
+              </div>
+            )}
+            {/* A single sale sometimes lands as multiple Square payments (e.g. a client
+                splitting one purchase across two cards) — the 1:1 pass above leaves both sides
+                looking unmatched even though 2-3 of them really do add up to the other side. */}
+            {splitMatches.length > 0 && (
+              <div style={{ marginTop: 12, background: "#FCE4EC", borderRadius: 8, padding: 10 }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: "#AD1457", marginBottom: 6 }}>
+                  💡 Possible split payment — these add up to within a cent of each other
+                </div>
+                {splitMatches.slice(0, 5).map((m, i) => {
+                  const icon = m.tender === "cash" ? "💵" : "💳";
+                  const sum = r2(m.items.reduce((s, it) => s + it.amount, 0));
+                  const targetLabel = m.kind === "payments"
+                    ? `sheet: ${m.target.label}`
+                    : `Square payment at ${m.target.time}${m.target.label ? ` (${m.target.label})` : ""}`;
+                  return (
+                    <div key={i} style={{ fontSize: 12, color: "#AD1457", marginBottom: 3 }}>
+                      {icon} {m.items.map(it => `${formatCurrency(it.amount)}${m.kind === "payments" && it.time ? ` (${it.time}${it.label ? `, ${it.label}` : ""})` : ""}${m.kind === "events" && it.label ? ` (${it.label})` : ""}`).join(" + ")} = {formatCurrency(sum)} ≈ {targetLabel} {formatCurrency(m.target.amount)}
+                    </div>
+                  );
+                })}
+                <div style={{ fontSize: 10, color: "#AD1457", marginTop: 6 }}>
+                  ※ Just a suggestion based on the numbers adding up — double-check against Square before assuming it's the answer.
+                </div>
+              </div>
+            )}
           </div>
         );
       })()}
@@ -1406,14 +1717,15 @@ export default function SpaDailySheet() {
                             <div key={`${parentAppt.id}-${addon.id}-${role}`}
                               onClick={e => { e.stopPropagation(); openApptForEdit(parentAppt); }}
                               style={{ background: isCavRole ? "#F9F0FF" : "#E0F2F1", border: `1.5px solid ${isCavRole ? "#9C27B0" : "#00796B"}`, borderRadius: 8, padding: "5px 7px", marginBottom: 3, cursor: "pointer" }}>
-                              <div style={{ fontSize: 10, fontWeight: 800, color: isCavRole ? "#6A1B9A" : "#00695C" }}>➕ Add-on{isCavRole ? " (machine)" : ""}</div>
-                              <div style={{ fontSize: 11, fontWeight: 700, color: "#004D40" }}>{parentAppt.clientName}</div>
-                              <div style={{ fontSize: 10, color: "#00796B" }}>
-                                {addon.serviceName || "Add-on"}{addon.ticketCurrent ? ` ${addon.ticketCurrent}/${parentAppt.ticketTotal||3}` : ""}
+                              <div style={{ fontSize: 16, fontWeight: 800, color: isCavRole ? "#6A1B9A" : "#00695C" }}>➕ Add-on{isCavRole ? " (machine)" : ""}</div>
+                              <div style={{ fontSize: 18, fontWeight: 700, color: "#004D40" }}>{parentAppt.clientName}</div>
+                              <div style={{ fontSize: 16, color: "#00796B" }}>
+                                {addon.serviceName || "Add-on"}{addon.ticketCurrent ? ` ${addon.ticketCurrent}/${addon.ticketTotal || parentAppt.ticketTotal || 3}` : ""}
                               </div>
-                              {hasCav && <div style={{ fontSize: 9, color: "#888" }}>with {isCavRole ? addon.therapist : addon.cavTherapist}</div>}
+                              {hasCav && <div style={{ fontSize: 14, color: "#888" }}>with {isCavRole ? addon.therapist : addon.cavTherapist}</div>}
+                              {addon.notes && <div style={{ fontSize: 14, color: "#888", fontStyle: "italic" }}>{addon.notes}</div>}
                               {aTotal > 0 && (
-                                <div style={{ fontSize: 10, fontWeight: 700, color: aColor }}>
+                                <div style={{ fontSize: 17, fontWeight: 700, color: aColor }}>
                                   <div>{aSvc}{svcIcon}</div>
                                   {aTip > 0 && <div>{aTip}{tipIcon}</div>}
                                   <div style={{ fontWeight: 800 }}>{aTotal}</div>
@@ -1436,6 +1748,7 @@ export default function SpaDailySheet() {
             {retails.length === 0 && <p style={{ color: "#AAA", fontSize: 13 }}>None</p>}
             {retails.map(r => (
               <div key={r.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: "1px solid #F0F0F0", flexWrap: "wrap" }}>
+                {r.clientName && <span style={{ fontWeight: 700, fontSize: 14 }}>{r.clientName}</span>}
                 <span style={{ flex: 1, fontSize: 14 }}>{r.item || "(not entered)"}</span>
                 <span style={{ fontWeight: 700, color: "#6A1B9A" }}>{formatCurrency(r.price)}</span>
                 <PayBadge type={r.paymentType} />
@@ -1459,6 +1772,10 @@ export default function SpaDailySheet() {
                 <span style={{ flex: 1, fontSize: 14 }}>{d.clientName || "—"}</span>
                 <span style={{ fontWeight: 700 }}>{formatCurrency(d.amount)}</span>
                 <PayBadge type={d.paymentType} />
+                {d.appointmentDate && (
+                  <span style={{ fontSize: 11, color: "#888" }}>🕐 Visit: {d.appointmentDate}{d.appointmentTime ? ` ${d.appointmentTime}` : ""}</span>
+                )}
+                {d.notes && <span style={{ fontSize: 11, color: "#888" }}>{d.notes}</span>}
                 <button onClick={() => setEditingDeposit(d)} disabled={locked} style={{...iconBtn, opacity: locked ? 0.35 : 1, cursor: locked ? "not-allowed" : "pointer"}}>✏️</button>
                 <button onClick={() => deleteDeposit(d.id)} disabled={locked} style={{...iconBtn, opacity: locked ? 0.35 : 1, cursor: locked ? "not-allowed" : "pointer"}}>🗑️</button>
               </div>
@@ -1547,6 +1864,7 @@ export default function SpaDailySheet() {
                   {tp.splitPayment
                     ? <span style={{ fontSize: 11, color: "#B71C1C", background: "#FFEBEE", borderRadius: 8, padding: "2px 8px" }}>💵{formatCurrency(tp.cashPortion||0)}＋💳{formatCurrency(tp.cardPortion||0)}</span>
                     : <PayBadge type={tp.paymentType} />}
+                  {tp.notes && <span style={{ fontSize: 11, color: "#888" }}>{tp.notes}</span>}
                   <button onClick={() => setEditingTicketPurchase(tp)} disabled={locked} style={{...iconBtn, opacity: locked ? 0.35 : 1, cursor: locked ? "not-allowed" : "pointer"}}>✏️</button>
                   <button onClick={() => deleteTicketPurchase(tp.id)} disabled={locked} style={{...iconBtn, opacity: locked ? 0.35 : 1, cursor: locked ? "not-allowed" : "pointer"}}>🗑️</button>
                 </div>
@@ -1719,7 +2037,7 @@ export default function SpaDailySheet() {
                 const pkgSvc = Number(a.packagePrice||0);
                 const gc = Number(a.giftCardUsed||0);
                 const gcSvc = Math.min(gc, pkgSvc);
-                const gcTip = Math.min(gc - gcSvc, pkgTip);
+                const gcTip = Math.min(r2(gc - gcSvc), pkgTip);
                 const extra = Number(a.extraTip||0);
                 const extraSvc = Number(a.extraPrice||0);
                 const total = pkgSvc + pkgTip - gcSvc - gcTip + extra + extraSvc;
@@ -1924,6 +2242,11 @@ function ApptCard({ appt, onClick, allAppointments }) {
   // or a comped/PR treatment (no money is ever received for it).
   const isRevenueToday = !isGiftCard && !isPromo && !gcFullyCovers && (!isTicket || appt.isSameDayTicket);
   const amountColor = isRevenueToday ? REVENUE_COLOR : NON_REVENUE_COLOR;
+  // The cav slot never carries its own package-price field — even for a same-day ticket
+  // purchase, its price/tip are always just the per-session payroll-reference split (the real
+  // revenue for that purchase shows in red on the body/main card's own package-price line
+  // instead), so it should read as non-revenue here regardless of isSameDayTicket.
+  const cavAmountColor = (!isGiftCard && !isPromo && !gcFullyCovers && !isTicket) ? REVENUE_COLOR : NON_REVENUE_COLOR;
   const borderColor = isCavSlot ? "#9C27B0" : isGiftCard ? "#F59E0B" : isPromo ? "#1565C0" : isTicket ? "#1565C0" : appt.paymentType === "cash" ? "#4CAF50" : "#2196F3";
   const bg = isCavSlot ? "#F9F0FF" : isGiftCard ? "#FFFDE7" : isPromo ? "#E3F2FD" : isTicket ? "#EEF5FF" : appt.paymentType === "cash" ? "#F1FBF3" : "#EEF5FF";
 
@@ -1957,7 +2280,7 @@ function ApptCard({ appt, onClick, allAppointments }) {
           <div style={{ fontSize: 13, color: "#8E24AA" }}>with {appt.bodyTherapist}</div>
         )}
         {(cavSvc > 0 || cavTip > 0) && (
-          <div style={{ fontSize: 17, color: amountColor, fontWeight: 700 }}>
+          <div style={{ fontSize: 17, color: cavAmountColor, fontWeight: 700 }}>
             <div>{cavSvc}{svcIcon}</div>
             {cavTip > 0 && <div>{cavTip}{tipIcon}</div>}
             <div style={{ fontWeight: 800 }}>{cavTotal}</div>
@@ -2051,18 +2374,33 @@ function ApptCard({ appt, onClick, allAppointments }) {
         // today") double-counted money that isn't actually new revenue today.
         const gc = (!isGiftCard && !isPromo) ? Number(appt.giftCardUsed||0) : 0;
         const gcSvcAmt = Math.min(gc, dispSvc);
-        const gcTipAmt = Math.min(Math.max(0, gc - gcSvcAmt), dispTip);
+        const gcTipAmt = Math.min(Math.max(0, r2(gc - gcSvcAmt)), dispTip);
         const receivedTodayTotal = r2((dispSvc - gcSvcAmt) + (dispTip - gcTipAmt));
         // Line items show the net (post-gift-card) amount too — showing the gross entered
         // number next to a total that's already netted out looked like the two didn't add up.
         const netSvc = r2(dispSvc - gcSvcAmt);
         const netTip = r2(dispTip - gcTipAmt);
+        // A gift card that fully covers the service/tip nets to $0 — correct for "today's
+        // revenue," but showing a bare $0 here gave no way to tell the visit still counts for
+        // payroll. Show the gross (pre-GC) reference amount instead once it's fully covered,
+        // same as how a チケット消化 redemption shows its full reference price, not $0.
+        const svcFullyCovered = dispSvc > 0 && gcSvcAmt >= dispSvc;
+        const tipFullyCovered = dispTip > 0 && gcTipAmt >= dispTip;
 
         const svcText = isSameDay
-          ? (appt.packageSplitPayment ? `💵$${appt.packageCashPortion||0}＋💳$${appt.packageCardPortion||0}` : `${netSvc}${gcSvcAmt >= dispSvc && dispSvc > 0 ? "🎁" : paidIcon}`)
-          : !isRedemption && appt.svcSplitPayment ? `💵$${appt.svcCashPortion||0}＋💳$${appt.svcCardPortion||0}` : `${netSvc}${gcSvcAmt >= dispSvc && dispSvc > 0 ? "🎁" : paidIcon}`;
+          ? (appt.packageSplitPayment ? `💵$${appt.packageCashPortion||0}＋💳$${appt.packageCardPortion||0}` : `${svcFullyCovered ? dispSvc : netSvc}${svcFullyCovered ? "🎁" : paidIcon}`)
+          : !isRedemption && appt.svcSplitPayment ? `💵$${appt.svcCashPortion||0}＋💳$${appt.svcCardPortion||0}` : `${svcFullyCovered ? dispSvc : netSvc}${svcFullyCovered ? "🎁" : paidIcon}`;
         const tipText = !isRedemption && !isSameDay && appt.tipSplitPayment
-          ? `💵$${appt.tipCashPortion||0}＋💳$${appt.tipCardPortion||0}` : `${netTip}${gcTipAmt >= dispTip && dispTip > 0 ? "🎁" : tipIcon}`;
+          ? `💵$${appt.tipCashPortion||0}＋💳$${appt.tipCardPortion||0}` : `${tipFullyCovered ? dispTip : netTip}${tipFullyCovered ? "🎁" : tipIcon}`;
+
+        // A service/tip that's fully covered by an existing gift card balance is non-revenue
+        // (already counted the day the card was purchased) even when the OTHER line isn't —
+        // e.g. service paid entirely by gift card but tip paid today in cash. The blanket
+        // amountColor only looks at whether the whole visit nets to non-revenue, so it stayed
+        // red on a fully-GC-covered service line just because a separately-paid tip existed.
+        const svcColor = svcFullyCovered ? NON_REVENUE_COLOR : amountColor;
+        const tipColor = tipFullyCovered ? NON_REVENUE_COLOR : amountColor;
+        const totalColor = (svcFullyCovered && (dispTip <= 0 || tipFullyCovered)) ? NON_REVENUE_COLOR : amountColor;
 
         const courseName = isTicket ? (stripJpAnnotation(appt.serviceName) || appt.ticketMenu) : (stripJpAnnotation(appt.serviceName) || `${appt.duration}min`);
         const sessionSuffix = isRedemption && appt.ticketCurrent > 0 ? ` ${appt.ticketCurrent}/${appt.ticketTotal}`
@@ -2077,14 +2415,17 @@ function ApptCard({ appt, onClick, allAppointments }) {
               {(appt.extraServiceNames || []).map(n => ` + ${n}`).join("")}
             </div>
             {(dispSvc > 0 || dispTip > 0) && (
-              <div style={{ color: amountColor, fontWeight: 700 }}>
-                <div>{svcText}</div>
-                {dispTip > 0 && <div>{tipText}</div>}
-                <div style={{ fontWeight: 800 }}>
-                  {gc > 0 ? receivedTodayTotal : dispTotal}
+              <div style={{ fontWeight: 700 }}>
+                <div style={{ color: svcColor }}>{svcText}</div>
+                {dispTip > 0 && <div style={{ color: tipColor }}>{tipText}</div>}
+                <div style={{ fontWeight: 800, color: totalColor }}>
+                  {svcFullyCovered && (dispTip <= 0 || tipFullyCovered) ? dispTotal : (gc > 0 ? receivedTodayTotal : dispTotal)}
                   {extraSvc > 0 && <span style={{ color: REVENUE_COLOR }}> +Extra ${extraSvc}{appt.extraPricePaymentType==="card"?"💳":"💵"}</span>}
                   {extra > 0 && <span style={{ color: REVENUE_COLOR }}> +Extra tip{extra}💝{appt.extraTipPaymentType==="card"?"💳":"💵"}</span>}
                 </div>
+                {(extraSvc > 0 || extra > 0) && appt.extraNotes && (
+                  <div style={{ fontSize: 11, color: "#888", fontWeight: 400, fontStyle: "italic" }}>{appt.extraNotes}</div>
+                )}
               </div>
             )}
             {/* Same-day ticket purchase where session 1 was also used today: show the
@@ -2097,18 +2438,37 @@ function ApptCard({ appt, onClick, allAppointments }) {
                 <div style={{ fontWeight: 800 }}>{r2(svc + tip)}</div>
               </div>
             )}
-            {appt.cavTherapist && !isDualLicense(appt.therapist) && (
+            {appt.cavTherapist && (
               <div style={{ color: "#6A1B9A", fontSize: 13 }}>with {appt.cavTherapist}</div>
             )}
             {dep > 0 && (
               <div style={{ color: "#2E7D32", fontSize: 13 }}>💰Deposit ${dep} paid (not included in today's total received){depDate ? ` ${depDate}` : ""}</div>
             )}
             {gc > 0 && (
-              <div style={{ color: "#2E7D32", fontSize: 13 }}>GC used ${gc}</div>
+              <div style={{ color: "#2E7D32", fontSize: 13 }}>
+                GC used ${gc}
+                {/* Red above must stay "what should match the register today" — it can't
+                    include the GC-covered portion without double-counting revenue that was
+                    already booked on the day the card was bought. But a partial GC + partial
+                    real-money visit still needs its FULL payroll figure spelled out somewhere,
+                    or it just looks like the staff's allocation is only the smaller red number. */}
+                {!(svcFullyCovered && (dispTip <= 0 || tipFullyCovered)) && (
+                  <div style={{ fontSize: 11, fontWeight: 400 }}>
+                    Payroll: ${dispSvc} treatment{gcSvcAmt > 0 && netSvc > 0 ? ` ($${gcSvcAmt} GC + $${netSvc})` : ""}
+                    {dispTip > 0 && <> + ${dispTip} tip{gcTipAmt > 0 && netTip > 0 ? ` ($${gcTipAmt} GC + $${netTip})` : ""}</>}
+                  </div>
+                )}
+              </div>
             )}
-            {(appt.addons || []).length > 0 && (
+            {/* An add-on done by a DIFFERENT therapist already gets its own card under that
+                therapist's column (see the Schedule tab's addonItems grouping) — showing it
+                here too, on the main appointment's own card, looked like it was also being
+                credited to this card's therapist. Only show it here when it's the same
+                therapist (or no therapist chosen yet), so each add-on appears in exactly
+                one place. */}
+            {(appt.addons || []).filter(addon => !addon.therapist || addon.therapist === appt.therapist).length > 0 && (
               <div style={{ display: "flex", flexDirection: "column", gap: 3, marginTop: 3 }}>
-                {(appt.addons || []).map(addon => {
+                {(appt.addons || []).filter(addon => !addon.therapist || addon.therapist === appt.therapist).map(addon => {
                   const label = addon.serviceName || addon.name || "Add-on";
                   const aSvc = Number(addon.price||0);
                   const aTip = Number(addon.tip||0);
@@ -2128,16 +2488,17 @@ function ApptCard({ appt, onClick, allAppointments }) {
                   const svcSplit = hasCav ? splitAddonAmount(addon.price, addon.duration, addon.cavMins) : null;
                   const tipSplit = hasCav ? splitAddonAmount(addon.tip, addon.duration, addon.cavMins) : null;
                   return (
-                    <div key={addon.id} style={{ fontSize: 13, color: chipColor, fontWeight: 700 }}>
-                      <div>➕ {label}{addon.ticketCurrent ? ` ${addon.ticketCurrent}/${appt.ticketTotal||3}` : ""}{addon.countsAsRevenue === null && " ⚠️"}</div>
-                      <div style={{ fontSize: 12, color: "#888", fontWeight: 400 }}>{addon.therapist}{hasCav ? ` + ${addon.cavTherapist} (machine)` : ""}</div>
+                    <div key={addon.id} style={{ fontSize: 17, color: chipColor, fontWeight: 700 }}>
+                      <div>➕ {label}{addon.ticketCurrent ? ` ${addon.ticketCurrent}/${addon.ticketTotal || appt.ticketTotal || 3}` : ""}{addon.countsAsRevenue === null && " ⚠️"}</div>
+                      <div style={{ fontSize: 15, color: "#888", fontWeight: 400 }}>{addon.therapist}{hasCav ? ` + ${addon.cavTherapist} (machine)` : ""}</div>
+                      {addon.notes && <div style={{ fontSize: 14, color: "#888", fontStyle: "italic" }}>{addon.notes}</div>}
                       {aTotal > 0 && (
                         <>
                           <div>{aNetSvc}{svcIcon}</div>
                           {aTip > 0 && <div>{aNetTip}{tipIcon}</div>}
                           <div style={{ fontWeight: 800 }}>{aGc > 0 ? aReceivedTotal : aTotal}</div>
                           {hasCav && (
-                            <div style={{ fontSize: 11, fontWeight: 400, color: "#888" }}>
+                            <div style={{ fontSize: 14, fontWeight: 400, color: "#888" }}>
                               {addon.therapist} ${svcSplit.body}{tipSplit.body > 0 ? `+${tipSplit.body}` : ""} / {addon.cavTherapist} ${svcSplit.cav}{tipSplit.cav > 0 ? `+${tipSplit.cav}` : ""}
                             </div>
                           )}
@@ -2203,7 +2564,7 @@ function ApptCard({ appt, onClick, allAppointments }) {
               const sellerNames = Object.keys(sellerTotals);
               // Product name(s) — the total alone didn't say what was actually sold, so staff
               // reviewing the card later couldn't tell without reopening the entry.
-              const itemLabel = (it) => RETAIL_PRODUCT_LABELS[it.productName] || it.productName || "(item not entered)";
+              const itemLabel = (it) => `${RETAIL_PRODUCT_LABELS[it.productName] || it.productName || "(item not entered)"}${Number(it.quantity) > 1 ? ` ×${it.quantity}` : ""}`;
               const names = items.map(it => itemLabel(it)).filter(Boolean).join(" / ");
               // A solo sale (one seller, and it's this card's own therapist) doesn't need her own
               // name stated — just the payroll-split dollar amount. A real split, or a solo sale
@@ -2261,9 +2622,11 @@ const APPT_ERROR_LABELS = {
   newTicketPaymentType: "New Ticket Purchase Payment Method",
   newTicketTipPaymentType: "New Ticket Purchase Tip Payment Method",
   retailPurchasePaymentType: "Retail Purchase Payment Method",
+  retailQuantity: "Retail Quantity",
   giftCardPurchasePaymentType: "Gift Card Purchase Payment Method",
   depositPaidDate: "Deposit Paid Date",
   packageDepositDate: "Deposit Paid Date",
+  addonCountsAsRevenue: "Add-on: How to Treat This (Pay-as-you-go / Ticket Redemption)",
 };
 
 function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
@@ -2320,7 +2683,7 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
       const svc = Number(f.price || 0);
       const tip = Number(f.tip || 0);
       const gcSvc = Math.min(gc, svc);
-      const gcTip = Math.min(Math.max(0, gc - gcSvc), tip);
+      const gcTip = Math.min(Math.max(0, r2(gc - gcSvc)), tip);
       if (svc > 0 && gcSvc < svc && !f.svcSplitPayment && !f.paymentType) errs.push("paymentType");
       if (tip > 0 && gcTip < tip && !f.tipSplitPayment && !f.tipPaymentType) errs.push("tipPaymentType");
     }
@@ -2333,11 +2696,16 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
     if ((f.purchaseTags || []).includes("retail")) {
       if (Number(f.retailPurchaseAmount || 0) > 0 && !f.retailPurchasePaymentType) errs.push("retailPurchasePaymentType");
       if ((f.extraRetailItems || []).some(it => Number(it.amount || 0) > 0 && !it.paymentType)) errs.push("retailPurchasePaymentType");
+      if (Number(f.retailPurchaseAmount || 0) > 0 && !Number(f.retailQuantity)) errs.push("retailQuantity");
+      if ((f.extraRetailItems || []).some(it => Number(it.amount || 0) > 0 && !Number(it.quantity))) errs.push("retailQuantity");
     }
     if ((f.purchaseTags || []).includes("giftCard")) {
       if (Number(f.giftCardPurchaseAmount || 0) > 0 && !f.giftCardPurchasePaymentType) errs.push("giftCardPurchasePaymentType");
     }
     if (f.depositOn && Number(f.depositApplied || 0) > 0 && !f.depositPaidDate) errs.push("depositPaidDate");
+    if ((f.addons || []).some(a => (Number(a.price || 0) > 0 || Number(a.tip || 0) > 0) && a.countsAsRevenue === null)) {
+      errs.push("addonCountsAsRevenue");
+    }
     return errs;
   };
 
@@ -2367,22 +2735,41 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
 
   const therapistIsDual = isDualLicense(form.therapist);
   const menuHasCav = form.isTicket && form.ticketMenu ? !!PRICE_TABLE[form.priceVersion]?.[form.ticketMenu]?.cav : false;
-  // Split only when body-only therapist + cav therapist selected
-  const showSplitPrices = menuHasCav && isBodyOnly(form.therapist) && !!form.cavTherapist;
+  // Split when a cav therapist is selected — normally only a body-only therapist needs one, but
+  // a dual-license therapist occasionally still gets paired with a separate machine therapist
+  // (e.g. a booking-schedule conflict), so it's not exclusively body-only anymore.
+  const showSplitPrices = menuHasCav && (isBodyOnly(form.therapist) || therapistIsDual) && !!form.cavTherapist;
 
   // Auto-fill prices from ticket selection
   const applyTicketPrices = (menu, total, version, cavTherapist, therapist) => {
-    const prices = PRICE_TABLE[version]?.[menu];
-    if (!prices) return;
-    const dual = isDualLicense(therapist ?? form.therapist);
+    let prices = PRICE_TABLE[version]?.[menu];
+    let effectiveVersion = version;
+    // Sculpted Facial and Micro Channeling only ever had "new" pricing — there's no "old"
+    // entry to fall back to when the form is still on the old price version (e.g. left over
+    // from a previously-selected Improving Posture/Weight Loss menu). Without this, clicking
+    // one of those treatment-menu buttons while on "old" silently did nothing at all — same
+    // dead-button feeling whether it's this case or truly missing price data below.
+    if (!prices) {
+      const fallbackVersion = version === "new" ? "old" : "new";
+      prices = PRICE_TABLE[fallbackVersion]?.[menu];
+      effectiveVersion = fallbackVersion;
+    }
+    if (!prices) {
+      // Still switch the selected menu even with no price data at all, so the click is never
+      // a no-op — staff can see the selection changed and enter the price by hand instead.
+      setForm(f => ({ ...f, ticketMenu: menu, ticketTotal: total }));
+      return;
+    }
     const hasCavTherapist = cavTherapist ?? form.cavTherapist;
-    // Split prices when: body-only therapist has picked a cav therapist
-    const willSplit = prices.cav && !dual && hasCavTherapist;
+    // Split prices whenever a cav therapist is actually selected — normally only a body-only
+    // therapist has one, but a dual-license therapist can also be explicitly paired with a
+    // separate machine therapist (e.g. a booking conflict), and that split needs crediting too.
+    const willSplit = prices.cav && !!hasCavTherapist;
     setForm(f => ({
       ...f,
       ticketMenu: menu,
       ticketTotal: total,
-      priceVersion: version,
+      priceVersion: effectiveVersion,
       // If dual-license or cav therapist selected: split body+cav
       // Otherwise: total = body.service + cav.service combined into price
       price: willSplit ? prices.body.service : (prices.combined?.service ?? (prices.body.service + (prices.cav?.service || 0))),
@@ -2469,6 +2856,39 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [form.cavTherapist, form.duration, form.isTicket]);
+
+  // If a total service/tip was already typed in (via 💆 Treatment Price / Tip above), keep
+  // its body/cav dollar split in sync whenever the minute ratio changes afterward — e.g. staff
+  // types the total while the course is still showing the wrong duration (spotted from Square
+  // as 120min when the visit was actually 90min), then corrects the course. Without this the
+  // dollar split stayed frozen at whatever ratio was in effect when the total was first typed,
+  // silently wrong even after bodyMins/cavMins updated for the corrected duration — staff had
+  // to notice and retype the total from scratch to fix it.
+  useEffect(() => {
+    if (form.isTicket || !form.cavTherapist || isRegularWeightLoss) return;
+    const svcTotal = Number(form.totalServiceInput || 0);
+    const tipTotal = Number(form.totalTipInput || 0);
+    if (svcTotal <= 0 && tipTotal <= 0) return;
+    const bodyMins = Number(form.bodyMins || form.duration);
+    const cavMins = Number(form.cavMins || 0);
+    const allMins = bodyMins + cavMins;
+    if (cavMins <= 0 || allMins <= 0) return;
+    setForm(f => {
+      const patch = {};
+      if (svcTotal > 0) {
+        const cavPrice = Math.round(svcTotal * cavMins / allMins * 100) / 100;
+        patch.cavPrice = cavPrice;
+        patch.price = Math.round((svcTotal - cavPrice) * 100) / 100;
+      }
+      if (tipTotal > 0) {
+        const cavTip = Math.round(tipTotal * cavMins / allMins * 100) / 100;
+        patch.cavTip = cavTip;
+        patch.tip = Math.round((tipTotal - cavTip) * 100) / 100;
+      }
+      return { ...f, ...patch };
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form.bodyMins, form.cavMins, form.cavTherapist, form.isTicket, isRegularWeightLoss]);
 
   return (
     <Modal onClose={onClose}>
@@ -2565,9 +2985,10 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
             </div>
           )}
 
-          {/* Extra menu(s) done by the SAME therapist in the same visit — name only, no separate
-              price/payment tracking (that combined amount goes straight into the treatment/tip
-              totals below). Use the Add-on section instead when a DIFFERENT therapist is involved. */}
+          {/* Extra menu(s) added on an older appointment via the since-removed "same therapist"
+              quick-add — kept read-only here so already-saved data still displays; new entries
+              always go through the unified Add-on list below instead (it now asks who did it,
+              same person or not, right there — no need for two separate entry points). */}
           {(form.extraServiceNames || []).map((name, idx) => (
             <div key={idx} style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 6 }}>
               <div style={{ flex: 1, fontSize: 12, fontWeight: 600, color: "#0D4F4F", background: "#EAF6F4", borderRadius: 8, padding: "6px 10px" }}>
@@ -2577,27 +2998,17 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                 style={{ border: "none", background: "none", cursor: "pointer", fontSize: 16, color: "#AAA" }}>✕</button>
             </div>
           ))}
-          <select value="" onChange={e => {
-            const name = e.target.value;
-            if (!name) return;
-            set("extraServiceNames", [...(form.extraServiceNames || []), name]);
-          }} style={{ ...inputStyle, marginTop: 6, fontSize: 12, color: "#888" }}>
-            <option value="">+ Add a menu item for the same therapist</option>
-            {ADDON_PRESETS.map(p => <option key={p} value={p}>{p}</option>)}
-            {SQUARE_SERVICES.map(s => (
-              <option key={s.name} value={s.name}>{s.name}</option>
-            ))}
-          </select>
         </Field>
 
-        {/* ── Add-on (a different therapist's extra treatment, previous unused cav time, etc.) ── */}
+        {/* ── Add-on: any extra menu item done this visit (same therapist or a different one —
+              picked per add-on below, not via separate entry points) ── */}
         <div>
-          {/* Service picker — selecting immediately adds the row (same one-step pattern as
-              the same-therapist menu-add dropdown above) */}
+          {/* Service picker — selecting immediately adds the row */}
           <div style={{ marginBottom: 8 }}>
             <select value="" onChange={e => {
-              const name = e.target.value;
-              if (!name) return;
+              const val = e.target.value;
+              if (!val) return;
+              const name = val === "__other__" ? "" : val;
               // Auto-fill duration from a "NNmin" name (e.g. "Improving Posture 90min"), same
               // pattern the main service field uses — still editable afterward either way.
               const durMatch = name.match(/(\d+)\s*min/i);
@@ -2609,19 +3020,26 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                 tip: 0,
                 paymentType: "",
                 tipPaymentType: "",
-                countsAsRevenue: null,
+                countsAsRevenue: name === "Previous unused cav time" ? false : null,
                 ticketCurrent: null,
-                hasCav: null,
+                ticketMenu: "",
+                priceVersion: "",
+                ticketTotal: null,
+                hasCav: name === "Previous unused cav time" ? false : null,
                 cavTherapist: "",
                 duration: durMatch ? Number(durMatch[1]) : 0,
                 cavMins: 15,
+                cavPriceLookupKey: "",
+                cavPriceVersion: "",
+                notes: "",
                 gcOn: false,
                 giftCardUsed: 0,
               }]);
             }} style={{ ...inputStyle, fontSize: 12, color: "#888" }}>
-              <option value="">+ Add a menu item for a different therapist</option>
+              <option value="">+ Add a menu item</option>
               {ADDON_PRESETS.map(p => <option key={p} value={p}>{p}</option>)}
               {SQUARE_SERVICES.map(s => <option key={s.name} value={s.name}>{s.name}</option>)}
+              <option value="__other__">Other (type manually)</option>
             </select>
           </div>
 
@@ -2655,20 +3073,62 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                         </button>
                         <button onClick={() => upd({ countsAsRevenue: false })}
                           style={{ flex: 1, padding: "6px 4px", borderRadius: 8, border: `2px solid ${addon.countsAsRevenue === false ? NON_REVENUE_COLOR : "#DDD"}`, background: addon.countsAsRevenue === false ? "#E3F2FD" : "#fff", cursor: "pointer", fontWeight: 700, fontSize: 11, color: addon.countsAsRevenue === false ? NON_REVENUE_COLOR : "#888" }}>
-                          🎫 Ticket Redemption (previous unused session, etc.)
+                          🎫 Ticket Redemption (this ticket or another one)
                         </button>
                       </div>
                     </div>
 
-                    {/* Session number — only when this addon is itself a ticket redemption */}
-                    {addon.countsAsRevenue === false && form.isTicket && (
+                    {/* Course/version picker for redeeming a session from a SEPARATE ticket (e.g.
+                        a Facial-ticket session redeemed alongside today's main ticket appointment)
+                        — has its own course + total, independent of the main appointment's own
+                        ticket. Not shown for "Previous unused cav time", which always belongs to
+                        the main appointment's own ticket (see the cav-only auto-fill below). */}
+                    {addon.countsAsRevenue === false && addon.serviceName !== "Previous unused cav time" && (
+                      <div style={{ marginBottom: 6, background: "#E3F2FD", borderRadius: 8, padding: 8, border: "1px dashed #90CAF9" }}>
+                        <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>Which ticket/course is this from? (optional — auto-fills price)</div>
+                        <select value={addon.ticketMenu || ""} onChange={e => {
+                          const opt = ADDON_TICKET_MENU_OPTIONS.find(o => o.key === e.target.value);
+                          upd({ ticketMenu: e.target.value, ticketTotal: opt?.total || null, priceVersion: "", ticketCurrent: null });
+                        }} style={{ ...inputStyle, fontSize: 12, marginBottom: 6 }}>
+                          <option value="">— Select course —</option>
+                          {ADDON_TICKET_MENU_OPTIONS.map(o => <option key={o.key} value={o.key}>{o.label}</option>)}
+                        </select>
+                        {addon.ticketMenu && (
+                          <div style={{ display: "flex", gap: 6 }}>
+                            {["new", "old"].map(v => {
+                              const entry = PRICE_TABLE[v]?.[addon.ticketMenu];
+                              if (!entry) return null;
+                              const svc = entry.body.service + (entry.cav ? entry.cav.service : 0);
+                              const tip = entry.body.tip + (entry.cav ? entry.cav.tip : 0);
+                              const [prefix, durStr] = addon.ticketMenu.split("-");
+                              return (
+                                <button key={v} onClick={() => upd({
+                                  priceVersion: v, price: svc, tip, hasCav: !!entry.cav,
+                                  duration: Number(durStr) || 0,
+                                  cavMins: entry.cav ? (prefix === "WL" ? 40 : 15) : addon.cavMins,
+                                })}
+                                  style={{ flex: 1, padding: "6px 4px", borderRadius: 8, border: `2px solid ${addon.priceVersion===v?"#1565C0":"#DDD"}`, background: addon.priceVersion===v?"#BBDEFB":"#fff", cursor: "pointer", fontWeight: 700, fontSize: 11, color: addon.priceVersion===v?"#1565C0":"#888" }}>
+                                  {v === "new" ? "New" : "Old"} pricing (${svc}+${tip})
+                                </button>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Session number — only when this addon is itself a ticket redemption.
+                        Uses the addon's own ticketTotal when a separate ticket/course was picked
+                        above, otherwise falls back to the main appointment's own ticket total
+                        (the "Previous unused cav time" / same-ticket catch-up case). */}
+                    {addon.countsAsRevenue === false && (form.isTicket || addon.ticketTotal) && (
                       <div style={{ marginBottom: 6 }}>
                         <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>Which session is this?</div>
                         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                          {Array.from({ length: form.ticketTotal||3 }, (_,i) => i+1).map(n => (
+                          {Array.from({ length: addon.ticketTotal || form.ticketTotal || 3 }, (_,i) => i+1).map(n => (
                             <button key={n} onClick={() => upd({ ticketCurrent: n })}
                               style={{ padding: "5px 10px", borderRadius: 8, border: `2px solid ${addon.ticketCurrent===n?"#0D4F4F":"#DDD"}`, background: addon.ticketCurrent===n?"#0D4F4F":"#fff", cursor: "pointer", fontWeight: 700, fontSize: 11, color: addon.ticketCurrent===n?"#fff":"#888" }}>
-                              {n}/{form.ticketTotal||3}
+                              {n}/{addon.ticketTotal || form.ticketTotal || 3}
                             </button>
                           ))}
                         </div>
@@ -2685,57 +3145,87 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                       </select>
                     </div>
 
-                    {/* Machine (cav) portion — an add-on can involve a second therapist for just
-                        the machine minutes, same as a regular visit, but there's only one lump
-                        price/tip entered for the whole add-on, so the split has to be computed
-                        from the duration ratio (see splitAddonAmount) rather than typed in directly. */}
-                    <div style={{ marginBottom: 6 }}>
-                      <div style={{ fontSize: 10, color: addon.hasCav === null ? "#C62828" : "#888", marginBottom: 3, fontWeight: addon.hasCav === null ? 700 : 400 }}>
-                        Machine (cav) portion?{addon.hasCav === null && " ⚠️ Not selected"}
-                      </div>
-                      <div style={{ display: "flex", gap: 6 }}>
-                        <button onClick={() => upd({ hasCav: false, cavTherapist: "" })}
-                          style={{ flex: 1, padding: "6px 4px", borderRadius: 8, border: `2px solid ${addon.hasCav === false ? "#0D4F4F" : "#DDD"}`, background: addon.hasCav === false ? "#E0F2F1" : "#fff", cursor: "pointer", fontWeight: 700, fontSize: 11, color: addon.hasCav === false ? "#0D4F4F" : "#888" }}>
-                          No machine
-                        </button>
-                        <button onClick={() => upd({ hasCav: true })}
-                          style={{ flex: 1, padding: "6px 4px", borderRadius: 8, border: `2px solid ${addon.hasCav === true ? "#6A1B9A" : "#DDD"}`, background: addon.hasCav === true ? "#F3E5F5" : "#fff", cursor: "pointer", fontWeight: 700, fontSize: 11, color: addon.hasCav === true ? "#6A1B9A" : "#888" }}>
-                          ⚡ Machine involved
-                        </button>
-                      </div>
-                      {addon.hasCav === true && (
-                        <div style={{ marginTop: 6, background: "#F9F0FF", borderRadius: 8, padding: 8, border: "1px dashed #D9B3EC" }}>
-                          <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>Machine Therapist</div>
-                          <select value={addon.cavTherapist||""} onChange={e => upd({ cavTherapist: e.target.value })}
-                            style={{ ...inputStyle, fontSize: 12, marginBottom: 6 }}>
-                            <option value="">— Select —</option>
-                            {THERAPISTS.filter(t => t !== addon.therapist).map(t => <option key={t} value={t}>{t}</option>)}
-                          </select>
-                          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-                            <div>
-                              <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>Total Duration (min)</div>
-                              <input type="number" value={addon.duration||""} onChange={e => upd({ duration: e.target.value })}
-                                style={{ ...inputStyle, fontSize: 12 }} placeholder="e.g. 90" />
-                            </div>
-                            <div>
-                              <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>Machine Minutes</div>
-                              <input type="number" value={addon.cavMins||""} onChange={e => upd({ cavMins: e.target.value })}
-                                style={{ ...inputStyle, fontSize: 12 }} placeholder="15" />
-                            </div>
+                    {/* "Previous unused cav time" is always one therapist doing 100% machine —
+                        no second role to split against, so skip straight to a course/version
+                        pick that fills the whole addon's price/tip directly. Any other add-on
+                        keeps the full two-role flow below (a genuinely different second
+                        therapist doing just the machine minutes of a combined service). */}
+                    {addon.serviceName === "Previous unused cav time" ? (
+                      <div style={{ marginBottom: 6, background: "#FFF8E1", borderRadius: 8, padding: 8, border: "1px dashed #FFD54F" }}>
+                        <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>Auto-fill price from ticket table</div>
+                        <select value={addon.cavPriceLookupKey || ""} onChange={e => upd({ cavPriceLookupKey: e.target.value })}
+                          style={{ ...inputStyle, fontSize: 12, marginBottom: 6 }}>
+                          <option value="">— Select course —</option>
+                          {CAV_ADDON_MENU_OPTIONS.map(o => <option key={o.key} value={o.key}>{o.label}</option>)}
+                        </select>
+                        {addon.cavPriceLookupKey && (
+                          <div style={{ display: "flex", gap: 6 }}>
+                            {["new", "old"].map(v => {
+                              const cav = PRICE_TABLE[v]?.[addon.cavPriceLookupKey]?.cav;
+                              if (!cav) return null;
+                              return (
+                                <button key={v} onClick={() => upd({ cavPriceVersion: v, price: cav.service, tip: cav.tip, hasCav: false, cavTherapist: "" })}
+                                  style={{ flex: 1, padding: "6px 4px", borderRadius: 8, border: `2px solid ${addon.cavPriceVersion===v?"#F57F17":"#DDD"}`, background: addon.cavPriceVersion===v?"#FFECB3":"#fff", cursor: "pointer", fontWeight: 700, fontSize: 11, color: addon.cavPriceVersion===v?"#F57F17":"#888" }}>
+                                  {v === "new" ? "New" : "Old"} pricing (${cav.service}+${cav.tip})
+                                </button>
+                              );
+                            })}
                           </div>
-                          {addon.cavTherapist && Number(addon.duration) > 0 && (Number(addon.price||0) > 0 || Number(addon.tip||0) > 0) && (() => {
-                            const hasTip = Number(addon.tip||0) > 0;
-                            const svcSplit = splitAddonAmount(addon.price, addon.duration, addon.cavMins);
-                            const tipSplit = hasTip ? splitAddonAmount(addon.tip, addon.duration, addon.cavMins) : { body: 0, cav: 0 };
-                            return (
-                              <div style={{ marginTop: 6, fontSize: 11, color: "#6A1B9A" }}>
-                                Split: {addon.therapist || "(body)"} ${svcSplit.body}{hasTip ? ` + tip $${tipSplit.body}` : ""} / {addon.cavTherapist} ${svcSplit.cav}{hasTip ? ` + tip $${tipSplit.cav}` : ""}
-                              </div>
-                            );
-                          })()}
+                        )}
+                      </div>
+                    ) : (
+                      /* Machine (cav) portion — an add-on can involve a second therapist for just
+                         the machine minutes, same as a regular visit, but there's only one lump
+                         price/tip entered for the whole add-on, so the split has to be computed
+                         from the duration ratio (see splitAddonAmount) rather than typed in directly. */
+                      <div style={{ marginBottom: 6 }}>
+                        <div style={{ fontSize: 10, color: addon.hasCav === null ? "#C62828" : "#888", marginBottom: 3, fontWeight: addon.hasCav === null ? 700 : 400 }}>
+                          Machine (cav) portion?{addon.hasCav === null && " ⚠️ Not selected"}
                         </div>
-                      )}
-                    </div>
+                        <div style={{ display: "flex", gap: 6 }}>
+                          <button onClick={() => upd({ hasCav: false, cavTherapist: "" })}
+                            style={{ flex: 1, padding: "6px 4px", borderRadius: 8, border: `2px solid ${addon.hasCav === false ? "#0D4F4F" : "#DDD"}`, background: addon.hasCav === false ? "#E0F2F1" : "#fff", cursor: "pointer", fontWeight: 700, fontSize: 11, color: addon.hasCav === false ? "#0D4F4F" : "#888" }}>
+                            No machine
+                          </button>
+                          <button onClick={() => upd({ hasCav: true })}
+                            style={{ flex: 1, padding: "6px 4px", borderRadius: 8, border: `2px solid ${addon.hasCav === true ? "#6A1B9A" : "#DDD"}`, background: addon.hasCav === true ? "#F3E5F5" : "#fff", cursor: "pointer", fontWeight: 700, fontSize: 11, color: addon.hasCav === true ? "#6A1B9A" : "#888" }}>
+                            ⚡ Machine involved
+                          </button>
+                        </div>
+                        {addon.hasCav === true && (
+                          <div style={{ marginTop: 6, background: "#F9F0FF", borderRadius: 8, padding: 8, border: "1px dashed #D9B3EC" }}>
+                            <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>Machine Therapist</div>
+                            <select value={addon.cavTherapist||""} onChange={e => upd({ cavTherapist: e.target.value })}
+                              style={{ ...inputStyle, fontSize: 12, marginBottom: 6 }}>
+                              <option value="">— Select —</option>
+                              {THERAPISTS.map(t => <option key={t} value={t}>{t}</option>)}
+                            </select>
+                            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                              <div>
+                                <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>Total Duration (min)</div>
+                                <input type="number" value={addon.duration||""} onChange={e => upd({ duration: e.target.value })}
+                                  style={{ ...inputStyle, fontSize: 12 }} placeholder="e.g. 90" />
+                              </div>
+                              <div>
+                                <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>Machine Minutes</div>
+                                <input type="number" value={addon.cavMins||""} onChange={e => upd({ cavMins: e.target.value })}
+                                  style={{ ...inputStyle, fontSize: 12 }} placeholder="15" />
+                              </div>
+                            </div>
+                            {addon.cavTherapist && Number(addon.duration) > 0 && (Number(addon.price||0) > 0 || Number(addon.tip||0) > 0) && (() => {
+                              const hasTip = Number(addon.tip||0) > 0;
+                              const svcSplit = splitAddonAmount(addon.price, addon.duration, addon.cavMins);
+                              const tipSplit = hasTip ? splitAddonAmount(addon.tip, addon.duration, addon.cavMins) : { body: 0, cav: 0 };
+                              return (
+                                <div style={{ marginTop: 6, fontSize: 11, color: "#6A1B9A" }}>
+                                  Split: {addon.therapist || "(body)"} ${svcSplit.body}{hasTip ? ` + tip $${tipSplit.body}` : ""} / {addon.cavTherapist} ${svcSplit.cav}{hasTip ? ` + tip $${tipSplit.cav}` : ""}
+                                </div>
+                              );
+                            })()}
+                          </div>
+                        )}
+                      </div>
+                    )}
 
                     {/* Price + Tip inputs — when a machine portion is involved, these are the
                         COMBINED total for both therapists; splitAddonAmount divides it by minutes. */}
@@ -2794,11 +3284,19 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
 
                     {/* Tip payment type */}
                     {tipAmt > 0 && addon.countsAsRevenue !== false && (
-                      <div>
+                      <div style={{ marginBottom: 6 }}>
                         <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>Payment Method (Tip)</div>
                         <PaymentToggle value={addon.tipPaymentType} onChange={v => upd({ tipPaymentType: v })} small />
                       </div>
                     )}
+
+                    {/* Notes — a short memo distinct from the service name (e.g. "Neck add-on")
+                        so what the add-on actually covers stays clear on the card/payroll later. */}
+                    <div>
+                      <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>Notes</div>
+                      <input value={addon.notes||""} onChange={e => upd({ notes: e.target.value })}
+                        style={{ ...inputStyle, fontSize: 12 }} placeholder="e.g. Neck add-on" />
+                    </div>
 
                     {/* Sub-total */}
                     {(svcAmt + tipAmt) > 0 && (
@@ -2849,8 +3347,10 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
           <div style={{ background: "#EEF4FF", borderRadius: 10, padding: 12 }}>
             <div style={{ fontWeight: 700, fontSize: 13, color: "#1565C0", marginBottom: 10 }}>🎟️ Ticket Settings</div>
 
-            {/* Cav therapist — shown first; selecting triggers full auto-fill */}
-            {isBodyOnly(form.therapist) && (!form.isSameDayTicket || form.useToday !== false) && (
+            {/* Cav therapist — shown first; selecting triggers full auto-fill. Also offered for a
+                dual-license therapist (normally does the machine themselves) — occasionally a
+                different staff member ends up doing the machine part instead. */}
+            {(isBodyOnly(form.therapist) || isDualLicense(form.therapist)) && (!form.isSameDayTicket || form.useToday !== false) && (
               <div style={{ background: "#F3E5F5", borderRadius: 8, padding: 10, marginBottom: 10, border: `2px solid ${form.cavTherapist ? "#6A1B9A" : "#CE93D8"}` }}>
                 <div style={{ fontSize: 11, fontWeight: 700, color: "#6A1B9A", marginBottom: 6 }}>
                   ⚡ Machine Therapist
@@ -3073,6 +3573,13 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                     <input type="number" value={form.extraTip || ""} onChange={e => set("extraTip", e.target.value)} style={inputStyle} placeholder="e.g. 20" />
                   </Field>
                 </div>
+                {(Number(form.extraPrice||0) > 0 || Number(form.extraTip||0) > 0) && (
+                  <div style={{ marginTop: 8 }}>
+                    <Field label="Notes (e.g. what this extra is for)">
+                      <input value={form.extraNotes || ""} onChange={e => set("extraNotes", e.target.value)} style={inputStyle} placeholder="e.g. Micro Channeling neck add-on" />
+                    </Field>
+                  </div>
+                )}
                 {(Number(form.extraPrice||0) > 0) && (
                   <div style={{ marginTop: 8 }}>
                     <Field label="Extra Treatment Fee Payment Method" error={errors.includes("extraPricePaymentType")}><PaymentToggle value={form.extraPricePaymentType} onChange={v => set("extraPricePaymentType", v)} /></Field>
@@ -3227,8 +3734,10 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
         {/* Regular service */}
         {!form.isTicket && (
           <>
-            {/* Cav therapist picker for regular service */}
-            {!isCavCapable(form.therapist) && (
+            {/* Cav therapist picker for regular service — also offered for a dual-license
+                therapist, who normally runs the machine themselves but occasionally still gets
+                paired with a separate machine therapist (e.g. a booking conflict). */}
+            {(!isCavCapable(form.therapist) || isDualLicense(form.therapist)) && (
               <Field label="Machine Therapist (optional)">
                 <select value={form.cavTherapist} onChange={e => {
                   const cav = e.target.value;
@@ -3246,9 +3755,10 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                     const tip = Math.round((tipTotal - cavTip) * 100) / 100;
                     setForm(f => ({ ...f, cavTherapist: cav, price, cavPrice, tip, cavTip }));
                   } else if (cav && !isRegularWeightLoss && svcTotal > 0) {
-                    // Everything else (e.g. Improving Posture) defaults to a fixed 15min machine
+                    // Everything else (e.g. Improving Posture) always uses a fixed 15min machine
                     // slot, rest to body — same idea as Weight Loss's fixed 40min, just a different
-                    // number. Still editable afterward in the minutes box.
+                    // number. Not staff-editable; the split is a fixed business rule, not something
+                    // that varies visit to visit.
                     const cavMins = Number(form.cavMins) || 15;
                     const bodyMins = Math.max(0, Number(form.duration) - cavMins);
                     const allMins = bodyMins + cavMins;
@@ -3407,7 +3917,7 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                     <div style={{ marginTop: 10, background: "#78350F", borderRadius: 8, padding: "10px 14px", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
                       <div style={{ fontSize: 11, color: "#FDE68A" }}>
                         🎁 Treatment <strong style={{ color: "#fff" }}>${svc}</strong>　Tip <strong style={{ color: "#fff" }}>${tip}</strong>
-                        {form.cavTherapist && !isDualLicense(form.therapist) && (
+                        {form.cavTherapist && (
                           <span style={{ fontSize: 10, color: "#FDE68A", display: "block" }}>
                             {form.therapist} ${form.price||0}{Number(form.tip||0) > 0 ? ` +Tip $${form.tip}` : ""} / {form.cavTherapist} ${form.cavPrice||0}{Number(form.cavTip||0) > 0 ? ` +Tip $${form.cavTip}` : ""}
                           </span>
@@ -3425,7 +3935,7 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                     <div style={{ marginTop: 10, background: "#0D47A1", borderRadius: 8, padding: "10px 14px", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
                       <div style={{ fontSize: 11, color: "#BBDEFB" }}>
                         📸 Treatment <strong style={{ color: "#fff" }}>${svc}</strong>　Tip <strong style={{ color: "#fff" }}>${tip}</strong>
-                        {form.cavTherapist && !isDualLicense(form.therapist) && (
+                        {form.cavTherapist && (
                           <span style={{ fontSize: 10, color: "#BBDEFB", display: "block" }}>
                             {form.therapist} ${form.price||0}{Number(form.tip||0) > 0 ? ` +Tip $${form.tip}` : ""} / {form.cavTherapist} ${form.cavPrice||0}{Number(form.cavTip||0) > 0 ? ` +Tip $${form.cavTip}` : ""}
                           </span>
@@ -3440,7 +3950,7 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                 }
                 const gc = Number(form.giftCardUsed || 0);
                 const gcSvc = Math.min(gc, svc);
-                const gcTip = Math.min(Math.max(0, gc - gcSvc), tip);
+                const gcTip = Math.min(Math.max(0, r2(gc - gcSvc)), tip);
                 const receivedToday = r2((svc - gcSvc) + (tip - gcTip));
                 const dep = Number(form.depositApplied || 0);
                 // Payroll (deposit-inclusive) split per therapist — Weight Loss keeps the machine
@@ -3486,7 +3996,7 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                         <span style={{ color: "#fff", fontSize: 22, fontWeight: 800 }}>${gc > 0 ? receivedToday : r2(svc + tip)}</span>
                       </div>
                     </div>
-                    {form.cavTherapist && !isDualLicense(form.therapist) && (
+                    {form.cavTherapist && (
                       <div style={{ marginTop: 10, display: "flex", gap: 8, flexWrap: "wrap" }}>
                         <div style={{ flex: 1, minWidth: 130, background: "rgba(255,255,255,0.14)", borderRadius: 6, padding: "6px 10px" }}>
                           <div style={{ fontSize: 13, fontWeight: 800, color: "#fff" }}>{form.therapist}</div>
@@ -3565,7 +4075,7 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                 const svc = Number(form.price || 0);
                 const tip = Number(form.tip || 0);
                 const gcSvc = Math.min(gc, svc);
-                const gcTip = Math.min(Math.max(0, gc - gcSvc), tip);
+                const gcTip = Math.min(Math.max(0, r2(gc - gcSvc)), tip);
                 const tipCovered = gc > 0 && tip > 0 && gcTip >= tip;
                 return (
                   <div style={{ marginTop: 8 }}>
@@ -3664,72 +4174,6 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                   </div>
                 );
               })()}
-
-              {/* Minutes split. Weight Loss always uses a fixed 40min machine / rest-to-body split
-                  (auto-filled elsewhere, no manual entry needed) — this UI is only for everything
-                  else, where minutes actually drive the $ split. */}
-              {form.cavTherapist && !isRegularWeightLoss && (
-                <div style={{ marginTop: 10, background: "#EEF4FF", borderRadius: 8, padding: 10 }}>
-                  <div style={{ fontSize: 12, fontWeight: 700, color: "#1565C0", marginBottom: 8 }}>⏱️ Enter each therapist's minutes → auto-split</div>
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-                    <Field label={`${form.therapist} (min)`}>
-                      <input type="number" value={form.bodyMins || ""}
-                        onChange={e => {
-                          const bodyMins = Number(e.target.value);
-                          const cavMins = Number(form.duration) - bodyMins;
-                          const allMins = Number(form.duration);
-                          if (isRegularWeightLoss) { setForm(f => ({ ...f, bodyMins, cavMins })); return; }
-                          const svcTotal = Number(form.totalServiceInput ?? (Number(form.price) + Number(form.cavPrice || 0)));
-                          const tipTotal = Number(form.totalTipInput ?? (Number(form.tip) + Number(form.cavTip || 0)));
-                          // Round the machine side first, body gets the exact remainder — rounding
-                          // both sides independently can overshoot the entered total by a cent.
-                          const cavPrice = allMins > 0 ? Math.round(svcTotal * cavMins / allMins * 100) / 100 : form.cavPrice;
-                          const price = allMins > 0 ? Math.round((svcTotal - cavPrice) * 100) / 100 : form.price;
-                          const cavTip = allMins > 0 ? Math.round(tipTotal * cavMins / allMins * 100) / 100 : form.cavTip;
-                          const tip = allMins > 0 ? Math.round((tipTotal - cavTip) * 100) / 100 : form.tip;
-                          setForm(f => ({
-                            ...f,
-                            bodyMins,
-                            cavMins,
-                            price,
-                            cavPrice,
-                            tip,
-                            cavTip,
-                          }));
-                        }}
-                        style={inputStyle} placeholder={`e.g. ${form.duration - (isRegularWeightLoss ? 40 : 15)}`} />
-                    </Field>
-                    <Field label={`${form.cavTherapist} (min)`}>
-                      <input type="number" value={form.cavMins || ""}
-                        onChange={e => {
-                          const cavMins = Number(e.target.value);
-                          const bodyMins = Number(form.duration) - cavMins;
-                          const allMins = Number(form.duration);
-                          if (isRegularWeightLoss) { setForm(f => ({ ...f, bodyMins, cavMins })); return; }
-                          const svcTotal = Number(form.totalServiceInput ?? (Number(form.price) + Number(form.cavPrice || 0)));
-                          const tipTotal = Number(form.totalTipInput ?? (Number(form.tip) + Number(form.cavTip || 0)));
-                          // Round the machine side first, body gets the exact remainder — rounding
-                          // both sides independently can overshoot the entered total by a cent.
-                          const cavPrice = allMins > 0 ? Math.round(svcTotal * cavMins / allMins * 100) / 100 : form.cavPrice;
-                          const price = allMins > 0 ? Math.round((svcTotal - cavPrice) * 100) / 100 : form.price;
-                          const cavTip = allMins > 0 ? Math.round(tipTotal * cavMins / allMins * 100) / 100 : form.cavTip;
-                          const tip = allMins > 0 ? Math.round((tipTotal - cavTip) * 100) / 100 : form.tip;
-                          setForm(f => ({
-                            ...f,
-                            bodyMins,
-                            cavMins,
-                            price,
-                            cavPrice,
-                            tip,
-                            cavTip,
-                          }));
-                        }}
-                        style={inputStyle} placeholder={isRegularWeightLoss ? "e.g. 40" : "e.g. 15"} />
-                    </Field>
-                  </div>
-
-                </div>
-              )}
 
             </div>
 
@@ -3915,7 +4359,7 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
               {/* 🛍️ Retail Purchase fields — supports multiple products in one visit (2nd/3rd item stored in extraRetailItems[]) */}
               {hasTag("retail") && (() => {
                 const items = [
-                  { productName: form.retailProductName, amount: form.retailPurchaseAmount, paymentType: form.retailPurchasePaymentType, sellers: form.retailSellers },
+                  { productName: form.retailProductName, amount: form.retailPurchaseAmount, paymentType: form.retailPurchasePaymentType, sellers: form.retailSellers, quantity: form.retailQuantity },
                   ...(form.extraRetailItems || [])
                 ];
                 const updateItem = (idx, patch) => {
@@ -3924,6 +4368,7 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                     if ("amount" in patch) set("retailPurchaseAmount", patch.amount);
                     if ("paymentType" in patch) set("retailPurchasePaymentType", patch.paymentType);
                     if ("sellers" in patch) set("retailSellers", patch.sellers);
+                    if ("quantity" in patch) set("retailQuantity", patch.quantity);
                   } else {
                     const extras = form.extraRetailItems || [];
                     set("extraRetailItems", extras.map((it, i) => i === idx - 1 ? { ...it, ...patch } : it));
@@ -3950,7 +4395,8 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                           <select value={RETAIL_PRODUCTS.find(p => p.name === item.productName) ? item.productName : (item.productName ? "__other__" : "")} onChange={e => {
                             const val = e.target.value;
                             const prod = RETAIL_PRODUCTS.find(p => p.name === val);
-                            updateItem(idx, { productName: val === "__other__" ? "" : val, amount: prod?.price > 0 ? prod.price : item.amount });
+                            const qty = Number(item.quantity) || 1;
+                            updateItem(idx, { productName: val === "__other__" ? "" : val, amount: prod?.price > 0 ? r2(prod.price * qty) : item.amount });
                           }} style={{ ...inputStyle, borderColor: "#CE93D8" }}>
                             <option value="">— Select a product —</option>
                             {RETAIL_PRODUCTS.map(p => (
@@ -3962,6 +4408,26 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                             <input type="text" value={item.productName || ""} placeholder="Enter product name" style={{ ...inputStyle, borderColor: "#CE93D8", marginTop: 4 }}
                               onChange={e => updateItem(idx, { productName: e.target.value })} />
                           )}
+                        </div>
+                        {/* Quantity — buying several of the same item at once (e.g. 4 Koso Shots)
+                            recomputes the amount automatically instead of needing 4 separate rows. */}
+                        <div>
+                          {(() => {
+                            const qtyMissing = errors.includes("retailQuantity") && Number(item.amount || 0) > 0 && !Number(item.quantity);
+                            return (
+                              <>
+                                <div style={{ fontSize: 10, color: qtyMissing ? "#C62828" : "#888", marginBottom: 3, fontWeight: qtyMissing ? 700 : 400 }}>
+                                  Quantity{qtyMissing && " ⚠️ Required"}
+                                </div>
+                                <input type="number" min="1" value={item.quantity || ""} onChange={e => {
+                                  setErrors(errors.filter(x => x !== "retailQuantity"));
+                                  const qty = Math.max(1, Number(e.target.value) || 1);
+                                  const prod = RETAIL_PRODUCTS.find(p => p.name === item.productName);
+                                  updateItem(idx, { quantity: e.target.value, amount: prod?.price > 0 ? r2(prod.price * qty) : item.amount });
+                                }} style={{ ...inputStyle, borderColor: qtyMissing ? "#C62828" : "#CE93D8", ...(qtyMissing ? { borderWidth: 2 } : {}) }} placeholder="1" />
+                              </>
+                            );
+                          })()}
                         </div>
                         <div>
                           <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>Amount ($)</div>
@@ -4081,7 +4547,9 @@ function RetailModal({ retail, onSave, onClose }) {
   });
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
   const [paymentError, setPaymentError] = useState(false);
+  const [quantityError, setQuantityError] = useState(false);
   const handleSave = () => {
+    if (!Number(form.quantity)) { setQuantityError(true); return; }
     if (!form.paymentType) { setPaymentError(true); return; }
     onSave(form);
   };
@@ -4098,12 +4566,16 @@ function RetailModal({ retail, onSave, onClose }) {
         <button onClick={onClose} style={{ border: "none", background: "none", fontSize: 22, cursor: "pointer" }}>✕</button>
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        <Field label="Client Name (optional)">
+          <input value={form.clientName || ""} onChange={e => set("clientName", e.target.value)} style={inputStyle} placeholder="e.g. Mayumi" />
+        </Field>
         <Field label="Product Name">
           <select value={RETAIL_PRODUCTS.find(p => p.name === form.item) ? form.item : (form.item ? "__other__" : "")}
             onChange={e => {
               const val = e.target.value;
               const prod = RETAIL_PRODUCTS.find(p => p.name === val);
-              setForm(f => ({ ...f, item: val === "__other__" ? "" : val, price: prod?.price > 0 ? prod.price : f.price }));
+              const qty = Number(form.quantity) || 1;
+              setForm(f => ({ ...f, item: val === "__other__" ? "" : val, price: prod?.price > 0 ? r2(prod.price * qty) : f.price }));
             }} style={inputStyle}>
             <option value="">— Select a product —</option>
             {RETAIL_PRODUCTS.map(p => (
@@ -4115,6 +4587,18 @@ function RetailModal({ retail, onSave, onClose }) {
             <input type="text" value={form.item || ""} placeholder="Enter product name" style={{ ...inputStyle, marginTop: 4 }}
               onChange={e => set("item", e.target.value)} />
           )}
+        </Field>
+        {/* Quantity — multiple bottles/units of the same product bought at once (e.g. a customer
+            buying 4 Koso Shots) recompute the amount automatically instead of needing 4 separate
+            entries. Only auto-multiplies for a known product's price; a custom item still needs
+            the total typed in by hand since there's no per-unit price to multiply. */}
+        <Field label="Quantity" error={quantityError}>
+          <input type="number" min="1" value={form.quantity || ""} onChange={e => {
+            setQuantityError(false);
+            const qty = Math.max(1, Number(e.target.value) || 1);
+            const prod = RETAIL_PRODUCTS.find(p => p.name === form.item);
+            setForm(f => ({ ...f, quantity: e.target.value, price: prod?.price > 0 ? r2(prod.price * qty) : f.price }));
+          }} style={{ ...inputStyle, ...(quantityError ? { borderColor: "#C62828", borderWidth: 2 } : {}) }} placeholder="1" />
         </Field>
         <Field label="Amount ($)"><input type="number" value={form.price || ""} onChange={e => set("price", e.target.value)} style={inputStyle} /></Field>
         <Field label={`Split between (up to 3 people, splitting the tax-excluded amount of $${afterTaxTotal})${Number(form.price) > 0 && Math.abs(sellersTotal - afterTaxTotal) > 0.15 ? " ⚠️ The total is significantly off from the tax-excluded amount" : ""}`}>
@@ -4440,7 +4924,7 @@ function StaffPurchaseModal({ sp, onSave, onDelete, onClose }) {
   const [paymentError, setPaymentError] = useState(false);
 
   const items = [
-    { productName: form.productName, amount: form.amount, paymentType: form.paymentType },
+    { productName: form.productName, amount: form.amount, paymentType: form.paymentType, quantity: form.quantity },
     ...(form.extraItems || []),
   ];
   const updateItem = (idx, patch) => {
@@ -4448,12 +4932,13 @@ function StaffPurchaseModal({ sp, onSave, onDelete, onClose }) {
       if ("productName" in patch) set("productName", patch.productName);
       if ("amount" in patch) set("amount", patch.amount);
       if ("paymentType" in patch) set("paymentType", patch.paymentType);
+      if ("quantity" in patch) set("quantity", patch.quantity);
     } else {
       const extras = form.extraItems || [];
       set("extraItems", extras.map((it, i) => i === idx - 1 ? { ...it, ...patch } : it));
     }
   };
-  const addItem = () => set("extraItems", [...(form.extraItems || []), { productName: "", amount: 0, paymentType: "" }]);
+  const addItem = () => set("extraItems", [...(form.extraItems || []), { productName: "", amount: 0, paymentType: "", quantity: "" }]);
   const removeItem = (idx) => {
     if (idx === 0) return;
     const extras = form.extraItems || [];
@@ -4461,7 +4946,10 @@ function StaffPurchaseModal({ sp, onSave, onDelete, onClose }) {
   };
   const total = items.reduce((s, it) => s + Number(it.amount || 0), 0);
 
+  const [quantityError, setQuantityError] = useState(false);
   const handleSave = () => {
+    const missingQuantity = items.some(it => Number(it.amount || 0) > 0 && !Number(it.quantity));
+    if (missingQuantity) { setQuantityError(true); return; }
     const missingPayment = items.some(it => Number(it.amount || 0) > 0 && !it.paymentType);
     if (missingPayment) { setPaymentError(true); return; }
     onSave(form);
@@ -4483,7 +4971,11 @@ function StaffPurchaseModal({ sp, onSave, onDelete, onClose }) {
           </select>
         </Field>
         {items.map((item, idx) => {
-          const isOtherProduct = !!item.productName && !RETAIL_PRODUCTS.find(p => p.name === item.productName);
+          // Staff also sometimes buy a regular customer-facing retail item (not just the
+          // 業務用/backbar size) at a staff discount, so both lists are offered here — the
+          // regular-retail price shown is the full price, same as RETAIL_PRODUCTS elsewhere;
+          // the actual discounted amount is still typed/edited by hand below.
+          const isOtherProduct = !!item.productName && !STAFF_PURCHASE_PRODUCTS.find(p => p.name === item.productName) && !RETAIL_PRODUCTS.find(p => p.name === item.productName);
           return (
             <div key={idx} style={{ display: "flex", flexDirection: "column", gap: 8, ...(idx > 0 ? { background: "#F5F5F5", borderRadius: 8, padding: 10, border: "1px dashed #CCC" } : {}) }}>
               {idx > 0 && (
@@ -4496,19 +4988,34 @@ function StaffPurchaseModal({ sp, onSave, onDelete, onClose }) {
                 <select value={isOtherProduct ? "__other__" : (item.productName || "")} onChange={e => {
                   const val = e.target.value;
                   if (val === "__other__") { updateItem(idx, { productName: "" }); return; }
-                  const prod = RETAIL_PRODUCTS.find(p => p.name === val);
+                  const prod = STAFF_PURCHASE_PRODUCTS.find(p => p.name === val) || RETAIL_PRODUCTS.find(p => p.name === val);
                   updateItem(idx, { productName: val, amount: prod?.price > 0 ? prod.price : item.amount });
                 }} style={inputStyle}>
                   <option value="">— Select a product/treatment —</option>
-                  {RETAIL_PRODUCTS.map(p => (
-                    <option key={p.name} value={p.name}>{RETAIL_PRODUCT_LABELS[p.name] || p.name}{p.price > 0 ? ` ($${p.price})` : ""}</option>
-                  ))}
+                  <optgroup label="Employee Discount（社販）">
+                    {STAFF_PURCHASE_PRODUCTS.map(p => (
+                      <option key={p.name} value={p.name}>{p.name}{p.price > 0 ? ` ($${p.price})` : ""}</option>
+                    ))}
+                  </optgroup>
+                  <optgroup label="Retail Products（通常物販）">
+                    {RETAIL_PRODUCTS.map(p => (
+                      <option key={p.name} value={p.name}>{RETAIL_PRODUCT_LABELS[p.name] || p.name}{p.price > 0 ? ` ($${p.price})` : ""}</option>
+                    ))}
+                  </optgroup>
                   <option value="__other__">Other (enter treatment name, etc. directly)</option>
                 </select>
                 {isOtherProduct && (
                   <input type="text" value={item.productName || ""} placeholder="e.g. ProCell" style={{ ...inputStyle, marginTop: 4 }}
                     onChange={e => updateItem(idx, { productName: e.target.value })} />
                 )}
+              </Field>
+              <Field label="Quantity" error={quantityError && Number(item.amount || 0) > 0 && !Number(item.quantity)}>
+                <input type="number" min="1" value={item.quantity || ""} onChange={e => {
+                  setQuantityError(false);
+                  const qty = Math.max(1, Number(e.target.value) || 1);
+                  const prod = STAFF_PURCHASE_PRODUCTS.find(p => p.name === item.productName) || RETAIL_PRODUCTS.find(p => p.name === item.productName);
+                  updateItem(idx, { quantity: e.target.value, amount: prod?.price > 0 ? r2(prod.price * qty) : item.amount });
+                }} style={inputStyle} placeholder="1" />
               </Field>
               <Field label="Amount ($)"><input type="number" value={item.amount || ""} onChange={e => updateItem(idx, { amount: e.target.value })} style={inputStyle} /></Field>
               <Field label="Payment Method" error={paymentError && Number(item.amount || 0) > 0 && !item.paymentType}>
@@ -4719,10 +5226,23 @@ function DatePicker({ value, onChange, style, allowClear = true }) {
   const [y, m, d] = value ? value.split("-").map(Number) : [null, null, null];
   const [viewYear, setViewYear] = useState(y || today.getFullYear());
   const [viewMonth, setViewMonth] = useState(m || today.getMonth() + 1); // 1-12
+  const buttonRef = useRef(null);
+  const [pos, setPos] = useState(null);
 
+  // Rendered through a portal at a fixed (viewport-relative) position instead of as a normal
+  // absolutely-positioned child — this field is often used inside a modal with its own
+  // horizontal scroll area (e.g. the Deposit section), and a plain absolute dropdown gets
+  // clipped by that ancestor's overflow boundary, silently cutting off whichever columns
+  // (Saturday, in the reported case) fall past the currently-scrolled-into-view edge.
+  const POPUP_WIDTH = 230;
   const openPicker = () => {
     setViewYear(y || today.getFullYear());
     setViewMonth(m || today.getMonth() + 1);
+    const rect = buttonRef.current?.getBoundingClientRect();
+    if (rect) {
+      const left = Math.min(rect.left, window.innerWidth - POPUP_WIDTH - 8);
+      setPos({ top: rect.bottom + 4, left: Math.max(8, left) });
+    }
     setOpen(true);
   };
 
@@ -4745,13 +5265,13 @@ function DatePicker({ value, onChange, style, allowClear = true }) {
 
   return (
     <div style={{ position: "relative", display: "inline-block" }}>
-      <button type="button" onClick={() => open ? setOpen(false) : openPicker()} style={{ ...style, cursor: "pointer", whiteSpace: "nowrap" }}>
+      <button type="button" ref={buttonRef} onClick={() => open ? setOpen(false) : openPicker()} style={{ ...style, cursor: "pointer", whiteSpace: "nowrap" }}>
         📅 {displayText}
       </button>
-      {open && (
+      {open && pos && createPortal(
         <>
           <div onClick={() => setOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 1000 }} />
-          <div style={{ position: "absolute", top: "100%", left: 0, marginTop: 4, background: "#fff", borderRadius: 10, boxShadow: "0 4px 16px rgba(0,0,0,0.25)", padding: 12, zIndex: 1001, width: 230 }}>
+          <div style={{ position: "fixed", top: pos.top, left: pos.left, background: "#fff", borderRadius: 10, boxShadow: "0 4px 16px rgba(0,0,0,0.25)", padding: 12, zIndex: 1001, width: POPUP_WIDTH }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
               <button type="button" onClick={() => changeMonth(-1)} style={{ border: "none", background: "none", cursor: "pointer", fontSize: 16, color: "#0D4F4F", fontWeight: 700, padding: "0 8px" }}>‹</button>
               <span style={{ fontWeight: 700, fontSize: 13, color: "#0D4F4F" }}>{MONTH_NAMES[viewMonth - 1]} {viewYear}</span>
@@ -4781,7 +5301,8 @@ function DatePicker({ value, onChange, style, allowClear = true }) {
               </button>
             )}
           </div>
-        </>
+        </>,
+        document.body
       )}
     </div>
   );
@@ -5195,7 +5716,7 @@ function PayrollTab() {
         const hasCav = addon.hasCav === true && !!addon.cavTherapist;
         const isCard = addon.paymentType === "card";
         const isTipCard = addon.tipPaymentType === "card";
-        const addonLabel = `${addon.serviceName || addon.name || "Add-on"}${addon.ticketCurrent ? ` ${addon.ticketCurrent}/${a.ticketTotal||3}` : ""}`;
+        const addonLabel = `${addon.serviceName || addon.name || "Add-on"}${addon.ticketCurrent ? ` ${addon.ticketCurrent}/${addon.ticketTotal || a.ticketTotal || 3}` : ""}${addon.notes ? ` (${addon.notes})` : ""}`;
         const addonGcNote = Number(addon.giftCardUsed || 0) > 0 ? `　🎁Used $${Number(addon.giftCardUsed)} gift card` : "";
 
         // A machine (cav) portion of the add-on is done by a second therapist — only one lump

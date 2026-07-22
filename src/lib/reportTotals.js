@@ -7,13 +7,15 @@
 
 export const REFERRAL_SOURCES = ["Google / Website", "Google Map", "Instagram", "Yelp", "紹介"];
 
+const r2 = (n) => Math.round(n * 100) / 100;
+
 // Inline 物販購入 (within an appointment) supports multiple products in the same visit — the first
 // item lives directly on the appointment (retailProductName/retailPurchaseAmount/...), any further
 // items live in extraRetailItems[] so existing saved appointments (single item) keep working as-is.
 export const getRetailItems = (a) => {
   const items = [];
   if (Number(a.retailPurchaseAmount || 0) > 0 || a.retailProductName) {
-    items.push({ productName: a.retailProductName || "", amount: Number(a.retailPurchaseAmount || 0), paymentType: a.retailPurchasePaymentType, sellers: a.retailSellers });
+    items.push({ productName: a.retailProductName || "", amount: Number(a.retailPurchaseAmount || 0), paymentType: a.retailPurchasePaymentType, sellers: a.retailSellers, quantity: a.retailQuantity });
   }
   (a.extraRetailItems || []).forEach(it => {
     if (Number(it.amount || 0) > 0 || it.productName) items.push(it);
@@ -95,8 +97,11 @@ export function computeDayTotals(data) {
     const tip = Number(a.tip || 0);
     const retail = (a.purchaseTags?.includes("retail")) ? getRetailItems(a).reduce((s, it) => s + Number(it.amount || 0), 0) : 0;
     const gcSvc = Math.min(gc, svc);
-    const gcTip = Math.min(gc - gcSvc, tip);
-    const gcRetail = Math.min(gc - gcSvc - gcTip, retail);
+    // r2 avoids a floating-point artifact (e.g. 195.6 - 163 = 32.599999999999994) that would
+    // otherwise leave a fractional-cent residual instead of a clean $0 — same fix already
+    // applied to the equivalent gcAlloc in spa-daily-sheet.jsx.
+    const gcTip = Math.min(r2(gc - gcSvc), tip);
+    const gcRetail = Math.min(r2(gc - gcSvc - gcTip), retail);
     return { gcSvc, gcTip, gcRetail };
   };
   // An add-on can also be paid from an existing gift card balance — same exclusion rule as
@@ -134,7 +139,7 @@ export function computeDayTotals(data) {
     const svc = Number(a.packagePrice || 0);
     const tip = Number(a.packageTip ?? a.tip ?? 0);
     const gcSvc = Math.min(gc, svc);
-    const gcTip = Math.min(gc - gcSvc, tip);
+    const gcTip = Math.min(r2(gc - gcSvc), tip);
     return { gcSvc, gcTip };
   };
 
@@ -189,7 +194,7 @@ export function computeDayTotals(data) {
     + sameDayTicketAppts.reduce((s,a) => s + Number(a.packageTip ?? a.tip ?? 0) - gcAllocPackage(a).gcTip, 0)
     + pureTicketAppts.reduce((s,a) => s + Number(a.extraTip||0), 0)
     + sameDayTicketAppts.reduce((s,a) => s + Number(a.extraTip||0), 0)
-    + revenueAddons.reduce((s,ad) => s + Number(ad.tip||0), 0)
+    + revenueAddons.reduce((s,ad) => s + Number(ad.tip||0) - addonGcAlloc(ad).gcTip, 0)
     + cavSlotAppts.reduce((s,a) => s + Number(a.tip||0), 0)
     + forgottenTipCash + forgottenTipCard
     - refundTipCash - refundTipCard;

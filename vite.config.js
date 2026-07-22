@@ -254,32 +254,64 @@ function squarePaymentsApi(env) {
           // the total, so it has to be recovered from the order's line items instead. Cash
           // payments never go through the tip-prompt flow at all (so tip_money is always 0
           // for them), but staff sometimes still itemize a "Tip" line inside a cash order —
-          // checked for both tenders for that reason.
+          // checked for both tenders for that reason. Always ADD the order's own "Tip" line
+          // item on top of tip_money rather than only falling back to it when tip_money is 0 —
+          // a split-card sale can genuinely have both (e.g. a same-day ticket purchase charged
+          // across two cards, with a separate top-up tip line rung up on the second card
+          // alongside its own tip-prompt amount); treating them as mutually exclusive silently
+          // dropped the line-item portion whenever tip_money was already nonzero. The same
+          // order fetch also gives us the non-tip line item names, used below to label refunded
+          // payments so staff can match a refund back to the appointment/retail entry that
+          // needs correcting.
           //
           // Use gross_sales_money (the line item's price as entered), not total_money — an
           // order-level discount gets auto-prorated across every line item including "Tip" by
           // Square, but a discount off the service price shouldn't silently shrink the tip
           // figure staff actually typed in.
-          const orderTipCache = {}
-          const getOrderTipLineItems = async (orderId) => {
-            if (orderTipCache[orderId] !== undefined) return orderTipCache[orderId]
+          const orderCache = {}
+          const getOrder = async (orderId) => {
+            if (orderCache[orderId] !== undefined) return orderCache[orderId]
             try {
               const r = await fetch(`https://connect.squareup.com/v2/orders/${orderId}`, { headers })
               const d = await r.json()
-              if (!r.ok) { orderTipCache[orderId] = 0; return 0 }
-              const lineItems = d.order?.line_items || []
-              const tip = lineItems
-                .filter(li => (li.name || '').trim().toLowerCase() === 'tip')
-                .reduce((s, li) => s + (Number(li.gross_sales_money?.amount || 0)) / 100, 0)
-              orderTipCache[orderId] = tip
-              return tip
+              orderCache[orderId] = r.ok ? (d.order || null) : null
             } catch {
-              orderTipCache[orderId] = 0
-              return 0
+              orderCache[orderId] = null
             }
+            return orderCache[orderId]
+          }
+          const getOrderTipLineItems = async (orderId) => {
+            const order = await getOrder(orderId)
+            const lineItems = order?.line_items || []
+            return lineItems
+              .filter(li => (li.name || '').trim().toLowerCase() === 'tip')
+              .reduce((s, li) => s + (Number(li.gross_sales_money?.amount || 0)) / 100, 0)
+          }
+          const getOrderItemLabel = async (orderId) => {
+            const order = await getOrder(orderId)
+            const lineItems = order?.line_items || []
+            return lineItems
+              .filter(li => (li.name || '').trim().toLowerCase() !== 'tip')
+              .map(li => li.name)
+              .filter(Boolean)
+              .join(', ')
+          }
+          // Hawaii is UTC-10, no DST — same rule as the day-boundary math above.
+          const formatHawaiiTime = (isoString) => {
+            const d = new Date(isoString)
+            const h = (d.getUTCHours() + 24 - 10) % 24
+            const m = d.getUTCMinutes()
+            const ampm = h < 12 ? 'AM' : 'PM'
+            return `${h % 12 || 12}:${String(m).padStart(2, '0')} ${ampm}`
           }
 
           let cashTotal = 0, cardTotal = 0, cashTip = 0, cardTip = 0
+          const refunds = []
+          // Every individual completed payment (net of any refund), so the client can try to
+          // match each one against a sheet entry with the same tender + total — narrowing a
+          // reconciliation mismatch down to specific transactions instead of just an aggregate
+          // total being off, which otherwise has to be tracked down by hand.
+          const payments = []
           let cursor
           do {
             const params = new URLSearchParams({
@@ -303,14 +335,39 @@ function squarePaymentsApi(env) {
             for (const p of data.payments || []) {
               if (p.status !== 'COMPLETED') continue
               const total = (p.total_money?.amount || 0) / 100
+              // Square keeps a refunded payment's status COMPLETED and total_money unchanged —
+              // the refund only shows up in refunded_money — so without this a fully-refunded
+              // sale still counted as real revenue here even though the customer got it all back.
+              const refunded = (p.refunded_money?.amount || 0) / 100
+              const netTotal = Math.max(0, total - refunded)
               let tip = (p.tip_money?.amount || 0) / 100
-              if (tip === 0 && p.order_id) tip = await getOrderTipLineItems(p.order_id)
-              if (p.source_type === 'CASH') {
-                cashTotal += total
-                cashTip += tip
+              if (p.order_id) tip += await getOrderTipLineItems(p.order_id)
+              // A fully refunded payment kept no money at all, tip included.
+              const netTip = netTotal > 0 ? tip : 0
+              const tender = p.source_type === 'CASH' ? 'cash' : 'card'
+              if (tender === 'cash') {
+                cashTotal += netTotal
+                cashTip += netTip
               } else {
-                cardTotal += total
-                cardTip += tip
+                cardTotal += netTotal
+                cardTip += netTip
+              }
+              if (refunded > 0) {
+                refunds.push({
+                  amount: Math.round(refunded * 100) / 100,
+                  tender,
+                  time: formatHawaiiTime(p.created_at),
+                  label: p.order_id ? await getOrderItemLabel(p.order_id) : '',
+                })
+              }
+              if (netTotal > 0) {
+                payments.push({
+                  amount: Math.round(netTotal * 100) / 100,
+                  tip: Math.round(netTip * 100) / 100,
+                  tender,
+                  time: formatHawaiiTime(p.created_at),
+                  label: p.order_id ? await getOrderItemLabel(p.order_id) : '',
+                })
               }
             }
             cursor = data.cursor
@@ -320,6 +377,8 @@ function squarePaymentsApi(env) {
           res.end(JSON.stringify({
             cashTotal: Math.round(cashTotal * 100) / 100,
             cardTotal: Math.round(cardTotal * 100) / 100,
+            refunds,
+            payments,
             cashTip: Math.round(cashTip * 100) / 100,
             cardTip: Math.round(cardTip * 100) / 100,
           }))
