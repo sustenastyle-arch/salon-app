@@ -2593,6 +2593,7 @@ const APPT_ERROR_LABELS = {
   newTicketPaymentType: "New Ticket Purchase Payment Method",
   newTicketTipPaymentType: "New Ticket Purchase Tip Payment Method",
   retailPurchasePaymentType: "Retail Purchase Payment Method",
+  retailQuantity: "Retail Quantity",
   giftCardPurchasePaymentType: "Gift Card Purchase Payment Method",
   depositPaidDate: "Deposit Paid Date",
   packageDepositDate: "Deposit Paid Date",
@@ -2664,6 +2665,8 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
     if ((f.purchaseTags || []).includes("retail")) {
       if (Number(f.retailPurchaseAmount || 0) > 0 && !f.retailPurchasePaymentType) errs.push("retailPurchasePaymentType");
       if ((f.extraRetailItems || []).some(it => Number(it.amount || 0) > 0 && !it.paymentType)) errs.push("retailPurchasePaymentType");
+      if (Number(f.retailPurchaseAmount || 0) > 0 && !Number(f.retailQuantity)) errs.push("retailQuantity");
+      if ((f.extraRetailItems || []).some(it => Number(it.amount || 0) > 0 && !Number(it.quantity))) errs.push("retailQuantity");
     }
     if ((f.purchaseTags || []).includes("giftCard")) {
       if (Number(f.giftCardPurchaseAmount || 0) > 0 && !f.giftCardPurchasePaymentType) errs.push("giftCardPurchasePaymentType");
@@ -4344,12 +4347,22 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                         {/* Quantity — buying several of the same item at once (e.g. 4 Koso Shots)
                             recomputes the amount automatically instead of needing 4 separate rows. */}
                         <div>
-                          <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>Quantity</div>
-                          <input type="number" min="1" value={item.quantity || ""} onChange={e => {
-                            const qty = Math.max(1, Number(e.target.value) || 1);
-                            const prod = RETAIL_PRODUCTS.find(p => p.name === item.productName);
-                            updateItem(idx, { quantity: e.target.value, amount: prod?.price > 0 ? r2(prod.price * qty) : item.amount });
-                          }} style={{ ...inputStyle, borderColor: "#CE93D8" }} placeholder="1" />
+                          {(() => {
+                            const qtyMissing = errors.includes("retailQuantity") && Number(item.amount || 0) > 0 && !Number(item.quantity);
+                            return (
+                              <>
+                                <div style={{ fontSize: 10, color: qtyMissing ? "#C62828" : "#888", marginBottom: 3, fontWeight: qtyMissing ? 700 : 400 }}>
+                                  Quantity{qtyMissing && " ⚠️ Required"}
+                                </div>
+                                <input type="number" min="1" value={item.quantity || ""} onChange={e => {
+                                  setErrors(errors.filter(x => x !== "retailQuantity"));
+                                  const qty = Math.max(1, Number(e.target.value) || 1);
+                                  const prod = RETAIL_PRODUCTS.find(p => p.name === item.productName);
+                                  updateItem(idx, { quantity: e.target.value, amount: prod?.price > 0 ? r2(prod.price * qty) : item.amount });
+                                }} style={{ ...inputStyle, borderColor: qtyMissing ? "#C62828" : "#CE93D8", ...(qtyMissing ? { borderWidth: 2 } : {}) }} placeholder="1" />
+                              </>
+                            );
+                          })()}
                         </div>
                         <div>
                           <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>Amount ($)</div>
@@ -4469,7 +4482,9 @@ function RetailModal({ retail, onSave, onClose }) {
   });
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
   const [paymentError, setPaymentError] = useState(false);
+  const [quantityError, setQuantityError] = useState(false);
   const handleSave = () => {
+    if (!Number(form.quantity)) { setQuantityError(true); return; }
     if (!form.paymentType) { setPaymentError(true); return; }
     onSave(form);
   };
@@ -4509,12 +4524,13 @@ function RetailModal({ retail, onSave, onClose }) {
             buying 4 Koso Shots) recompute the amount automatically instead of needing 4 separate
             entries. Only auto-multiplies for a known product's price; a custom item still needs
             the total typed in by hand since there's no per-unit price to multiply. */}
-        <Field label="Quantity">
+        <Field label="Quantity" error={quantityError}>
           <input type="number" min="1" value={form.quantity || ""} onChange={e => {
+            setQuantityError(false);
             const qty = Math.max(1, Number(e.target.value) || 1);
             const prod = RETAIL_PRODUCTS.find(p => p.name === form.item);
             setForm(f => ({ ...f, quantity: e.target.value, price: prod?.price > 0 ? r2(prod.price * qty) : f.price }));
-          }} style={inputStyle} placeholder="1" />
+          }} style={{ ...inputStyle, ...(quantityError ? { borderColor: "#C62828", borderWidth: 2 } : {}) }} placeholder="1" />
         </Field>
         <Field label="Amount ($)"><input type="number" value={form.price || ""} onChange={e => set("price", e.target.value)} style={inputStyle} /></Field>
         <Field label={`Split between (up to 3 people, splitting the tax-excluded amount of $${afterTaxTotal})${Number(form.price) > 0 && Math.abs(sellersTotal - afterTaxTotal) > 0.15 ? " ⚠️ The total is significantly off from the tax-excluded amount" : ""}`}>
@@ -4854,7 +4870,7 @@ function StaffPurchaseModal({ sp, onSave, onDelete, onClose }) {
       set("extraItems", extras.map((it, i) => i === idx - 1 ? { ...it, ...patch } : it));
     }
   };
-  const addItem = () => set("extraItems", [...(form.extraItems || []), { productName: "", amount: 0, paymentType: "", quantity: 1 }]);
+  const addItem = () => set("extraItems", [...(form.extraItems || []), { productName: "", amount: 0, paymentType: "", quantity: "" }]);
   const removeItem = (idx) => {
     if (idx === 0) return;
     const extras = form.extraItems || [];
@@ -4862,7 +4878,10 @@ function StaffPurchaseModal({ sp, onSave, onDelete, onClose }) {
   };
   const total = items.reduce((s, it) => s + Number(it.amount || 0), 0);
 
+  const [quantityError, setQuantityError] = useState(false);
   const handleSave = () => {
+    const missingQuantity = items.some(it => Number(it.amount || 0) > 0 && !Number(it.quantity));
+    if (missingQuantity) { setQuantityError(true); return; }
     const missingPayment = items.some(it => Number(it.amount || 0) > 0 && !it.paymentType);
     if (missingPayment) { setPaymentError(true); return; }
     onSave(form);
@@ -4922,8 +4941,9 @@ function StaffPurchaseModal({ sp, onSave, onDelete, onClose }) {
                     onChange={e => updateItem(idx, { productName: e.target.value })} />
                 )}
               </Field>
-              <Field label="Quantity">
+              <Field label="Quantity" error={quantityError && Number(item.amount || 0) > 0 && !Number(item.quantity)}>
                 <input type="number" min="1" value={item.quantity || ""} onChange={e => {
+                  setQuantityError(false);
                   const qty = Math.max(1, Number(e.target.value) || 1);
                   const prod = STAFF_PURCHASE_PRODUCTS.find(p => p.name === item.productName) || RETAIL_PRODUCTS.find(p => p.name === item.productName);
                   updateItem(idx, { quantity: e.target.value, amount: prod?.price > 0 ? r2(prod.price * qty) : item.amount });
