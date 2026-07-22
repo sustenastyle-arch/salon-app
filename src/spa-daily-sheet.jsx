@@ -1395,6 +1395,39 @@ export default function SpaDailySheet() {
           if (idx === -1) unmatchedPayments.push(p); else usedEventIdx.add(idx);
         });
         const unmatchedEvents = moneyEvents.filter((e, i) => !usedEventIdx.has(i));
+
+        // Beyond simple 1:1 matching: a single logical sale sometimes lands as TWO+ separate
+        // Square payments (e.g. a client splitting one purchase across two cards) or, less
+        // often, one Square payment covers two sheet entries rung up together — either way the
+        // 1:1 pass above leaves both sides "unmatched" even though they really do add up.
+        // Brute-force every 2–3 item combination within the same tender (the unmatched lists
+        // are always small, so this stays cheap) and surface any that sum to within a cent of
+        // something on the other side.
+        const combosSummingTo = (items, target, maxSize = 3) => {
+          const results = [];
+          const tryCombo = (start, combo, sum) => {
+            if (combo.length > 1 && Math.abs(r2(sum) - target) < 0.01) results.push([...combo]);
+            if (combo.length >= maxSize) return;
+            for (let i = start; i < items.length; i++) tryCombo(i + 1, [...combo, i], sum + items[i].amount);
+          };
+          tryCombo(0, [], 0);
+          return results;
+        };
+        const splitMatches = [];
+        ["cash", "card"].forEach(tender => {
+          const payPool = unmatchedPayments.filter(p => p.tender === tender);
+          const evPool = unmatchedEvents.filter(e => e.tender === tender);
+          unmatchedEvents.filter(e => e.tender === tender).forEach(ev => {
+            combosSummingTo(payPool, ev.amount).forEach(idxs => {
+              splitMatches.push({ tender, kind: "payments", target: ev, items: idxs.map(i => payPool[i]) });
+            });
+          });
+          unmatchedPayments.filter(p => p.tender === tender).forEach(p => {
+            combosSummingTo(evPool, p.amount).forEach(idxs => {
+              splitMatches.push({ tender, kind: "events", target: p, items: idxs.map(i => evPool[i]) });
+            });
+          });
+        });
         return (
           <div style={{ background: "#fff", margin: "10px 20px", borderRadius: 10, border: "1px solid #DDD", padding: 14 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
@@ -1492,6 +1525,31 @@ export default function SpaDailySheet() {
                 )}
                 <div style={{ fontSize: 10, color: "#5C7A99", marginTop: 6 }}>
                   ※ Best-effort match by tender + amount — two entries charging the exact same amount the same way can't always be told apart.
+                </div>
+              </div>
+            )}
+            {/* A single sale sometimes lands as multiple Square payments (e.g. a client
+                splitting one purchase across two cards) — the 1:1 pass above leaves both sides
+                looking unmatched even though 2-3 of them really do add up to the other side. */}
+            {splitMatches.length > 0 && (
+              <div style={{ marginTop: 12, background: "#FCE4EC", borderRadius: 8, padding: 10 }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: "#AD1457", marginBottom: 6 }}>
+                  💡 Possible split payment — these add up to within a cent of each other
+                </div>
+                {splitMatches.slice(0, 5).map((m, i) => {
+                  const icon = m.tender === "cash" ? "💵" : "💳";
+                  const sum = r2(m.items.reduce((s, it) => s + it.amount, 0));
+                  const targetLabel = m.kind === "payments"
+                    ? `sheet: ${m.target.label}`
+                    : `Square payment at ${m.target.time}${m.target.label ? ` (${m.target.label})` : ""}`;
+                  return (
+                    <div key={i} style={{ fontSize: 12, color: "#AD1457", marginBottom: 3 }}>
+                      {icon} {m.items.map(it => `${formatCurrency(it.amount)}${m.kind === "payments" && it.time ? ` (${it.time}${it.label ? `, ${it.label}` : ""})` : ""}${m.kind === "events" && it.label ? ` (${it.label})` : ""}`).join(" + ")} = {formatCurrency(sum)} ≈ {targetLabel} {formatCurrency(m.target.amount)}
+                    </div>
+                  );
+                })}
+                <div style={{ fontSize: 10, color: "#AD1457", marginTop: 6 }}>
+                  ※ Just a suggestion based on the numbers adding up — double-check against Square before assuming it's the answer.
                 </div>
               </div>
             )}
