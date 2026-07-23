@@ -3409,7 +3409,7 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
           <button onClick={() => { setForm(f => ({...f, isTicket: true, isSameDayTicket: true, useToday: true, ticketCurrent: 1, isGiftCard: false, isPromo: false})); autoDetectAndApplyTicket(); }} style={{ flex: 1, padding: "8px 4px", borderRadius: 8, border: `2px solid ${form.isSameDayTicket ? "#2E7D32" : "#DDD"}`, background: form.isSameDayTicket ? "#E8F5E9" : "#fff", cursor: "pointer", fontWeight: 700, color: form.isSameDayTicket ? "#2E7D32" : "#888", fontSize: 11 }}>
             🟢 Same-Day Purchase
           </button>
-          <button onClick={() => setForm(f => ({...f, isPromo: true, isGiftCard: false, isTicket: false, isSameDayTicket: false}))} style={{ flex: 1, padding: "8px 4px", borderRadius: 8, border: `2px solid ${form.isPromo ? "#1565C0" : "#DDD"}`, background: form.isPromo ? "#E3F2FD" : "#fff", cursor: "pointer", fontWeight: 700, color: form.isPromo ? "#1565C0" : "#888", fontSize: 11 }}>
+          <button onClick={() => setForm(f => ({...f, isPromo: true, isGiftCard: false, isTicket: false, isSameDayTicket: false, extraPrice: "", extraTip: "", extraNotes: "", extraPricePaymentType: "", extraTipPaymentType: ""}))} style={{ flex: 1, padding: "8px 4px", borderRadius: 8, border: `2px solid ${form.isPromo ? "#1565C0" : "#DDD"}`, background: form.isPromo ? "#E3F2FD" : "#fff", cursor: "pointer", fontWeight: 700, color: form.isPromo ? "#1565C0" : "#888", fontSize: 11 }}>
             📸 Complimentary PR
           </button>
         </div>
@@ -3639,7 +3639,7 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                 today's revenue — an add-on service actually paid for today (e.g. a same-therapist
                 "additional massage") has to go here instead, or it silently never shows up as
                 real money received. */}
-            {(!form.isSameDayTicket || form.useToday !== false) && (
+            {(!form.isSameDayTicket || form.useToday !== false) && !form.isPromo && (
               <div style={{ marginTop: 10, background: "#FFF8E1", borderRadius: 8, padding: 10, border: "1px solid #FFE082" }}>
                 <div style={{ fontWeight: 700, fontSize: 12, color: "#F57F17", marginBottom: 8 }}>💝 Extra (optional) — additional payment received today</div>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
