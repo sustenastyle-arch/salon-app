@@ -5283,9 +5283,19 @@ async function exportSalesReportXlsx(monthStr) {
   // "🎟️チケット新規購入" add-on during a different-type visit count as one ticket sale. When two
   // therapists worked the visit (body + cav), the amount is split 50/50 between them for attribution.
   const ticketSaleEvents = [];
-  // Local-customer visits (RL+NL — ticket buyers are mostly local) per staff member, and whether
-  // that same visit converted into a ticket sale — lets the owner see "saw N locals, only sold M".
+  // New-local-customer (NL only) visits per staff member, and whether that same visit converted
+  // into a ticket sale — lets the owner see each staff member's new-customer contract rate.
+  // Repeat locals are excluded: they're not a "conversion" candidate the same way a first-time
+  // local visitor is, so mixing them in would understate the rate.
   const localVisitEvents = [];
+  // New-customer (NL+NT) regular/pay-as-you-go visit revenue by referral source — separate from
+  // ticketSaleEvents above, which only covers ticket/package purchases. Shows how much money a
+  // referral source brings in from customers who *don't* buy a package too.
+  const regularVisitEvents = [];
+  // Ticket/package redemption (消化) visits — never counted as today's revenue anywhere else in
+  // this report (already paid for when the package was purchased), but tracked here as a monthly
+  // count + reference value for utilization/operational insight.
+  const ticketRedemptionEvents = [];
   for (let d = 1; d <= lastDay; d++) {
     const dateStr = `${monthStr}-${String(d).padStart(2,"0")}`;
     const data = days[dateStr];
@@ -5300,9 +5310,26 @@ async function exportSalesReportXlsx(monthStr) {
         if ((a.purchaseTags || []).includes("newTicket") && Number(a.newTicketAmount || 0) > 0) {
           ticketSaleEvents.push({ amount: Number(a.newTicketAmount), customerType: a.customerType, referralSource: a.referralSource, therapists });
         }
-        if (a.customerType === "RL" || a.customerType === "NL") {
+        if (a.customerType === "NL") {
           localVisitEvents.push({ therapists: therapists.map(th => th.name), hasTicketSale });
         }
+        // Regular pay-as-you-go visit (not a ticket redemption, same-day package purchase, gift
+        // card redemption, or comped PR visit) — net of any gift-card-covered portion, same rule
+        // used for revenueAppts elsewhere in this report.
+        if (!a.isTicket && !a.isGiftCard && !a.isPromo && (a.customerType === "NL" || a.customerType === "NT")) {
+          const gcSvc = Math.min(Number(a.giftCardUsed || 0), Number(a.price || 0));
+          const netPrice = Number(a.price || 0) - gcSvc;
+          if (netPrice > 0) regularVisitEvents.push({ amount: netPrice, referralSource: a.referralSource });
+        }
+        // Main-appointment ticket redemption — reference/face value only.
+        if (a.isTicket && !a.isSameDayTicket) {
+          ticketRedemptionEvents.push({ amount: Number(a.price || 0) });
+        }
+        // Add-on ticket redemptions (🎫 Ticket Redemption toggle) — a session drawn from a
+        // package just like the main-appointment case above, just recorded as an add-on.
+        (a.addons || []).filter(ad => ad.countsAsRevenue === false).forEach(ad => {
+          ticketRedemptionEvents.push({ amount: Number(ad.price || 0) });
+        });
       });
 
       dailyData.push({ date: d, ...computeDayTotals(data) });
@@ -5406,13 +5433,18 @@ async function exportSalesReportXlsx(monthStr) {
     ["New customers (NL+NT)", ...countAmt(newSales)],
     ["Repeat customers (RL+RT)", ...countAmt(repeatSales)],
     [],
-    ["New customers by referral source", "Count", "Amount"],
+    ["New customers by referral source — ticket/package purchases", "Count", "Amount"],
   ];
   REFERRAL_SOURCES.forEach(src => {
     tsData.push([REFERRAL_LABELS[src] || src, ...countAmt(newSales.filter(r => r.referralSource === src))]);
   });
   tsData.push([]);
-  tsData.push(["By staff (ranked by New customers $ — who's converting new clients into ticket sales)", "Count", "Amount", "New customers $", "Repeat customers $", "Local visits (RL+NL)", "→ Converted to ticket", "Conversion %"]);
+  tsData.push(["New customers by referral source — regular (non-ticket) visit revenue", "Count", "Amount"]);
+  REFERRAL_SOURCES.forEach(src => {
+    tsData.push([REFERRAL_LABELS[src] || src, ...countAmt(regularVisitEvents.filter(r => r.referralSource === src))]);
+  });
+  tsData.push([]);
+  tsData.push(["By staff (ranked by New customers $ — who's converting new clients into ticket sales)", "Count", "Amount", "New customers $", "Repeat customers $", "New local visits (NL)", "→ Converted to ticket", "Conversion %"]);
   // A visit worked by two therapists counts as 1 "件" for each, but the $ amount is split by share.
   const shareAmtFor = (t, list) => Math.round(list.reduce((s, r) => s + r.amount * r.therapists.find(th => th.name === t).share, 0) * 100) / 100;
   const byStaffRows = THERAPISTS.map(t => {
@@ -5428,6 +5460,20 @@ async function exportSalesReportXlsx(monthStr) {
   const tsWs = XLSX.utils.aoa_to_sheet(tsData);
   tsWs["!cols"] = [{wch:26},{wch:12},{wch:14},{wch:14},{wch:16},{wch:14},{wch:16},{wch:12}];
   XLSX.utils.book_append_sheet(wb, tsWs, "Ticket Sales");
+
+  // Ticket/package redemption (消化) tally — count + reference value, informational only. This
+  // money was already counted as revenue on the (earlier) day the package itself was purchased,
+  // so it's never added to any $ total above; it's tracked here purely as a monthly utilization
+  // figure (how much service was delivered against existing packages this month).
+  const trData = [
+    [`Ticket Redemptions — ${monthName} ${y}`],
+    [],
+    ["Count", "Reference Value ($ — not counted as revenue)"],
+    [ticketRedemptionEvents.length, Math.round(ticketRedemptionEvents.reduce((s, r) => s + r.amount, 0) * 100) / 100],
+  ];
+  const trWs = XLSX.utils.aoa_to_sheet(trData);
+  trWs["!cols"] = [{wch:10},{wch:38}];
+  XLSX.utils.book_append_sheet(wb, trWs, "Ticket Redemptions");
 
   XLSX.writeFile(wb, `SalesReport_${monthStr}.xlsx`);
 }
