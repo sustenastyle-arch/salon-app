@@ -319,7 +319,9 @@ const RETAIL_TAX_RATE = 0.04712;
 // RetailModal and the inline retail item editor) — applied here too so a retail item with no
 // explicit split (falls back to crediting the card's own therapist) is taxed the same way,
 // instead of crediting the full pre-tax amount only when nobody bothered to fill in a split.
-const afterTaxAmount = (amt) => Math.round(Number(amt || 0) * (1 - RETAIL_TAX_RATE) * 100) / 100;
+// The entered price is tax-inclusive (what the customer actually paid), so the pre-tax base is
+// found by dividing out the tax rate, not subtracting it — amt / 1.04712, not amt * 0.95288.
+const afterTaxAmount = (amt) => Math.round(Number(amt || 0) / (1 + RETAIL_TAX_RATE) * 100) / 100;
 
 // Kept alphabetical by name so staff can find a product quickly in the dropdown.
 const RETAIL_PRODUCTS = [
@@ -4524,7 +4526,7 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                           // Seller amounts represent each person's share of the *tax-excluded* commission
                           // base (same convention as the standalone Retail modal) — staff still work out
                           // their own 10%/4% commission from that base and type the dollar figure in.
-                          const afterTaxTotal = Math.round(Number(item.amount || 0) * (1 - RETAIL_TAX_RATE) * 100) / 100;
+                          const afterTaxTotal = afterTaxAmount(item.amount);
                           // Defaults to just the body therapist getting the full (tax-excluded) amount —
                           // most retail sales are one person. Add rows (up to 3) for the rare cases where
                           // the machine therapist, or a third therapist from a multi-service visit, shares it.
@@ -4632,7 +4634,7 @@ function RetailModal({ retail, onSave, onClose }) {
   const sellersTotal = Math.round(sellers.reduce((s, sel) => s + Number(sel.amount || 0), 0) * 100) / 100;
   // Seller amounts represent each person's share of the *tax-adjusted* commission-eligible base
   // (10% of this goes to staff as commission, 4% for Maki), not the raw sale price.
-  const afterTaxTotal = Math.round(Number(form.price || 0) * (1 - RETAIL_TAX_RATE) * 100) / 100;
+  const afterTaxTotal = afterTaxAmount(form.price);
   const updSeller = (idx, patch) => set("sellers", sellers.map((sel, i) => i === idx ? { ...sel, ...patch } : sel));
   return (
     <Modal onClose={onClose}>
