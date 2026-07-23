@@ -56,22 +56,48 @@ export function computeDayTotals(data) {
   const staffPurchaseItems = (data.staffPurchases || []).flatMap(sp => getStaffPurchaseItems(sp));
   const spCash = staffPurchaseItems.filter(it => it.paymentType === "cash").reduce((s, it) => s + Number(it.amount || 0), 0);
   const spCard = staffPurchaseItems.filter(it => it.paymentType === "card").reduce((s, it) => s + Number(it.amount || 0), 0);
+  // Ticket-sale amount = service + tip combined (the sale's full customer-facing price), not
+  // just the service/payroll-split portion — matches the email report's own convention.
   const ticketSaleEvents = [];
   const localVisitEvents = [];
   appts.forEach(a => {
     const therapists = a.cavTherapist ? [{ name: a.therapist, share: 0.5 }, { name: a.cavTherapist, share: 0.5 }] : [{ name: a.therapist, share: 1 }];
     const hasTicketSale = (a.isSameDayTicket && Number(a.packagePrice || 0) > 0) || ((a.purchaseTags || []).includes("newTicket") && Number(a.newTicketAmount || 0) > 0);
     if (a.isSameDayTicket && Number(a.packagePrice || 0) > 0) {
-      ticketSaleEvents.push({ amount: Number(a.packagePrice), customerType: a.customerType, referralSource: a.referralSource, therapists });
+      ticketSaleEvents.push({ clientName: a.clientName, amount: Number(a.packagePrice) + Number(a.packageTip ?? a.tip ?? 0), customerType: a.customerType, referralSource: a.referralSource, therapists });
     }
     if ((a.purchaseTags || []).includes("newTicket") && Number(a.newTicketAmount || 0) > 0) {
-      ticketSaleEvents.push({ amount: Number(a.newTicketAmount), customerType: a.customerType, referralSource: a.referralSource, therapists });
+      ticketSaleEvents.push({ clientName: a.clientName, amount: Number(a.newTicketAmount) + Number(a.newTicketTip || 0), customerType: a.customerType, referralSource: a.referralSource, therapists });
     }
     if (a.customerType === "RL" || a.customerType === "NL") {
       localVisitEvents.push({ therapists: therapists.map(th => th.name), hasTicketSale });
     }
   });
+  (data.ticketPurchases || []).forEach(tp => {
+    if (Number(tp.amount || 0) <= 0) return;
+    ticketSaleEvents.push({ clientName: tp.clientName, amount: Number(tp.amount) + Number(tp.tip || 0), customerType: undefined, referralSource: undefined, therapists: [] });
+  });
   const deposits = data.deposits || [];
+  // Ticket package purchases can come from two different places: a standalone entry in the
+  // `ticketPurchases` array, or an inline "newTicket" purchaseTag bundled onto a same-visit
+  // appointment (buying a new package while getting an unrelated regular service that day) —
+  // neither was ever folded into this export's cash/card/tip totals, unlike the in-app 📊集計
+  // tab (tpCash/tpCard/inlineNTCash/inlineNTCard there), so a day with either kind of ticket
+  // sale silently under-reported its total here.
+  const ticketPurchases = data.ticketPurchases || [];
+  const tpCash = ticketPurchases.filter(tp => !tp.splitPayment && tp.paymentType === "cash").reduce((s,tp) => s + Number(tp.amount||0), 0)
+    + ticketPurchases.filter(tp => tp.splitPayment).reduce((s,tp) => s + Number(tp.cashPortion||0), 0);
+  const tpCard = ticketPurchases.filter(tp => !tp.splitPayment && tp.paymentType === "card").reduce((s,tp) => s + Number(tp.amount||0), 0)
+    + ticketPurchases.filter(tp => tp.splitPayment).reduce((s,tp) => s + Number(tp.cardPortion||0), 0);
+  const tpTipCash = ticketPurchases.filter(tp => tp.tipPaymentType === "cash" || !tp.tipPaymentType).reduce((s,tp) => s + Number(tp.tip||0), 0);
+  const tpTipCard = ticketPurchases.filter(tp => tp.tipPaymentType === "card").reduce((s,tp) => s + Number(tp.tip||0), 0);
+  const inlineNewTicketAppts = appts.filter(a => (a.purchaseTags||[]).includes("newTicket"));
+  const inlineNTCash = inlineNewTicketAppts.filter(a => !a.newTicketSplitPayment && a.newTicketPaymentType === "cash").reduce((s,a) => s + Number(a.newTicketAmount||0), 0)
+    + inlineNewTicketAppts.filter(a => a.newTicketSplitPayment).reduce((s,a) => s + Number(a.newTicketCashPortion||0), 0);
+  const inlineNTCard = inlineNewTicketAppts.filter(a => !a.newTicketSplitPayment && a.newTicketPaymentType !== "cash").reduce((s,a) => s + Number(a.newTicketAmount||0), 0)
+    + inlineNewTicketAppts.filter(a => a.newTicketSplitPayment).reduce((s,a) => s + Number(a.newTicketCardPortion||0), 0);
+  const inlineNTTipCash = inlineNewTicketAppts.filter(a => a.newTicketTipPaymentType === "cash").reduce((s,a) => s + Number(a.newTicketTip||0), 0);
+  const inlineNTTipCard = inlineNewTicketAppts.filter(a => a.newTicketTipPaymentType !== "cash").reduce((s,a) => s + Number(a.newTicketTip||0), 0);
   const refundServiceCash = refunds.filter(rf => rf.paymentType === "cash").reduce((s,rf) => s + Number(rf.serviceAmount||0), 0);
   const refundServiceCard = refunds.filter(rf => rf.paymentType === "card").reduce((s,rf) => s + Number(rf.serviceAmount||0), 0);
   const refundTipCash = refunds.filter(rf => rf.paymentType === "cash").reduce((s,rf) => s + Number(rf.tipAmount||0), 0);
@@ -103,6 +129,16 @@ export function computeDayTotals(data) {
     const gcTip = Math.min(r2(gc - gcSvc), tip);
     const gcRetail = Math.min(r2(gc - gcSvc - gcTip), retail);
     return { gcSvc, gcTip, gcRetail };
+  };
+  // An add-on can also be paid from an existing gift card balance — same exclusion rule as
+  // gcAlloc above, just against the add-on's own price/tip instead of the main service's.
+  const addonGcAlloc = (ad) => {
+    const gc = Number(ad.giftCardUsed || 0);
+    const svc = Number(ad.price || 0);
+    const tip = Number(ad.tip || 0);
+    const gcSvc = Math.min(gc, svc);
+    const gcTip = Math.min(gc - gcSvc, tip);
+    return { gcSvc, gcTip };
   };
   // Retail sold inline during a visit (物販 tag on the appointment, up to 3 items via
   // getRetailItems) lives on the appointment record itself, not in the standalone `retails`
@@ -144,9 +180,11 @@ export function computeDayTotals(data) {
     + sameDayTicketAppts.filter(a => a.packageSplitPayment).reduce((s,a) => s + Number(a.packageCashPortion||0), 0)
     + pureTicketAppts.filter(a => a.extraPricePaymentType === "cash").reduce((s,a) => s + Number(a.extraPrice||0), 0)
     + sameDayTicketAppts.filter(a => a.extraPricePaymentType === "cash").reduce((s,a) => s + Number(a.extraPrice||0), 0)
-    + revenueAddons.filter(ad => ad.paymentType === "cash").reduce((s,ad) => s + Number(ad.price||0), 0)
+    + revenueAddons.filter(ad => ad.paymentType === "cash").reduce((s,ad) => s + Number(ad.price||0) - addonGcAlloc(ad).gcSvc, 0)
     + cavSlotAppts.filter(a => a.paymentType === "cash").reduce((s,a) => s + Number(a.price||0), 0)
     + depositCash
+    + tpCash
+    + inlineNTCash
     + forgottenServiceCash
     - refundServiceCash;
   const cashProduct = retails.filter(r => r.paymentType === "cash").reduce((s,r) => s + Number(r.price||0), 0) + inlineRetailCash + spCash;
@@ -155,8 +193,10 @@ export function computeDayTotals(data) {
     + sameDayTicketAppts.filter(a => a.tipPaymentType === "cash").reduce((s,a) => s + Number(a.packageTip ?? a.tip ?? 0) - gcAllocPackage(a).gcTip, 0)
     + pureTicketAppts.filter(a => a.extraTipPaymentType === "cash").reduce((s,a) => s + Number(a.extraTip||0), 0)
     + sameDayTicketAppts.filter(a => a.extraTipPaymentType === "cash").reduce((s,a) => s + Number(a.extraTip||0), 0)
-    + revenueAddons.filter(ad => ad.tipPaymentType === "cash").reduce((s,ad) => s + Number(ad.tip||0), 0)
+    + revenueAddons.filter(ad => ad.tipPaymentType === "cash").reduce((s,ad) => s + Number(ad.tip||0) - addonGcAlloc(ad).gcTip, 0)
     + cavSlotAppts.filter(a => a.tipPaymentType === "cash").reduce((s,a) => s + Number(a.tip||0), 0)
+    + tpTipCash
+    + inlineNTTipCash
     + forgottenTipCash
     - refundTipCash;
   const cardTreatment = revenueAppts.filter(a => !a.svcSplitPayment && a.paymentType === "card").reduce((s,a) => s + Number(a.price||0) - gcAlloc(a).gcSvc, 0)
@@ -165,9 +205,11 @@ export function computeDayTotals(data) {
     + sameDayTicketAppts.filter(a => a.packageSplitPayment).reduce((s,a) => s + Number(a.packageCardPortion||0), 0)
     + pureTicketAppts.filter(a => a.extraPricePaymentType === "card").reduce((s,a) => s + Number(a.extraPrice||0), 0)
     + sameDayTicketAppts.filter(a => a.extraPricePaymentType === "card").reduce((s,a) => s + Number(a.extraPrice||0), 0)
-    + revenueAddons.filter(ad => ad.paymentType !== "cash").reduce((s,ad) => s + Number(ad.price||0), 0)
+    + revenueAddons.filter(ad => ad.paymentType !== "cash").reduce((s,ad) => s + Number(ad.price||0) - addonGcAlloc(ad).gcSvc, 0)
     + cavSlotAppts.filter(a => a.paymentType !== "cash").reduce((s,a) => s + Number(a.price||0), 0)
     + depositCard
+    + tpCard
+    + inlineNTCard
     + forgottenServiceCard
     - refundServiceCard;
   const cardProduct = retails.filter(r => r.paymentType === "card").reduce((s,r) => s + Number(r.price||0), 0) + inlineRetailCard + spCard;
@@ -176,16 +218,20 @@ export function computeDayTotals(data) {
     + sameDayTicketAppts.filter(a => a.tipPaymentType === "card").reduce((s,a) => s + Number(a.packageTip ?? a.tip ?? 0) - gcAllocPackage(a).gcTip, 0)
     + pureTicketAppts.filter(a => a.extraTipPaymentType === "card").reduce((s,a) => s + Number(a.extraTip||0), 0)
     + sameDayTicketAppts.filter(a => a.extraTipPaymentType === "card").reduce((s,a) => s + Number(a.extraTip||0), 0)
-    + revenueAddons.filter(ad => ad.tipPaymentType !== "cash").reduce((s,ad) => s + Number(ad.tip||0), 0)
+    + revenueAddons.filter(ad => ad.tipPaymentType !== "cash").reduce((s,ad) => s + Number(ad.tip||0) - addonGcAlloc(ad).gcTip, 0)
     + cavSlotAppts.filter(a => a.tipPaymentType !== "cash").reduce((s,a) => s + Number(a.tip||0), 0)
+    + tpTipCard
+    + inlineNTTipCard
     + forgottenTipCard
     - refundTipCard;
   const totalTip = revenueAppts.reduce((s,a) => s + Number(a.tip||0) - gcAlloc(a).gcTip, 0)
     + sameDayTicketAppts.reduce((s,a) => s + Number(a.packageTip ?? a.tip ?? 0) - gcAllocPackage(a).gcTip, 0)
     + pureTicketAppts.reduce((s,a) => s + Number(a.extraTip||0), 0)
     + sameDayTicketAppts.reduce((s,a) => s + Number(a.extraTip||0), 0)
-    + revenueAddons.reduce((s,ad) => s + Number(ad.tip||0), 0)
+    + revenueAddons.reduce((s,ad) => s + Number(ad.tip||0) - addonGcAlloc(ad).gcTip, 0)
     + cavSlotAppts.reduce((s,a) => s + Number(a.tip||0), 0)
+    + tpTipCash + tpTipCard
+    + inlineNTTipCash + inlineNTTipCard
     + forgottenTipCash + forgottenTipCard
     - refundTipCash - refundTipCard;
   const totalSales = cashTreatment + cashProduct + cardTreatment + cardProduct;
@@ -211,5 +257,8 @@ export function computeDayTotals(data) {
     nl: appts.filter(a => a.customerType === "NL").length,
     nt: appts.filter(a => a.customerType === "NT").length,
     referrals: REFERRAL_SOURCES.map(src => appts.filter(a => a.referralSource === src).length),
+    // Ticket package sale details (client/amount/customer type/therapist split), for the daily
+    // report email — covers both a standalone ticketPurchases entry and an inline newTicket sale.
+    ticketSaleEvents,
   };
 }

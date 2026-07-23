@@ -28,6 +28,19 @@ const splitAddonAmount = (amount, duration, cavMins) => {
   const body = Math.round(total * bodyMins / dur * 100) / 100;
   return { body, cav: Math.round((total - body) * 100) / 100 };
 };
+// Only some courses have a machine (cav) option at all (Improving Posture 90/120min, any Weight
+// Loss duration, Sculpted Face Lift 60min — matches the cav:null vs cav:{...} split already in
+// PRICE_TABLE's ticket-package entries above). Everything else (a plain Facial/Massage — no
+// machine component in the menu) should never even ask "is a machine involved?" when added on.
+const ADDON_CAV_CAPABLE_NAMES = [
+  "Improving Posture 90min", "Improving Posture 120min",
+  "Weight Loss 75min", "Weight Loss 90min", "Weight Loss 115min",
+  "Sculpted Face Lift 60min",
+];
+const addonHasCavOption = (name) => ADDON_CAV_CAPABLE_NAMES.includes(name);
+// True only for a course we KNOW for certain has no machine option (matched against the real
+// menu) — an "Other" custom name or an unlisted preset still gets asked, since we can't be sure.
+const isKnownNonCavAddon = (name) => SQUARE_SERVICES.some(s => s.name === name) && !addonHasCavOption(name);
 // Appointments synced from Square before the item-name cleanup in the booking sync (see
 // vite.config.js/api/square-bookings.js) may still have serviceName saved with extra junk
 // the catalog item's Name field was never meant to carry: a Japanese translation in
@@ -1034,11 +1047,21 @@ export default function SpaDailySheet() {
     const gcTip = Math.min(r2(gc - gcSvc), tip);
     return { gcSvc, gcTip };
   };
+  // An add-on can also be paid from an existing gift card balance — same exclusion rule as
+  // gcAlloc above, just against the add-on's own price/tip instead of the main service's.
+  const addonGcAlloc = (ad) => {
+    const gc = Number(ad.giftCardUsed || 0);
+    const svc = Number(ad.price || 0);
+    const tip = Number(ad.tip || 0);
+    const gcSvc = Math.min(gc, svc);
+    const gcTip = Math.min(gc - gcSvc, tip);
+    return { gcSvc, gcTip };
+  };
 
   const totalRevenue = regularAppts.reduce((s, a) => s + Number(a.price || 0) - gcAlloc(a).gcSvc, 0)
     + sameDayAppts.reduce((s, a) => s + Number(a.packagePrice || 0) - gcAllocPackage(a).gcSvc, 0)
     + ticketAppts.reduce((s, a) => s + Number(a.extraPrice || 0), 0)
-    + revenueAddons.reduce((s, ad) => s + Number(ad.price || 0), 0)
+    + revenueAddons.reduce((s, ad) => s + Number(ad.price || 0) - addonGcAlloc(ad).gcSvc, 0)
     + totalForgottenService
     - totalRefundService;
   const totalCavRevenue = regularAppts.reduce((s, a) => s + Number(a.cavPrice || 0), 0)
@@ -1046,19 +1069,20 @@ export default function SpaDailySheet() {
   const totalTips = regularAppts.reduce((s, a) => s + Number(a.tip || 0) - gcAlloc(a).gcTip, 0)
     + sameDayAppts.reduce((s, a) => s + Number(a.packageTip ?? a.tip ?? 0) - gcAllocPackage(a).gcTip, 0)
     + ticketAppts.reduce((s, a) => s + Number(a.extraTip || 0), 0)
-    + revenueAddons.reduce((s, ad) => s + Number(ad.tip || 0), 0)
+    + revenueAddons.reduce((s, ad) => s + Number(ad.tip || 0) - addonGcAlloc(ad).gcTip, 0)
     + totalForgottenTip
     - totalRefundTip;
   const totalCavTips = regularAppts.reduce((s, a) => s + Number(a.cavTip || 0), 0)
     + cavSlotAppts.reduce((s, a) => s + Number(a.tip || 0), 0);
   const totalGCUsed = regularAppts.reduce((s, a) => s + Number(a.giftCardUsed || 0), 0)
-    + sameDayAppts.reduce((s, a) => s + Number(a.giftCardUsed || 0), 0);
+    + sameDayAppts.reduce((s, a) => s + Number(a.giftCardUsed || 0), 0)
+    + revenueAddons.reduce((s, ad) => s + Number(ad.giftCardUsed || 0), 0);
   const totalCash = regularAppts.filter(a => !a.svcSplitPayment && a.paymentType === "cash").reduce((s, a) => s + Math.max(0, Number(a.price || 0) - gcAlloc(a).gcSvc), 0)
     + regularAppts.filter(a => a.svcSplitPayment).reduce((s, a) => s + Number(a.svcCashPortion || 0), 0)
     + sameDayAppts.filter(a => !a.packageSplitPayment && a.paymentType === "cash").reduce((s, a) => s + Math.max(0, Number(a.packagePrice || 0) - gcAllocPackage(a).gcSvc), 0)
     + sameDayAppts.filter(a => a.packageSplitPayment).reduce((s, a) => s + Number(a.packageCashPortion || 0), 0)
     + ticketAppts.filter(a => a.extraPricePaymentType === "cash").reduce((s, a) => s + Number(a.extraPrice || 0), 0)
-    + revenueAddons.filter(ad => ad.paymentType === "cash").reduce((s, ad) => s + Number(ad.price || 0), 0)
+    + revenueAddons.filter(ad => ad.paymentType === "cash").reduce((s, ad) => s + Number(ad.price || 0) - addonGcAlloc(ad).gcSvc, 0)
     + cavSlotAppts.filter(a => a.paymentType === "cash").reduce((s, a) => s + Number(a.price || 0), 0)
     + totalForgottenCash
     - totalRefundCash;
@@ -1067,7 +1091,7 @@ export default function SpaDailySheet() {
     + sameDayAppts.filter(a => !a.packageSplitPayment && a.paymentType === "card").reduce((s, a) => s + Math.max(0, Number(a.packagePrice || 0) - gcAllocPackage(a).gcSvc), 0)
     + sameDayAppts.filter(a => a.packageSplitPayment).reduce((s, a) => s + Number(a.packageCardPortion || 0), 0)
     + ticketAppts.filter(a => a.extraPricePaymentType === "card").reduce((s, a) => s + Number(a.extraPrice || 0), 0)
-    + revenueAddons.filter(ad => ad.paymentType !== "cash").reduce((s, ad) => s + Number(ad.price || 0), 0)
+    + revenueAddons.filter(ad => ad.paymentType !== "cash").reduce((s, ad) => s + Number(ad.price || 0) - addonGcAlloc(ad).gcSvc, 0)
     + cavSlotAppts.filter(a => a.paymentType !== "cash").reduce((s, a) => s + Number(a.price || 0), 0)
     + totalForgottenCard
     - totalRefundCard;
@@ -1075,7 +1099,7 @@ export default function SpaDailySheet() {
     + regularAppts.filter(a => a.tipSplitPayment).reduce((s, a) => s + Number(a.tipCashPortion || 0), 0)
     + sameDayAppts.filter(a => a.tipPaymentType === "cash").reduce((s, a) => s + Math.max(0, Number(a.packageTip ?? a.tip ?? 0) - gcAllocPackage(a).gcTip), 0)
     + ticketAppts.filter(a => a.extraTipPaymentType === "cash").reduce((s, a) => s + Number(a.extraTip || 0), 0)
-    + revenueAddons.filter(ad => ad.tipPaymentType === "cash").reduce((s, ad) => s + Number(ad.tip || 0), 0)
+    + revenueAddons.filter(ad => ad.tipPaymentType === "cash").reduce((s, ad) => s + Number(ad.tip || 0) - addonGcAlloc(ad).gcTip, 0)
     + cavSlotAppts.filter(a => a.tipPaymentType === "cash").reduce((s, a) => s + Number(a.tip || 0), 0)
     + deposits.filter(d => d.tipPaymentType === "cash" || !d.tipPaymentType).reduce((s, d) => s + Number(d.tip || 0), 0)
     + totalForgottenTipCash
@@ -1084,7 +1108,7 @@ export default function SpaDailySheet() {
     + regularAppts.filter(a => a.tipSplitPayment).reduce((s, a) => s + Number(a.tipCardPortion || 0), 0)
     + sameDayAppts.filter(a => a.tipPaymentType === "card").reduce((s, a) => s + Math.max(0, Number(a.packageTip ?? a.tip ?? 0) - gcAllocPackage(a).gcTip), 0)
     + ticketAppts.filter(a => a.extraTipPaymentType === "card").reduce((s, a) => s + Number(a.extraTip || 0), 0)
-    + revenueAddons.filter(ad => ad.tipPaymentType !== "cash").reduce((s, ad) => s + Number(ad.tip || 0), 0)
+    + revenueAddons.filter(ad => ad.tipPaymentType !== "cash").reduce((s, ad) => s + Number(ad.tip || 0) - addonGcAlloc(ad).gcTip, 0)
     + cavSlotAppts.filter(a => a.tipPaymentType === "card").reduce((s, a) => s + Number(a.tip || 0), 0)
     + deposits.filter(d => d.tipPaymentType === "card").reduce((s, d) => s + Number(d.tip || 0), 0)
     + totalForgottenTipCard
@@ -1222,7 +1246,8 @@ export default function SpaDailySheet() {
     }
   });
   revenueAddons.forEach(ad => {
-    addMoneyEvent(ad.serviceName || "Add-on", ad.price, false, ad.paymentType, 0, 0, ad.tip, false, ad.tipPaymentType, 0, 0);
+    const gc = addonGcAlloc(ad);
+    addMoneyEvent(ad.serviceName || "Add-on", Number(ad.price||0) - gc.gcSvc, false, ad.paymentType, 0, 0, Number(ad.tip||0) - gc.gcTip, false, ad.tipPaymentType, 0, 0);
   });
   cavSlotAppts.forEach(a => {
     addMoneyEvent(`${a.clientName || "(unnamed)"} (machine)`, a.price, false, a.paymentType, 0, 0, a.tip, false, a.tipPaymentType, 0, 0);
@@ -1698,7 +1723,7 @@ export default function SpaDailySheet() {
                           const aSvc = hasCav ? (isCavRole ? svcSplit.cav : svcSplit.body) : Number(addon.price||0);
                           const aTip = hasCav ? (isCavRole ? tipSplit.cav : tipSplit.body) : Number(addon.tip||0);
                           const aTotal = r2(aSvc + aTip);
-                          const aColor = addon.countsAsRevenue === true ? REVENUE_COLOR : addon.countsAsRevenue === false ? NON_REVENUE_COLOR : "#005F4A";
+                          const aColor = Number(addon.giftCardUsed||0) > 0 ? NON_REVENUE_COLOR : addon.countsAsRevenue === true ? REVENUE_COLOR : addon.countsAsRevenue === false ? NON_REVENUE_COLOR : "#005F4A";
                           const svcIcon = addon.paymentType === "card" ? "💳" : addon.paymentType === "cash" ? "💵" : "";
                           const tipIcon = addon.tipPaymentType === "card" ? "💳" : addon.tipPaymentType === "cash" ? "💵" : "";
                           return (
@@ -2461,9 +2486,21 @@ function ApptCard({ appt, onClick, allAppointments }) {
                   const aSvc = Number(addon.price||0);
                   const aTip = Number(addon.tip||0);
                   const aTotal = r2(aSvc + aTip);
-                  const chipColor = addon.countsAsRevenue === true ? REVENUE_COLOR : addon.countsAsRevenue === false ? NON_REVENUE_COLOR : "#00695C";
-                  const svcIcon = addon.paymentType === "card" ? "💳" : addon.paymentType === "cash" ? "💵" : "";
-                  const tipIcon = addon.tipPaymentType === "card" ? "💳" : addon.tipPaymentType === "cash" ? "💵" : "";
+                  // A gift card used for this add-on was already counted as revenue on the (possibly
+                  // earlier) day it was purchased/loaded — same rule as gcAlloc above.
+                  const aGc = addon.countsAsRevenue === true ? Number(addon.giftCardUsed||0) : 0;
+                  // Gift-card-paid always displays blue (same as a ticket redemption) regardless of
+                  // the countsAsRevenue flag underneath — that flag is only set true internally so
+                  // the payroll/reporting math treats it correctly, but visually it's never "new
+                  // cash/card revenue" (red), so it must never show that color on the card.
+                  const chipColor = aGc > 0 ? NON_REVENUE_COLOR : addon.countsAsRevenue === true ? REVENUE_COLOR : addon.countsAsRevenue === false ? NON_REVENUE_COLOR : "#00695C";
+                  const aGcSvc = Math.min(aGc, aSvc);
+                  const aGcTip = Math.min(Math.max(0, aGc - aGcSvc), aTip);
+                  const aNetSvc = r2(aSvc - aGcSvc);
+                  const aNetTip = r2(aTip - aGcTip);
+                  const aReceivedTotal = r2(aNetSvc + aNetTip);
+                  const svcIcon = aGcSvc >= aSvc && aSvc > 0 ? "🎁" : addon.paymentType === "card" ? "💳" : addon.paymentType === "cash" ? "💵" : "";
+                  const tipIcon = aGcTip >= aTip && aTip > 0 ? "🎁" : addon.tipPaymentType === "card" ? "💳" : addon.tipPaymentType === "cash" ? "💵" : "";
                   const hasCav = addon.hasCav === true && !!addon.cavTherapist;
                   const svcSplit = hasCav ? splitAddonAmount(addon.price, addon.duration, addon.cavMins) : null;
                   const tipSplit = hasCav ? splitAddonAmount(addon.tip, addon.duration, addon.cavMins) : null;
@@ -2474,13 +2511,16 @@ function ApptCard({ appt, onClick, allAppointments }) {
                       {addon.notes && <div style={{ fontSize: 14, color: "#888", fontStyle: "italic" }}>{addon.notes}</div>}
                       {aTotal > 0 && (
                         <>
-                          <div>{aSvc}{svcIcon}</div>
-                          {aTip > 0 && <div>{aTip}{tipIcon}</div>}
-                          <div style={{ fontWeight: 800 }}>{aTotal}</div>
+                          <div>{aNetSvc}{svcIcon}</div>
+                          {aTip > 0 && <div>{aNetTip}{tipIcon}</div>}
+                          <div style={{ fontWeight: 800 }}>{aGc > 0 ? aReceivedTotal : aTotal}</div>
                           {hasCav && (
                             <div style={{ fontSize: 14, fontWeight: 400, color: "#888" }}>
                               {addon.therapist} ${svcSplit.body}{tipSplit.body > 0 ? `+${tipSplit.body}` : ""} / {addon.cavTherapist} ${svcSplit.cav}{tipSplit.cav > 0 ? `+${tipSplit.cav}` : ""}
                             </div>
+                          )}
+                          {aGc > 0 && (
+                            <div style={{ fontSize: 11, fontWeight: 400, color: "#2E7D32" }}>🎁GC used ${aGc}</div>
                           )}
                         </>
                       )}
@@ -2619,6 +2659,15 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
     // previously both were driven by `Number(depositApplied) > 0`, so an empty field
     // mid-edit looked identical to the user having turned the deposit off.
     depositOn: Number(appt.depositApplied || 0) > 0,
+    // Same reasoning per add-on: gcOn tracks ON/OFF separately from the dollar amount.
+    addons: (appt.addons || []).map(a => ({
+      ...a,
+      gcOn: Number(a.giftCardUsed || 0) > 0,
+      // A saved amount that covers the full price+tip was "Full amount" mode; anything less
+      // was a manually-entered partial amount — preserve that distinction on reopening so a
+      // partial gift-card amount doesn't silently get overwritten with the full total on save.
+      gcFull: Number(a.giftCardUsed || 0) >= (Number(a.price || 0) + Number(a.tip || 0)),
+    })),
   });
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
   const [errors, setErrors] = useState([]);
@@ -2692,7 +2741,16 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
     // "Includes $X deposit" badge, etc.) still keys off `depositApplied > 0` alone, so
     // when the toggle is off the amount must actually be zeroed before saving.
     const { depositOn, ...toSave } = form;
-    onSave(depositOn ? toSave : { ...toSave, depositApplied: 0 });
+    const cleanedAddons = (toSave.addons || []).map(a => {
+      const { gcOn, gcFull, ...addonRest } = a;
+      if (!gcOn) return { ...addonRest, giftCardUsed: 0 };
+      // "Full amount" is tracked live off Price/Tip rather than a stored snapshot (see the
+      // Gift Card Used block above) — finalize it here so the saved value is always exactly
+      // right regardless of what order Price/Tip/Gift-Card were filled in during editing.
+      if (gcFull !== false) return { ...addonRest, giftCardUsed: Number(addonRest.price || 0) + Number(addonRest.tip || 0) };
+      return addonRest;
+    });
+    onSave({ ...(depositOn ? toSave : { ...toSave, depositApplied: 0 }), addons: cleanedAddons });
   };
 
   const ErrorBanner = () => errors.length === 0 ? null : (
@@ -2996,13 +3054,16 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                 ticketMenu: "",
                 priceVersion: "",
                 ticketTotal: null,
-                hasCav: name === "Previous unused cav time" ? false : null,
+                hasCav: (name === "Previous unused cav time" || isKnownNonCavAddon(name)) ? false : null,
                 cavTherapist: "",
                 duration: durMatch ? Number(durMatch[1]) : 0,
                 cavMins: 15,
                 cavPriceLookupKey: "",
                 cavPriceVersion: "",
                 notes: "",
+                gcOn: false,
+                gcFull: true,
+                giftCardUsed: 0,
               }]);
             }} style={{ ...inputStyle, fontSize: 12, color: "#888" }}>
               <option value="">+ Add a menu item</option>
@@ -3030,78 +3091,136 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                         style={{ border: "none", background: "none", cursor: "pointer", fontSize: 16, color: "#AAA", marginLeft: 6, flexShrink: 0 }}>✕</button>
                     </div>
 
-                    {/* Revenue vs. ticket-consumption toggle */}
-                    <div style={{ marginBottom: 6 }}>
-                      <div style={{ fontSize: 10, color: addon.countsAsRevenue === null ? "#C62828" : "#888", marginBottom: 3, fontWeight: addon.countsAsRevenue === null ? 700 : 400 }}>
-                        How to treat this{addon.countsAsRevenue === null && " ⚠️ Not selected"}
-                      </div>
-                      <div style={{ display: "flex", gap: 6 }}>
-                        <button onClick={() => upd({ countsAsRevenue: true, ticketCurrent: null })}
-                          style={{ flex: 1, padding: "6px 4px", borderRadius: 8, border: `2px solid ${addon.countsAsRevenue === true ? REVENUE_COLOR : "#DDD"}`, background: addon.countsAsRevenue === true ? "#FFEBEE" : "#fff", cursor: "pointer", fontWeight: 700, fontSize: 11, color: addon.countsAsRevenue === true ? REVENUE_COLOR : "#888" }}>
-                          💰 Pay-as-you-go (new payment)
+                    {/* Gift Card Used — paid from an existing gift card balance is its own
+                        category: that money was already collected as revenue whenever the gift
+                        card was purchased/loaded, so it's neither a new "Pay-as-you-go" payment
+                        nor a ticket redemption. Turning this on skips the classification step
+                        below entirely (and silently marks it as revenue under the hood so the
+                        gift-card exclusion math in payroll/reporting still applies to it).
+                        "Full amount" is tracked live off whatever Price/Tip currently say (below)
+                        rather than a one-time snapshot, so it stays correct even if Price/Tip are
+                        filled in or edited after this is turned on — that mismatch used to leave
+                        a stale gift-card amount that didn't cover the real total, which incorrectly
+                        left the Payment Method buttons showing for a fully-gift-card-paid add-on. */}
+                    <div style={{ background: "#E0F2F1", borderRadius: 8, padding: 8, marginBottom: 6 }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                        <span style={{ fontSize: 11, fontWeight: 700, color: "#00796B" }}>🎁 Gift Card Used</span>
+                        <button onClick={() => {
+                          const turningOn = !addon.gcOn;
+                          upd({
+                            gcOn: turningOn,
+                            gcFull: turningOn ? true : addon.gcFull,
+                            giftCardUsed: turningOn ? 0 : 0,
+                            countsAsRevenue: turningOn ? true : addon.countsAsRevenue,
+                          });
+                        }}
+                          style={{ padding: "3px 10px", borderRadius: 8, border: "none", background: addon.gcOn ? "#00796B" : "#B2DFDB", color: "#fff", fontWeight: 700, cursor: "pointer", fontSize: 11 }}>
+                          {addon.gcOn ? "ON ✓" : "OFF"}
                         </button>
-                        <button onClick={() => upd({ countsAsRevenue: false })}
-                          style={{ flex: 1, padding: "6px 4px", borderRadius: 8, border: `2px solid ${addon.countsAsRevenue === false ? NON_REVENUE_COLOR : "#DDD"}`, background: addon.countsAsRevenue === false ? "#E3F2FD" : "#fff", cursor: "pointer", fontWeight: 700, fontSize: 11, color: addon.countsAsRevenue === false ? NON_REVENUE_COLOR : "#888" }}>
-                          🎫 Ticket Redemption (this ticket or another one)
-                        </button>
                       </div>
+                      {addon.gcOn && (
+                        <div style={{ marginTop: 6 }}>
+                          <div style={{ display: "flex", gap: 6, marginBottom: 6 }}>
+                            <button onClick={() => upd({ gcFull: true, giftCardUsed: 0 })}
+                              style={{ flex: 1, padding: "5px 4px", borderRadius: 8, border: `2px solid ${addon.gcFull !== false ? "#00796B" : "#DDD"}`, background: addon.gcFull !== false ? "#B2DFDB" : "#fff", cursor: "pointer", fontWeight: 700, fontSize: 11, color: addon.gcFull !== false ? "#00796B" : "#888" }}>
+                              💯 Full amount
+                            </button>
+                            <button onClick={() => upd({ gcFull: false, giftCardUsed: svcAmt + tipAmt || "" })}
+                              style={{ flex: 1, padding: "5px 4px", borderRadius: 8, border: `2px solid ${addon.gcFull === false ? "#00796B" : "#DDD"}`, background: addon.gcFull === false ? "#B2DFDB" : "#fff", cursor: "pointer", fontWeight: 700, fontSize: 11, color: addon.gcFull === false ? "#00796B" : "#888" }}>
+                              ✂️ Partial (rest on card/cash)
+                            </button>
+                          </div>
+                          {addon.gcFull === false ? (
+                            <div>
+                              <div style={{ fontSize: 10, color: "#00796B", marginBottom: 3 }}>Amount Used ($)</div>
+                              <input type="number" value={addon.giftCardUsed||""}
+                                onFocus={e => e.target.select()}
+                                onChange={e => upd({ giftCardUsed: e.target.value })}
+                                style={{ ...inputStyle, fontSize: 12, borderColor: "#80CBC4" }} placeholder="e.g. 65" />
+                            </div>
+                          ) : (
+                            <div style={{ fontSize: 11, color: "#00796B" }}>Amount: ${r2(svcAmt + tipAmt)} (auto-tracks Price + Tip below)</div>
+                          )}
+                        </div>
+                      )}
                     </div>
 
-                    {/* Course/version picker for redeeming a session from a SEPARATE ticket (e.g.
-                        a Facial-ticket session redeemed alongside today's main ticket appointment)
-                        — has its own course + total, independent of the main appointment's own
-                        ticket. Not shown for "Previous unused cav time", which always belongs to
-                        the main appointment's own ticket (see the cav-only auto-fill below). */}
-                    {addon.countsAsRevenue === false && addon.serviceName !== "Previous unused cav time" && (
-                      <div style={{ marginBottom: 6, background: "#E3F2FD", borderRadius: 8, padding: 8, border: "1px dashed #90CAF9" }}>
-                        <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>Which ticket/course is this from? (optional — auto-fills price)</div>
-                        <select value={addon.ticketMenu || ""} onChange={e => {
-                          const opt = ADDON_TICKET_MENU_OPTIONS.find(o => o.key === e.target.value);
-                          upd({ ticketMenu: e.target.value, ticketTotal: opt?.total || null, priceVersion: "", ticketCurrent: null });
-                        }} style={{ ...inputStyle, fontSize: 12, marginBottom: 6 }}>
-                          <option value="">— Select course —</option>
-                          {ADDON_TICKET_MENU_OPTIONS.map(o => <option key={o.key} value={o.key}>{o.label}</option>)}
-                        </select>
-                        {addon.ticketMenu && (
+                    {!addon.gcOn && (
+                      <>
+                        {/* Revenue vs. ticket-consumption toggle */}
+                        <div style={{ marginBottom: 6 }}>
+                          <div style={{ fontSize: 10, color: addon.countsAsRevenue === null ? "#C62828" : "#888", marginBottom: 3, fontWeight: addon.countsAsRevenue === null ? 700 : 400 }}>
+                            How to treat this{addon.countsAsRevenue === null && " ⚠️ Not selected"}
+                          </div>
                           <div style={{ display: "flex", gap: 6 }}>
-                            {["new", "old"].map(v => {
-                              const entry = PRICE_TABLE[v]?.[addon.ticketMenu];
-                              if (!entry) return null;
-                              const svc = entry.body.service + (entry.cav ? entry.cav.service : 0);
-                              const tip = entry.body.tip + (entry.cav ? entry.cav.tip : 0);
-                              const [prefix, durStr] = addon.ticketMenu.split("-");
-                              return (
-                                <button key={v} onClick={() => upd({
-                                  priceVersion: v, price: svc, tip, hasCav: !!entry.cav,
-                                  duration: Number(durStr) || 0,
-                                  cavMins: entry.cav ? (prefix === "WL" ? 40 : 15) : addon.cavMins,
+                            <button onClick={() => upd({ countsAsRevenue: true, ticketCurrent: null })}
+                              style={{ flex: 1, padding: "6px 4px", borderRadius: 8, border: `2px solid ${addon.countsAsRevenue === true ? REVENUE_COLOR : "#DDD"}`, background: addon.countsAsRevenue === true ? "#FFEBEE" : "#fff", cursor: "pointer", fontWeight: 700, fontSize: 11, color: addon.countsAsRevenue === true ? REVENUE_COLOR : "#888" }}>
+                              💰 Pay-as-you-go (new payment)
+                            </button>
+                            <button onClick={() => upd({ countsAsRevenue: false })}
+                              style={{ flex: 1, padding: "6px 4px", borderRadius: 8, border: `2px solid ${addon.countsAsRevenue === false ? NON_REVENUE_COLOR : "#DDD"}`, background: addon.countsAsRevenue === false ? "#E3F2FD" : "#fff", cursor: "pointer", fontWeight: 700, fontSize: 11, color: addon.countsAsRevenue === false ? NON_REVENUE_COLOR : "#888" }}>
+                              🎫 Ticket Redemption (this ticket or another one)
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Course/version picker for redeeming a session from a SEPARATE ticket (e.g.
+                            a Facial-ticket session redeemed alongside today's main ticket appointment)
+                            — has its own course + total, independent of the main appointment's own
+                            ticket. Not shown for "Previous unused cav time", which always belongs to
+                            the main appointment's own ticket (see the cav-only auto-fill below). */}
+                        {addon.countsAsRevenue === false && addon.serviceName !== "Previous unused cav time" && (
+                          <div style={{ marginBottom: 6, background: "#E3F2FD", borderRadius: 8, padding: 8, border: "1px dashed #90CAF9" }}>
+                            <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>Which ticket/course is this from? (optional — auto-fills price)</div>
+                            <select value={addon.ticketMenu || ""} onChange={e => {
+                              const opt = ADDON_TICKET_MENU_OPTIONS.find(o => o.key === e.target.value);
+                              upd({ ticketMenu: e.target.value, ticketTotal: opt?.total || null, priceVersion: "", ticketCurrent: null });
+                            }} style={{ ...inputStyle, fontSize: 12, marginBottom: 6 }}>
+                              <option value="">— Select course —</option>
+                              {ADDON_TICKET_MENU_OPTIONS.map(o => <option key={o.key} value={o.key}>{o.label}</option>)}
+                            </select>
+                            {addon.ticketMenu && (
+                              <div style={{ display: "flex", gap: 6 }}>
+                                {["new", "old"].map(v => {
+                                  const entry = PRICE_TABLE[v]?.[addon.ticketMenu];
+                                  if (!entry) return null;
+                                  const svc = entry.body.service + (entry.cav ? entry.cav.service : 0);
+                                  const tip = entry.body.tip + (entry.cav ? entry.cav.tip : 0);
+                                  const [prefix, durStr] = addon.ticketMenu.split("-");
+                                  return (
+                                    <button key={v} onClick={() => upd({
+                                      priceVersion: v, price: svc, tip, hasCav: !!entry.cav,
+                                      duration: Number(durStr) || 0,
+                                      cavMins: entry.cav ? (prefix === "WL" ? 40 : 15) : addon.cavMins,
+                                    })}
+                                      style={{ flex: 1, padding: "6px 4px", borderRadius: 8, border: `2px solid ${addon.priceVersion===v?"#1565C0":"#DDD"}`, background: addon.priceVersion===v?"#BBDEFB":"#fff", cursor: "pointer", fontWeight: 700, fontSize: 11, color: addon.priceVersion===v?"#1565C0":"#888" }}>
+                                      {v === "new" ? "New" : "Old"} pricing (${svc}+${tip})
+                                    </button>
+                                  );
                                 })}
-                                  style={{ flex: 1, padding: "6px 4px", borderRadius: 8, border: `2px solid ${addon.priceVersion===v?"#1565C0":"#DDD"}`, background: addon.priceVersion===v?"#BBDEFB":"#fff", cursor: "pointer", fontWeight: 700, fontSize: 11, color: addon.priceVersion===v?"#1565C0":"#888" }}>
-                                  {v === "new" ? "New" : "Old"} pricing (${svc}+${tip})
-                                </button>
-                              );
-                            })}
+                              </div>
+                            )}
                           </div>
                         )}
-                      </div>
-                    )}
 
-                    {/* Session number — only when this addon is itself a ticket redemption.
-                        Uses the addon's own ticketTotal when a separate ticket/course was picked
-                        above, otherwise falls back to the main appointment's own ticket total
-                        (the "Previous unused cav time" / same-ticket catch-up case). */}
-                    {addon.countsAsRevenue === false && (form.isTicket || addon.ticketTotal) && (
-                      <div style={{ marginBottom: 6 }}>
-                        <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>Which session is this?</div>
-                        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                          {Array.from({ length: addon.ticketTotal || form.ticketTotal || 3 }, (_,i) => i+1).map(n => (
-                            <button key={n} onClick={() => upd({ ticketCurrent: n })}
-                              style={{ padding: "5px 10px", borderRadius: 8, border: `2px solid ${addon.ticketCurrent===n?"#0D4F4F":"#DDD"}`, background: addon.ticketCurrent===n?"#0D4F4F":"#fff", cursor: "pointer", fontWeight: 700, fontSize: 11, color: addon.ticketCurrent===n?"#fff":"#888" }}>
-                              {n}/{addon.ticketTotal || form.ticketTotal || 3}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
+                        {/* Session number — only when this addon is itself a ticket redemption.
+                            Uses the addon's own ticketTotal when a separate ticket/course was picked
+                            above, otherwise falls back to the main appointment's own ticket total
+                            (the "Previous unused cav time" / same-ticket catch-up case). */}
+                        {addon.countsAsRevenue === false && (form.isTicket || addon.ticketTotal) && (
+                          <div style={{ marginBottom: 6 }}>
+                            <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>Which session is this?</div>
+                            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                              {Array.from({ length: addon.ticketTotal || form.ticketTotal || 3 }, (_,i) => i+1).map(n => (
+                                <button key={n} onClick={() => upd({ ticketCurrent: n })}
+                                  style={{ padding: "5px 10px", borderRadius: 8, border: `2px solid ${addon.ticketCurrent===n?"#0D4F4F":"#DDD"}`, background: addon.ticketCurrent===n?"#0D4F4F":"#fff", cursor: "pointer", fontWeight: 700, fontSize: 11, color: addon.ticketCurrent===n?"#fff":"#888" }}>
+                                  {n}/{addon.ticketTotal || form.ticketTotal || 3}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </>
                     )}
 
                     {/* Therapist */}
@@ -3142,11 +3261,13 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                           </div>
                         )}
                       </div>
-                    ) : (
+                    ) : isKnownNonCavAddon(addon.serviceName) ? null : (
                       /* Machine (cav) portion — an add-on can involve a second therapist for just
                          the machine minutes, same as a regular visit, but there's only one lump
                          price/tip entered for the whole add-on, so the split has to be computed
-                         from the duration ratio (see splitAddonAmount) rather than typed in directly. */
+                         from the duration ratio (see splitAddonAmount) rather than typed in directly.
+                         Skipped entirely for a course known to have no machine option in the menu
+                         (see ADDON_CAV_CAPABLE_NAMES) — a plain Facial/Massage never does. */
                       <div style={{ marginBottom: 6 }}>
                         <div style={{ fontSize: 10, color: addon.hasCav === null ? "#C62828" : "#888", marginBottom: 3, fontWeight: addon.hasCav === null ? 700 : 400 }}>
                           Machine (cav) portion?{addon.hasCav === null && " ⚠️ Not selected"}
@@ -3215,21 +3336,34 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                       </div>
                     </div>
 
-                    {/* Payment type — real money only when this is a new (revenue) payment, not a ticket redemption */}
-                    {addon.countsAsRevenue !== false && (
-                      <div style={{ marginBottom: tipAmt > 0 ? 6 : 0 }}>
-                        <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>Payment Method (Treatment)</div>
-                        <PaymentToggle value={addon.paymentType} onChange={v => upd({ paymentType: v })} small />
-                      </div>
-                    )}
-
-                    {/* Tip payment type */}
-                    {tipAmt > 0 && addon.countsAsRevenue !== false && (
-                      <div style={{ marginBottom: 6 }}>
-                        <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>Payment Method (Tip)</div>
-                        <PaymentToggle value={addon.tipPaymentType} onChange={v => upd({ tipPaymentType: v })} small />
-                      </div>
-                    )}
+                    {/* Payment type — real money only when this is a new (revenue) payment, not a
+                        ticket redemption, AND only for whatever balance the gift card doesn't
+                        already cover (e.g. $100 gift card + remaining $50 on a credit card still
+                        needs a cash/card choice for that $50; a fully gift-card-covered amount
+                        doesn't need one at all). */}
+                    {(() => {
+                      const addonGc = addon.gcOn ? (addon.gcFull !== false ? (svcAmt + tipAmt) : Number(addon.giftCardUsed || 0)) : 0;
+                      const addonGcSvc = Math.min(addonGc, svcAmt);
+                      const addonGcTip = Math.min(Math.max(0, addonGc - addonGcSvc), tipAmt);
+                      const svcRemaining = svcAmt > addonGcSvc;
+                      const tipRemaining = tipAmt > addonGcTip;
+                      return (
+                        <>
+                          {addon.countsAsRevenue !== false && svcRemaining && (
+                            <div style={{ marginBottom: (tipAmt > 0 && tipRemaining) ? 6 : 0 }}>
+                              <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>Payment Method (Treatment)</div>
+                              <PaymentToggle value={addon.paymentType} onChange={v => upd({ paymentType: v })} small />
+                            </div>
+                          )}
+                          {tipAmt > 0 && addon.countsAsRevenue !== false && tipRemaining && (
+                            <div style={{ marginBottom: 6 }}>
+                              <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>Payment Method (Tip)</div>
+                              <PaymentToggle value={addon.tipPaymentType} onChange={v => upd({ tipPaymentType: v })} small />
+                            </div>
+                          )}
+                        </>
+                      );
+                    })()}
 
                     {/* Notes — a short memo distinct from the service name (e.g. "Neck add-on")
                         so what the add-on actually covers stays clear on the card/payroll later. */}
@@ -5704,6 +5838,7 @@ function PayrollTab() {
         const isCard = addon.paymentType === "card";
         const isTipCard = addon.tipPaymentType === "card";
         const addonLabel = `${addon.serviceName || addon.name || "Add-on"}${addon.ticketCurrent ? ` ${addon.ticketCurrent}/${addon.ticketTotal || a.ticketTotal || 3}` : ""}${addon.notes ? ` (${addon.notes})` : ""}`;
+        const addonGcNote = Number(addon.giftCardUsed || 0) > 0 ? `　🎁Used $${Number(addon.giftCardUsed)} gift card` : "";
 
         // A machine (cav) portion of the add-on is done by a second therapist — only one lump
         // price/tip is entered for the whole add-on, so it's split by duration ratio (same
@@ -5726,7 +5861,7 @@ function PayrollTab() {
             tip,
             paymentType: a.isGiftCard ? "gc" : (addon.paymentType || "cash"),
             tipPaymentType: a.isGiftCard ? "gc" : (addon.tipPaymentType || "cash"),
-            notes: `➕ ${addonLabel}${noteSuffix}`,
+            notes: `➕ ${addonLabel}${noteSuffix}${addonGcNote}`,
           });
           byTherapist[t].totalService += svc;
           byTherapist[t].totalTip += tip;
