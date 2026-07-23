@@ -1723,7 +1723,7 @@ export default function SpaDailySheet() {
                           const aSvc = hasCav ? (isCavRole ? svcSplit.cav : svcSplit.body) : Number(addon.price||0);
                           const aTip = hasCav ? (isCavRole ? tipSplit.cav : tipSplit.body) : Number(addon.tip||0);
                           const aTotal = r2(aSvc + aTip);
-                          const aColor = addon.countsAsRevenue === true ? REVENUE_COLOR : addon.countsAsRevenue === false ? NON_REVENUE_COLOR : "#005F4A";
+                          const aColor = Number(addon.giftCardUsed||0) > 0 ? NON_REVENUE_COLOR : addon.countsAsRevenue === true ? REVENUE_COLOR : addon.countsAsRevenue === false ? NON_REVENUE_COLOR : "#005F4A";
                           const svcIcon = addon.paymentType === "card" ? "💳" : addon.paymentType === "cash" ? "💵" : "";
                           const tipIcon = addon.tipPaymentType === "card" ? "💳" : addon.tipPaymentType === "cash" ? "💵" : "";
                           return (
@@ -2486,10 +2486,14 @@ function ApptCard({ appt, onClick, allAppointments }) {
                   const aSvc = Number(addon.price||0);
                   const aTip = Number(addon.tip||0);
                   const aTotal = r2(aSvc + aTip);
-                  const chipColor = addon.countsAsRevenue === true ? REVENUE_COLOR : addon.countsAsRevenue === false ? NON_REVENUE_COLOR : "#00695C";
                   // A gift card used for this add-on was already counted as revenue on the (possibly
                   // earlier) day it was purchased/loaded — same rule as gcAlloc above.
                   const aGc = addon.countsAsRevenue === true ? Number(addon.giftCardUsed||0) : 0;
+                  // Gift-card-paid always displays blue (same as a ticket redemption) regardless of
+                  // the countsAsRevenue flag underneath — that flag is only set true internally so
+                  // the payroll/reporting math treats it correctly, but visually it's never "new
+                  // cash/card revenue" (red), so it must never show that color on the card.
+                  const chipColor = aGc > 0 ? NON_REVENUE_COLOR : addon.countsAsRevenue === true ? REVENUE_COLOR : addon.countsAsRevenue === false ? NON_REVENUE_COLOR : "#00695C";
                   const aGcSvc = Math.min(aGc, aSvc);
                   const aGcTip = Math.min(Math.max(0, aGc - aGcSvc), aTip);
                   const aNetSvc = r2(aSvc - aGcSvc);
@@ -2656,7 +2660,14 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
     // mid-edit looked identical to the user having turned the deposit off.
     depositOn: Number(appt.depositApplied || 0) > 0,
     // Same reasoning per add-on: gcOn tracks ON/OFF separately from the dollar amount.
-    addons: (appt.addons || []).map(a => ({ ...a, gcOn: Number(a.giftCardUsed || 0) > 0 })),
+    addons: (appt.addons || []).map(a => ({
+      ...a,
+      gcOn: Number(a.giftCardUsed || 0) > 0,
+      // A saved amount that covers the full price+tip was "Full amount" mode; anything less
+      // was a manually-entered partial amount — preserve that distinction on reopening so a
+      // partial gift-card amount doesn't silently get overwritten with the full total on save.
+      gcFull: Number(a.giftCardUsed || 0) >= (Number(a.price || 0) + Number(a.tip || 0)),
+    })),
   });
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
   const [errors, setErrors] = useState([]);
@@ -2731,8 +2742,13 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
     // when the toggle is off the amount must actually be zeroed before saving.
     const { depositOn, ...toSave } = form;
     const cleanedAddons = (toSave.addons || []).map(a => {
-      const { gcOn, ...addonRest } = a;
-      return gcOn ? addonRest : { ...addonRest, giftCardUsed: 0 };
+      const { gcOn, gcFull, ...addonRest } = a;
+      if (!gcOn) return { ...addonRest, giftCardUsed: 0 };
+      // "Full amount" is tracked live off Price/Tip rather than a stored snapshot (see the
+      // Gift Card Used block above) — finalize it here so the saved value is always exactly
+      // right regardless of what order Price/Tip/Gift-Card were filled in during editing.
+      if (gcFull !== false) return { ...addonRest, giftCardUsed: Number(addonRest.price || 0) + Number(addonRest.tip || 0) };
+      return addonRest;
     });
     onSave({ ...(depositOn ? toSave : { ...toSave, depositApplied: 0 }), addons: cleanedAddons });
   };
@@ -3046,6 +3062,7 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                 cavPriceVersion: "",
                 notes: "",
                 gcOn: false,
+                gcFull: true,
                 giftCardUsed: 0,
               }]);
             }} style={{ ...inputStyle, fontSize: 12, color: "#888" }}>
@@ -3079,7 +3096,12 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                         card was purchased/loaded, so it's neither a new "Pay-as-you-go" payment
                         nor a ticket redemption. Turning this on skips the classification step
                         below entirely (and silently marks it as revenue under the hood so the
-                        gift-card exclusion math in payroll/reporting still applies to it). */}
+                        gift-card exclusion math in payroll/reporting still applies to it).
+                        "Full amount" is tracked live off whatever Price/Tip currently say (below)
+                        rather than a one-time snapshot, so it stays correct even if Price/Tip are
+                        filled in or edited after this is turned on — that mismatch used to leave
+                        a stale gift-card amount that didn't cover the real total, which incorrectly
+                        left the Payment Method buttons showing for a fully-gift-card-paid add-on. */}
                     <div style={{ background: "#E0F2F1", borderRadius: 8, padding: 8, marginBottom: 6 }}>
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                         <span style={{ fontSize: 11, fontWeight: 700, color: "#00796B" }}>🎁 Gift Card Used</span>
@@ -3087,7 +3109,8 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                           const turningOn = !addon.gcOn;
                           upd({
                             gcOn: turningOn,
-                            giftCardUsed: turningOn ? (Number(addon.giftCardUsed) > 0 ? addon.giftCardUsed : (svcAmt + tipAmt || 20)) : 0,
+                            gcFull: turningOn ? true : addon.gcFull,
+                            giftCardUsed: turningOn ? 0 : 0,
                             countsAsRevenue: turningOn ? true : addon.countsAsRevenue,
                           });
                         }}
@@ -3097,11 +3120,27 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                       </div>
                       {addon.gcOn && (
                         <div style={{ marginTop: 6 }}>
-                          <div style={{ fontSize: 10, color: "#00796B", marginBottom: 3 }}>Amount Used ($)</div>
-                          <input type="number" value={addon.giftCardUsed||""}
-                            onFocus={e => e.target.select()}
-                            onChange={e => upd({ giftCardUsed: e.target.value })}
-                            style={{ ...inputStyle, fontSize: 12, borderColor: "#80CBC4" }} placeholder="e.g. 65" />
+                          <div style={{ display: "flex", gap: 6, marginBottom: 6 }}>
+                            <button onClick={() => upd({ gcFull: true, giftCardUsed: 0 })}
+                              style={{ flex: 1, padding: "5px 4px", borderRadius: 8, border: `2px solid ${addon.gcFull !== false ? "#00796B" : "#DDD"}`, background: addon.gcFull !== false ? "#B2DFDB" : "#fff", cursor: "pointer", fontWeight: 700, fontSize: 11, color: addon.gcFull !== false ? "#00796B" : "#888" }}>
+                              💯 Full amount
+                            </button>
+                            <button onClick={() => upd({ gcFull: false, giftCardUsed: svcAmt + tipAmt || "" })}
+                              style={{ flex: 1, padding: "5px 4px", borderRadius: 8, border: `2px solid ${addon.gcFull === false ? "#00796B" : "#DDD"}`, background: addon.gcFull === false ? "#B2DFDB" : "#fff", cursor: "pointer", fontWeight: 700, fontSize: 11, color: addon.gcFull === false ? "#00796B" : "#888" }}>
+                              ✂️ Partial (rest on card/cash)
+                            </button>
+                          </div>
+                          {addon.gcFull === false ? (
+                            <div>
+                              <div style={{ fontSize: 10, color: "#00796B", marginBottom: 3 }}>Amount Used ($)</div>
+                              <input type="number" value={addon.giftCardUsed||""}
+                                onFocus={e => e.target.select()}
+                                onChange={e => upd({ giftCardUsed: e.target.value })}
+                                style={{ ...inputStyle, fontSize: 12, borderColor: "#80CBC4" }} placeholder="e.g. 65" />
+                            </div>
+                          ) : (
+                            <div style={{ fontSize: 11, color: "#00796B" }}>Amount: ${r2(svcAmt + tipAmt)} (auto-tracks Price + Tip below)</div>
+                          )}
                         </div>
                       )}
                     </div>
@@ -3297,41 +3336,13 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                       </div>
                     </div>
 
-                    {/* Gift Card Used — an add-on can be paid from an existing gift card balance
-                        just like the main service; that money was already counted as revenue on
-                        the (possibly earlier) day the gift card was purchased, so it must be
-                        tracked here to avoid double-counting it as new cash/card revenue. */}
-                    {addon.countsAsRevenue !== false && (
-                      <div style={{ background: "#E0F2F1", borderRadius: 8, padding: 8, marginBottom: 6 }}>
-                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                          <span style={{ fontSize: 11, fontWeight: 700, color: "#00796B" }}>🎁 Gift Card Used</span>
-                          <button onClick={() => {
-                            const turningOn = !addon.gcOn;
-                            upd({ gcOn: turningOn, giftCardUsed: turningOn ? (Number(addon.giftCardUsed) > 0 ? addon.giftCardUsed : (svcAmt + tipAmt || 20)) : 0 });
-                          }}
-                            style={{ padding: "3px 10px", borderRadius: 8, border: "none", background: addon.gcOn ? "#00796B" : "#B2DFDB", color: "#fff", fontWeight: 700, cursor: "pointer", fontSize: 11 }}>
-                            {addon.gcOn ? "ON ✓" : "OFF"}
-                          </button>
-                        </div>
-                        {addon.gcOn && (
-                          <div style={{ marginTop: 6 }}>
-                            <div style={{ fontSize: 10, color: "#00796B", marginBottom: 3 }}>Amount Used ($)</div>
-                            <input type="number" value={addon.giftCardUsed||""}
-                              onFocus={e => e.target.select()}
-                              onChange={e => upd({ giftCardUsed: e.target.value })}
-                              style={{ ...inputStyle, fontSize: 12, borderColor: "#80CBC4" }} placeholder="e.g. 65" />
-                          </div>
-                        )}
-                      </div>
-                    )}
-
                     {/* Payment type — real money only when this is a new (revenue) payment, not a
                         ticket redemption, AND only for whatever balance the gift card doesn't
                         already cover (e.g. $100 gift card + remaining $50 on a credit card still
                         needs a cash/card choice for that $50; a fully gift-card-covered amount
                         doesn't need one at all). */}
                     {(() => {
-                      const addonGc = Number(addon.giftCardUsed || 0);
+                      const addonGc = addon.gcOn ? (addon.gcFull !== false ? (svcAmt + tipAmt) : Number(addon.giftCardUsed || 0)) : 0;
                       const addonGcSvc = Math.min(addonGc, svcAmt);
                       const addonGcTip = Math.min(Math.max(0, addonGc - addonGcSvc), tipAmt);
                       const svcRemaining = svcAmt > addonGcSvc;
