@@ -2927,6 +2927,24 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [form.bodyMins, form.cavMins, form.cavTherapist, form.isTicket, isRegularWeightLoss]);
 
+  // Weight Loss equivalent of the effect above: cavTip is a % of the deposit-inclusive true
+  // course price (not a fixed minute ratio), so it has to be recomputed whenever the deposit
+  // amount changes too — otherwise a tip typed in before the deposit was entered (or before it
+  // was corrected) stays frozen at the wrong percentage, computed against a too-small "received
+  // today" figure instead of the true total.
+  useEffect(() => {
+    if (form.isTicket || !form.cavTherapist || !isRegularWeightLoss) return;
+    const tipTotal = Number(form.totalTipInput || 0);
+    if (tipTotal <= 0) return;
+    const svcTotal = Number(form.totalServiceInput || (Number(form.price) + Number(form.cavPrice)) || 0);
+    const truePriceTotal = svcTotal + Number(form.depositApplied || 0);
+    if (truePriceTotal <= 0) return;
+    const pct = tipTotal / truePriceTotal;
+    const cavTip = Math.round(REGULAR_WL_CAV_PRICE * pct * 100) / 100;
+    setForm(f => ({ ...f, cavTip, tip: Math.round((tipTotal - cavTip) * 100) / 100 }));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form.depositApplied, form.totalServiceInput, form.totalTipInput, form.cavTherapist, form.isTicket, isRegularWeightLoss]);
+
   return (
     <Modal onClose={onClose}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
