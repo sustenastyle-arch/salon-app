@@ -962,6 +962,12 @@ export default function SpaDailySheet() {
         const isConsistent = sumMatches && (!isWeightLossService(appt.serviceName) || savedCavMins === 40);
         const bodyMins = isConsistent ? savedBodyMins : 0;
         const cavMins = isConsistent ? savedCavMins : 0;
+        // Weight Loss specifically starts these two fields blank instead of pre-filling the
+        // current total — re-editing a Weight Loss visit is almost always to correct the total
+        // after a deposit was added/changed, and a pre-filled stale total just had to be cleared
+        // out by hand first (and doing so mid-edit produced a bogus negative price — see the
+        // input's own onChange guard below).
+        const blankTotals = isWeightLossService(appt.serviceName);
         setEditingAppt({
           ...appt,
           duration: trueTotal,
@@ -969,8 +975,8 @@ export default function SpaDailySheet() {
           cavTip: restoredCavTip,
           bodyMins,
           cavMins,
-          totalServiceInput: bodyPrice + restoredCavPrice,
-          totalTipInput: Number(appt.tip || 0) + restoredCavTip,
+          totalServiceInput: blankTotals ? "" : bodyPrice + restoredCavPrice,
+          totalTipInput: blankTotals ? "" : Number(appt.tip || 0) + restoredCavTip,
         });
         return;
       }
@@ -3921,6 +3927,16 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                   <input type="number" value={form.totalServiceInput || form.price || ""}
                     onFocus={e => e.target.select()}
                     onChange={e => {
+                      // Clearing the field to blank must not run the cav-split math below — with
+                      // total=0 the Weight Loss branch still forced cavPrice to the fixed rate and
+                      // computed price as a negative remainder, so the field could never actually
+                      // become blank/zero.
+                      if (e.target.value === "") {
+                        set("totalServiceInput", "");
+                        set("price", "");
+                        if (form.cavTherapist) set("cavPrice", "");
+                        return;
+                      }
                       const total = Number(e.target.value);
                       if (form.cavTherapist && isRegularWeightLoss) {
                         set("cavPrice", REGULAR_WL_CAV_PRICE);
@@ -3951,6 +3967,13 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                   <input type="number" value={form.totalTipInput || form.tip || ""}
                     onFocus={e => e.target.select()}
                     onChange={e => {
+                      // Same guard as Treatment Total: don't run the split math on a cleared field.
+                      if (e.target.value === "") {
+                        set("totalTipInput", "");
+                        set("tip", "");
+                        if (form.cavTherapist) set("cavTip", "");
+                        return;
+                      }
                       const total = Number(e.target.value);
                       if (form.cavTherapist && isRegularWeightLoss) {
                         // % is based on the TRUE course price (today's total + any deposit already
