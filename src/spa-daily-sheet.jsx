@@ -3942,7 +3942,7 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
                 <Field label="Treatment Total ($)" error={errors.includes("price")}>
-                  <input type="number" value={form.totalServiceInput || form.price || ""}
+                  <input type="number" value={form.totalServiceInput !== undefined ? form.totalServiceInput : (form.price || "")}
                     onFocus={e => e.target.select()}
                     onChange={e => {
                       // Clearing the field to blank must not run the cav-split math below — with
@@ -3982,7 +3982,7 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                     style={{ ...inputStyle, ...(errors.includes("price") ? { borderColor: "#C62828", borderWidth: 2 } : {}) }} placeholder="e.g. 158" />
                 </Field>
                 <Field label="Tip Total ($)">
-                  <input type="number" value={form.totalTipInput || form.tip || ""}
+                  <input type="number" value={form.totalTipInput !== undefined ? form.totalTipInput : (form.tip || "")}
                     onFocus={e => e.target.select()}
                     onChange={e => {
                       // Same guard as Treatment Total: don't run the split math on a cleared field.
