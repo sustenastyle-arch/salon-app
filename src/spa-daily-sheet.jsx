@@ -1499,6 +1499,30 @@ export default function SpaDailySheet() {
             <div style={{ fontSize: 11, color: "#999", marginTop: 8 }}>
               ※ Cash tips aren't broken out separately on Square's side, so they're excluded from this check (only the cash total is compared).
             </div>
+            {/* Full itemized Square transaction list — lets staff scan every payment one by one
+                the way they already do by hand when tracking down a mismatch (treatment/tip/total
+                per transaction), instead of only seeing amounts buried inside the "unmatched"
+                lists below with no breakdown. */}
+            {(reconcileResult.payments || []).length > 0 && (
+              <div style={{ marginTop: 12, background: "#F7F4EE", borderRadius: 8, padding: 10 }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: "#5D4037", marginBottom: 6 }}>
+                  🧾 All Square Transactions This Day ({reconcileResult.payments.length})
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: 280, overflowY: "auto" }}>
+                  {reconcileResult.payments.map((p, i) => {
+                    const treatment = r2(p.amount - p.tip);
+                    return (
+                      <div key={i} style={{ fontSize: 12, color: "#3E2723", display: "flex", justifyContent: "space-between", gap: 10, borderBottom: "1px solid #EEE8DD", paddingBottom: 3 }}>
+                        <span>{p.tender === "cash" ? "💵" : "💳"} {p.time}{p.label ? ` — ${p.label}` : ""}</span>
+                        <span style={{ whiteSpace: "nowrap", fontWeight: 600 }}>
+                          Treatment {formatCurrency(treatment)} + Tip {formatCurrency(p.tip)} = {formatCurrency(p.amount)}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
             {/* When staff charge the client's real card for the FULL visit total and only track
                 the gift-card portion internally (rather than redeeming it as a separate Square
                 gift-card tender), Square's own total naturally includes that GC-covered amount —
