@@ -1429,38 +1429,6 @@ export default function SpaDailySheet() {
         });
         const unmatchedEvents = moneyEvents.filter((e, i) => !usedEventIdx.has(i));
 
-        // Beyond simple 1:1 matching: a single logical sale sometimes lands as TWO+ separate
-        // Square payments (e.g. a client splitting one purchase across two cards) or, less
-        // often, one Square payment covers two sheet entries rung up together — either way the
-        // 1:1 pass above leaves both sides "unmatched" even though they really do add up.
-        // Brute-force every 2–3 item combination within the same tender (the unmatched lists
-        // are always small, so this stays cheap) and surface any that sum to within a cent of
-        // something on the other side.
-        const combosSummingTo = (items, target, maxSize = 3) => {
-          const results = [];
-          const tryCombo = (start, combo, sum) => {
-            if (combo.length > 1 && Math.abs(r2(sum) - target) < 0.01) results.push([...combo]);
-            if (combo.length >= maxSize) return;
-            for (let i = start; i < items.length; i++) tryCombo(i + 1, [...combo, i], sum + items[i].amount);
-          };
-          tryCombo(0, [], 0);
-          return results;
-        };
-        const splitMatches = [];
-        ["cash", "card"].forEach(tender => {
-          const payPool = unmatchedPayments.filter(p => p.tender === tender);
-          const evPool = unmatchedEvents.filter(e => e.tender === tender);
-          unmatchedEvents.filter(e => e.tender === tender).forEach(ev => {
-            combosSummingTo(payPool, ev.amount).forEach(idxs => {
-              splitMatches.push({ tender, kind: "payments", target: ev, items: idxs.map(i => payPool[i]) });
-            });
-          });
-          unmatchedPayments.filter(p => p.tender === tender).forEach(p => {
-            combosSummingTo(evPool, p.amount).forEach(idxs => {
-              splitMatches.push({ tender, kind: "events", target: p, items: idxs.map(i => evPool[i]) });
-            });
-          });
-        });
         return (
           <div style={{ background: "#fff", margin: "10px 20px", borderRadius: 10, border: "1px solid #DDD", padding: 14 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
@@ -1503,26 +1471,47 @@ export default function SpaDailySheet() {
                 the way they already do by hand when tracking down a mismatch (treatment/tip/total
                 per transaction), instead of only seeing amounts buried inside the "unmatched"
                 lists below with no breakdown. */}
-            {(reconcileResult.payments || []).length > 0 && (
-              <div style={{ marginTop: 12, background: "#F7F4EE", borderRadius: 8, padding: 10 }}>
-                <div style={{ fontSize: 12, fontWeight: 700, color: "#5D4037", marginBottom: 6 }}>
-                  🧾 All Square Transactions This Day ({reconcileResult.payments.length})
+            {(reconcileResult.payments || []).length > 0 && (() => {
+              const totalAmount = r2(reconcileResult.payments.reduce((s, p) => s + p.amount, 0));
+              const totalTip = r2(reconcileResult.payments.reduce((s, p) => s + p.tip, 0));
+              const totalTreatment = r2(totalAmount - totalTip);
+              return (
+                <div style={{ marginTop: 12, background: "#F7F4EE", borderRadius: 8, padding: 10 }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: "#5D4037", marginBottom: 6 }}>
+                    🧾 All Square Transactions This Day ({reconcileResult.payments.length})
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: 280, overflowY: "auto" }}>
+                    {reconcileResult.payments.map((p, i) => {
+                      const treatment = r2(p.amount - p.tip);
+                      // A tip made of more than one component (e.g. a ticket sale's own bundled
+                      // tip plus a separate top-up "Tip" line item rung up after the fact) is
+                      // shown broken out instead of collapsed into one number, so staff can see
+                      // exactly why the tip is what it is.
+                      const tipText = p.tipBreakdown
+                        ? p.tipBreakdown.map(t => `Tip ${formatCurrency(t)}`).join(" + ")
+                        : `Tip ${formatCurrency(p.tip)}`;
+                      return (
+                        <div key={i} style={{ fontSize: 12, color: "#3E2723", display: "flex", justifyContent: "space-between", gap: 10, borderBottom: "1px solid #EEE8DD", paddingBottom: 3 }}>
+                          <span>{p.tender === "cash" ? "💵" : "💳"} {p.time}{p.label ? ` — ${p.label}` : ""}</span>
+                          <span style={{ whiteSpace: "nowrap", fontWeight: 600 }}>
+                            Treatment {formatCurrency(treatment)} + {tipText} = {formatCurrency(p.amount)}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10, marginTop: 8, paddingTop: 8, borderTop: "2px solid #D7CCC8", fontSize: 13, fontWeight: 800, color: "#0D4F4F" }}>
+                    <span>Total — This Day's Square Sales</span>
+                    <span style={{ whiteSpace: "nowrap" }}>
+                      Treatment {formatCurrency(totalTreatment)} + Tip {formatCurrency(totalTip)} = {formatCurrency(totalAmount)}
+                    </span>
+                  </div>
+                  <div style={{ fontSize: 10, color: "#999", marginTop: 4 }}>
+                    ※ This total is Square's actual recorded sales for the day (cash + card, treatment + tip) — the same figure a Square Sales Report for this date would show, so there's no need to pull a separate report to confirm the day's total.
+                  </div>
                 </div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: 280, overflowY: "auto" }}>
-                  {reconcileResult.payments.map((p, i) => {
-                    const treatment = r2(p.amount - p.tip);
-                    return (
-                      <div key={i} style={{ fontSize: 12, color: "#3E2723", display: "flex", justifyContent: "space-between", gap: 10, borderBottom: "1px solid #EEE8DD", paddingBottom: 3 }}>
-                        <span>{p.tender === "cash" ? "💵" : "💳"} {p.time}{p.label ? ` — ${p.label}` : ""}</span>
-                        <span style={{ whiteSpace: "nowrap", fontWeight: 600 }}>
-                          Treatment {formatCurrency(treatment)} + Tip {formatCurrency(p.tip)} = {formatCurrency(p.amount)}
-                        </span>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
+              );
+            })()}
             {/* When staff charge the client's real card for the FULL visit total and only track
                 the gift-card portion internally (rather than redeeming it as a separate Square
                 gift-card tender), Square's own total naturally includes that GC-covered amount —
@@ -1582,31 +1571,6 @@ export default function SpaDailySheet() {
                 )}
                 <div style={{ fontSize: 10, color: "#5C7A99", marginTop: 6 }}>
                   ※ Best-effort match by tender + amount — two entries charging the exact same amount the same way can't always be told apart.
-                </div>
-              </div>
-            )}
-            {/* A single sale sometimes lands as multiple Square payments (e.g. a client
-                splitting one purchase across two cards) — the 1:1 pass above leaves both sides
-                looking unmatched even though 2-3 of them really do add up to the other side. */}
-            {splitMatches.length > 0 && (
-              <div style={{ marginTop: 12, background: "#FCE4EC", borderRadius: 8, padding: 10 }}>
-                <div style={{ fontSize: 12, fontWeight: 700, color: "#AD1457", marginBottom: 6 }}>
-                  💡 Possible split payment — these add up to within a cent of each other
-                </div>
-                {splitMatches.slice(0, 5).map((m, i) => {
-                  const icon = m.tender === "cash" ? "💵" : "💳";
-                  const sum = r2(m.items.reduce((s, it) => s + it.amount, 0));
-                  const targetLabel = m.kind === "payments"
-                    ? `sheet: ${m.target.label}`
-                    : `Square payment at ${m.target.time}${m.target.label ? ` (${m.target.label})` : ""}`;
-                  return (
-                    <div key={i} style={{ fontSize: 12, color: "#AD1457", marginBottom: 3 }}>
-                      {icon} {m.items.map(it => `${formatCurrency(it.amount)}${m.kind === "payments" && it.time ? ` (${it.time}${it.label ? `, ${it.label}` : ""})` : ""}${m.kind === "events" && it.label ? ` (${it.label})` : ""}`).join(" + ")} = {formatCurrency(sum)} ≈ {targetLabel} {formatCurrency(m.target.amount)}
-                    </div>
-                  );
-                })}
-                <div style={{ fontSize: 10, color: "#AD1457", marginTop: 6 }}>
-                  ※ Just a suggestion based on the numbers adding up — double-check against Square before assuming it's the answer.
                 </div>
               </div>
             )}
