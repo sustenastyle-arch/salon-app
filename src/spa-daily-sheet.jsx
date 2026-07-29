@@ -394,6 +394,24 @@ async function apiFetch(path, options = {}) {
   return res.json();
 }
 
+// A day's data is written as one whole blob (see save() below) rather than a targeted per-record
+// update, so two people editing the same day from different computers can silently clobber each
+// other — whoever saves second overwrites the entire day with whatever their own browser still
+// had in memory, erasing anything the first person added in between. This canonicalizes a day's
+// data into a comparable string so save() can detect "someone else changed this since I last
+// loaded/saved it" before blindly overwriting.
+const canonicalDay = (d) => JSON.stringify({
+  appointments: d?.appointments || [],
+  retails: d?.retails || [],
+  deposits: d?.deposits || [],
+  ticketPurchases: d?.ticketPurchases || [],
+  staffPurchases: d?.staffPurchases || [],
+  refunds: d?.refunds || [],
+  forgottenTips: d?.forgottenTips || [],
+  locked: !!d?.locked,
+  workingStaff: d?.workingStaff || [],
+});
+
 const PaymentToggle = ({ value, onChange, small }) => (
   <div style={{ display: "flex", gap: 6 }}>
     {["cash", "card"].map(pt => (
@@ -476,6 +494,12 @@ export default function SpaDailySheet() {
     stateRef.current = { appointments, retails, deposits, ticketPurchases, staffPurchases, refunds, forgottenTips, locked, workingStaff };
   });
 
+  // Snapshot of the day's data as this browser last knew the server to have it — set whenever
+  // the day is (re)loaded and whenever this browser's own save succeeds. save() re-checks the
+  // server against this immediately before writing, so a second person's stale save can be
+  // caught and refused instead of silently erasing what someone else just added.
+  const lastServerDataRef = useRef(null);
+
   useEffect(() => {
     let cancelled = false;
     setReconcileResult(null);
@@ -509,6 +533,7 @@ export default function SpaDailySheet() {
           setLocked(false);
           setWorkingStaff(THERAPISTS);
         }
+        lastServerDataRef.current = canonicalDay(d);
       } catch (e) {
         if (!cancelled) {
           console.error("Day load error:", e);
@@ -578,15 +603,41 @@ export default function SpaDailySheet() {
   }, []);
   useEffect(() => { checkUnlockedPastDays(); }, [checkUnlockedPastDays]);
 
+  // Re-checks the server immediately before writing — since every save overwrites the WHOLE
+  // day as one blob, if someone else's browser saved a change since this one last loaded/saved
+  // the day, writing now would silently erase their change. Returns the fresh server data when
+  // it's safe to proceed, or null (after warning the user AND refreshing this screen to show
+  // what actually changed) when it isn't — the in-progress edit that triggered this check is
+  // lost either way, but at least the screen now shows the truth instead of staying stale, so
+  // the edit can be redone on top of it instead of silently vanishing again on the next save.
+  const checkNoConcurrentChange = async () => {
+    const { data: serverNow } = await apiFetch(`/api/day-data?date=${date}`);
+    if (lastServerDataRef.current !== null && canonicalDay(serverNow) !== lastServerDataRef.current) {
+      setAppointments(serverNow?.appointments || []);
+      setRetails(serverNow?.retails || []);
+      setDeposits(serverNow?.deposits || []);
+      setTicketPurchases(serverNow?.ticketPurchases || []);
+      setStaffPurchases(serverNow?.staffPurchases || []);
+      setRefunds(serverNow?.refunds || []);
+      setForgottenTips(serverNow?.forgottenTips || []);
+      setLocked(!!serverNow?.locked);
+      setWorkingStaff(serverNow?.workingStaff?.length > 0 ? serverNow.workingStaff : THERAPISTS);
+      lastServerDataRef.current = canonicalDay(serverNow);
+      showToast("⚠️ Someone else just updated this day — refreshed to show their change. Please redo your edit and save again.", "error");
+      return null;
+    }
+    return serverNow;
+  };
+
   const save = useCallback(async (appts, rets, deps, tps, sps, refs, fts, ws) => {
     try {
+      if (await checkNoConcurrentChange() === null) return false;
+      const payload = { appointments: appts, retails: rets, deposits: deps, ticketPurchases: tps || [], staffPurchases: sps || [], refunds: refs || [], forgottenTips: fts || [], locked, workingStaff: ws || workingStaff };
       await apiFetch("/api/day-data", {
         method: "POST",
-        body: JSON.stringify({
-          date,
-          data: { appointments: appts, retails: rets, deposits: deps, ticketPurchases: tps || [], staffPurchases: sps || [], refunds: refs || [], forgottenTips: fts || [], locked, workingStaff: ws || workingStaff },
-        }),
+        body: JSON.stringify({ date, data: payload }),
       });
+      lastServerDataRef.current = canonicalDay(payload);
       return true;
     } catch (e) {
       console.error("Save error:", e);
@@ -600,13 +651,13 @@ export default function SpaDailySheet() {
   // screen can't diverge from what the server recorded.
   const setDayLocked = async (newLocked) => {
     try {
+      if (await checkNoConcurrentChange() === null) return false;
+      const payload = { appointments, retails, deposits, ticketPurchases, staffPurchases, refunds, forgottenTips, locked: newLocked, workingStaff };
       await apiFetch("/api/day-data", {
         method: "POST",
-        body: JSON.stringify({
-          date,
-          data: { appointments, retails, deposits, ticketPurchases, staffPurchases, refunds, forgottenTips, locked: newLocked, workingStaff },
-        }),
+        body: JSON.stringify({ date, data: payload }),
       });
+      lastServerDataRef.current = canonicalDay(payload);
       setLocked(newLocked);
       checkUnlockedPastDays();
       return true;
