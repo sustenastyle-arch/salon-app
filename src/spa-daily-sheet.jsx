@@ -1403,6 +1403,11 @@ export default function SpaDailySheet() {
         // entered in Square. A cash tip paid with no "Tip" line item at all still won't show up
         // here (there's nothing in Square to recover it from).
         const rows = [
+          // The day's overall Sales Report total (matches the Excel export's grandTotal) shown
+          // first so it's the one glance-check against Square's actual total for the day — the
+          // 4 breakdown rows below are for narrowing down which side (cash/card/tip) a mismatch
+          // is coming from once this one doesn't match.
+          { label: "Sales Report Total (Cash + Card, tip included)", sheet: r2(sheetCashTotal + sheetCardTotal), square: r2(reconcileResult.cashTotal + reconcileResult.cardTotal) },
           { label: "Cash Total (Treatment + Retail + Tip)", sheet: sheetCashTotal, square: reconcileResult.cashTotal },
           { label: "Card Total (Treatment + Retail + Tip)", sheet: sheetCardTotal, square: reconcileResult.cardTotal },
           { label: "Cash Tip", sheet: sheetCashTip, square: reconcileResult.cashTip },
@@ -1471,14 +1476,15 @@ export default function SpaDailySheet() {
                   </tr>
                 </thead>
                 <tbody>
-                  {rows.map(r => {
+                  {rows.map((r, i) => {
                     const diff = r2(r.sheet - r.square);
                     const mismatch = Math.abs(diff) > 0.01;
+                    const isGrandTotal = i === 0;
                     return (
-                      <tr key={r.label} style={{ borderTop: "1px solid #EEE" }}>
-                        <td style={{ padding: "6px 10px" }}>{r.label}</td>
-                        <td style={{ textAlign: "right", padding: "6px 10px" }}>{formatCurrency(r.sheet)}</td>
-                        <td style={{ textAlign: "right", padding: "6px 10px" }}>{formatCurrency(r.square)}</td>
+                      <tr key={r.label} style={{ borderTop: "1px solid #EEE", background: isGrandTotal ? "#F7F4EE" : "transparent" }}>
+                        <td style={{ padding: "6px 10px", fontWeight: isGrandTotal ? 700 : 400 }}>{r.label}</td>
+                        <td style={{ textAlign: "right", padding: "6px 10px", fontWeight: isGrandTotal ? 700 : 400 }}>{formatCurrency(r.sheet)}</td>
+                        <td style={{ textAlign: "right", padding: "6px 10px", fontWeight: isGrandTotal ? 700 : 400 }}>{formatCurrency(r.square)}</td>
                         <td style={{ textAlign: "right", padding: "6px 10px", fontWeight: 700, color: mismatch ? "#C62828" : "#2E7D32" }}>
                           {mismatch ? `⚠️ ${diff > 0 ? "+" : ""}${formatCurrency(diff)}` : "✓ Match"}
                         </td>
