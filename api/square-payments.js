@@ -58,12 +58,16 @@ export default async function handler(req, res) {
       }
       return orderCache[orderId];
     };
+    // Returns each individual "Tip" line item's amount separately (not pre-summed) — an order
+    // can carry more than one (e.g. a ticket-package sale's own bundled tip plus a separate
+    // top-up "Tip" line rung up after the fact), and collapsing them into one number hides that
+    // breakdown from staff trying to see why a payment's tip is what it is.
     const getOrderTipLineItems = async (orderId) => {
       const order = await getOrder(orderId);
       const lineItems = order?.line_items || [];
       return lineItems
         .filter(li => (li.name || '').trim().toLowerCase() === 'tip')
-        .reduce((s, li) => s + (Number(li.gross_sales_money?.amount || 0)) / 100, 0);
+        .map(li => (Number(li.gross_sales_money?.amount || 0)) / 100);
     };
     const getOrderItemLabel = async (orderId) => {
       const order = await getOrder(orderId);
@@ -116,10 +120,17 @@ export default async function handler(req, res) {
         // sale still counted as real revenue here even though the customer got it all back.
         const refunded = (p.refunded_money?.amount || 0) / 100;
         const netTotal = Math.max(0, total - refunded);
-        let tip = (p.tip_money?.amount || 0) / 100;
-        if (p.order_id) tip += await getOrderTipLineItems(p.order_id);
+        const tipMoney = (p.tip_money?.amount || 0) / 100;
+        const orderTipLineItems = p.order_id ? await getOrderTipLineItems(p.order_id) : [];
+        const tip = tipMoney + orderTipLineItems.reduce((s, t) => s + t, 0);
         // A fully refunded payment kept no money at all, tip included.
         const netTip = netTotal > 0 ? tip : 0;
+        // Individual tip components for display (e.g. tip-prompt amount plus a separate manual
+        // "Tip" line item) — only kept when there's more than one, so the UI can show a
+        // breakdown instead of a single opaque tip number when that's actually useful.
+        const tipBreakdown = netTotal > 0
+          ? [tipMoney, ...orderTipLineItems].filter(t => t > 0).map(t => Math.round(t * 100) / 100)
+          : [];
         const tender = p.source_type === 'CASH' ? 'cash' : 'card';
         if (tender === 'cash') {
           cashTotal += netTotal;
@@ -140,6 +151,7 @@ export default async function handler(req, res) {
           payments.push({
             amount: Math.round(netTotal * 100) / 100,
             tip: Math.round(netTip * 100) / 100,
+            tipBreakdown: tipBreakdown.length > 1 ? tipBreakdown : undefined,
             tender,
             time: formatHawaiiTime(p.created_at),
             label: p.order_id ? await getOrderItemLabel(p.order_id) : '',

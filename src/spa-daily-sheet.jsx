@@ -319,7 +319,9 @@ const RETAIL_TAX_RATE = 0.04712;
 // RetailModal and the inline retail item editor) — applied here too so a retail item with no
 // explicit split (falls back to crediting the card's own therapist) is taxed the same way,
 // instead of crediting the full pre-tax amount only when nobody bothered to fill in a split.
-const afterTaxAmount = (amt) => Math.round(Number(amt || 0) * (1 - RETAIL_TAX_RATE) * 100) / 100;
+// The entered price is tax-inclusive (what the customer actually paid), so the pre-tax base is
+// found by dividing out the tax rate, not subtracting it — amt / 1.04712, not amt * 0.95288.
+const afterTaxAmount = (amt) => Math.round(Number(amt || 0) / (1 + RETAIL_TAX_RATE) * 100) / 100;
 
 // Kept alphabetical by name so staff can find a product quickly in the dropdown.
 const RETAIL_PRODUCTS = [
@@ -371,6 +373,7 @@ const STAFF_PURCHASE_PRODUCTS = [
   { name: "Lipid Recovery Mask - Face (10pcs)", price: 90 },
   { name: "Lipid Recovery Mask - Neck (10pcs)", price: 100 },
   { name: "Luxury Set", price: 100 },
+  { name: "ProCell Staff", price: 100 },
 ];
 
 const formatCurrency = (n) => `$${Number(n || 0).toLocaleString("en-US", { minimumFractionDigits: 0 })}`;
@@ -390,6 +393,24 @@ async function apiFetch(path, options = {}) {
   if (!res.ok) throw new Error(`API error ${res.status}`);
   return res.json();
 }
+
+// A day's data is written as one whole blob (see save() below) rather than a targeted per-record
+// update, so two people editing the same day from different computers can silently clobber each
+// other — whoever saves second overwrites the entire day with whatever their own browser still
+// had in memory, erasing anything the first person added in between. This canonicalizes a day's
+// data into a comparable string so save() can detect "someone else changed this since I last
+// loaded/saved it" before blindly overwriting.
+const canonicalDay = (d) => JSON.stringify({
+  appointments: d?.appointments || [],
+  retails: d?.retails || [],
+  deposits: d?.deposits || [],
+  ticketPurchases: d?.ticketPurchases || [],
+  staffPurchases: d?.staffPurchases || [],
+  refunds: d?.refunds || [],
+  forgottenTips: d?.forgottenTips || [],
+  locked: !!d?.locked,
+  workingStaff: d?.workingStaff || [],
+});
 
 const PaymentToggle = ({ value, onChange, small }) => (
   <div style={{ display: "flex", gap: 6 }}>
@@ -473,6 +494,12 @@ export default function SpaDailySheet() {
     stateRef.current = { appointments, retails, deposits, ticketPurchases, staffPurchases, refunds, forgottenTips, locked, workingStaff };
   });
 
+  // Snapshot of the day's data as this browser last knew the server to have it — set whenever
+  // the day is (re)loaded and whenever this browser's own save succeeds. save() re-checks the
+  // server against this immediately before writing, so a second person's stale save can be
+  // caught and refused instead of silently erasing what someone else just added.
+  const lastServerDataRef = useRef(null);
+
   useEffect(() => {
     let cancelled = false;
     setReconcileResult(null);
@@ -506,6 +533,7 @@ export default function SpaDailySheet() {
           setLocked(false);
           setWorkingStaff(THERAPISTS);
         }
+        lastServerDataRef.current = canonicalDay(d);
       } catch (e) {
         if (!cancelled) {
           console.error("Day load error:", e);
@@ -575,15 +603,41 @@ export default function SpaDailySheet() {
   }, []);
   useEffect(() => { checkUnlockedPastDays(); }, [checkUnlockedPastDays]);
 
+  // Re-checks the server immediately before writing — since every save overwrites the WHOLE
+  // day as one blob, if someone else's browser saved a change since this one last loaded/saved
+  // the day, writing now would silently erase their change. Returns the fresh server data when
+  // it's safe to proceed, or null (after warning the user AND refreshing this screen to show
+  // what actually changed) when it isn't — the in-progress edit that triggered this check is
+  // lost either way, but at least the screen now shows the truth instead of staying stale, so
+  // the edit can be redone on top of it instead of silently vanishing again on the next save.
+  const checkNoConcurrentChange = async () => {
+    const { data: serverNow } = await apiFetch(`/api/day-data?date=${date}`);
+    if (lastServerDataRef.current !== null && canonicalDay(serverNow) !== lastServerDataRef.current) {
+      setAppointments(serverNow?.appointments || []);
+      setRetails(serverNow?.retails || []);
+      setDeposits(serverNow?.deposits || []);
+      setTicketPurchases(serverNow?.ticketPurchases || []);
+      setStaffPurchases(serverNow?.staffPurchases || []);
+      setRefunds(serverNow?.refunds || []);
+      setForgottenTips(serverNow?.forgottenTips || []);
+      setLocked(!!serverNow?.locked);
+      setWorkingStaff(serverNow?.workingStaff?.length > 0 ? serverNow.workingStaff : THERAPISTS);
+      lastServerDataRef.current = canonicalDay(serverNow);
+      showToast("⚠️ Someone else just updated this day — refreshed to show their change. Please redo your edit and save again.", "error");
+      return null;
+    }
+    return serverNow;
+  };
+
   const save = useCallback(async (appts, rets, deps, tps, sps, refs, fts, ws) => {
     try {
+      if (await checkNoConcurrentChange() === null) return false;
+      const payload = { appointments: appts, retails: rets, deposits: deps, ticketPurchases: tps || [], staffPurchases: sps || [], refunds: refs || [], forgottenTips: fts || [], locked, workingStaff: ws || workingStaff };
       await apiFetch("/api/day-data", {
         method: "POST",
-        body: JSON.stringify({
-          date,
-          data: { appointments: appts, retails: rets, deposits: deps, ticketPurchases: tps || [], staffPurchases: sps || [], refunds: refs || [], forgottenTips: fts || [], locked, workingStaff: ws || workingStaff },
-        }),
+        body: JSON.stringify({ date, data: payload }),
       });
+      lastServerDataRef.current = canonicalDay(payload);
       return true;
     } catch (e) {
       console.error("Save error:", e);
@@ -597,13 +651,13 @@ export default function SpaDailySheet() {
   // screen can't diverge from what the server recorded.
   const setDayLocked = async (newLocked) => {
     try {
+      if (await checkNoConcurrentChange() === null) return false;
+      const payload = { appointments, retails, deposits, ticketPurchases, staffPurchases, refunds, forgottenTips, locked: newLocked, workingStaff };
       await apiFetch("/api/day-data", {
         method: "POST",
-        body: JSON.stringify({
-          date,
-          data: { appointments, retails, deposits, ticketPurchases, staffPurchases, refunds, forgottenTips, locked: newLocked, workingStaff },
-        }),
+        body: JSON.stringify({ date, data: payload }),
       });
+      lastServerDataRef.current = canonicalDay(payload);
       setLocked(newLocked);
       checkUnlockedPastDays();
       return true;
@@ -960,6 +1014,12 @@ export default function SpaDailySheet() {
         const isConsistent = sumMatches && (!isWeightLossService(appt.serviceName) || savedCavMins === 40);
         const bodyMins = isConsistent ? savedBodyMins : 0;
         const cavMins = isConsistent ? savedCavMins : 0;
+        // Weight Loss specifically starts these two fields blank instead of pre-filling the
+        // current total — re-editing a Weight Loss visit is almost always to correct the total
+        // after a deposit was added/changed, and a pre-filled stale total just had to be cleared
+        // out by hand first (and doing so mid-edit produced a bogus negative price — see the
+        // input's own onChange guard below).
+        const blankTotals = isWeightLossService(appt.serviceName);
         setEditingAppt({
           ...appt,
           duration: trueTotal,
@@ -967,8 +1027,8 @@ export default function SpaDailySheet() {
           cavTip: restoredCavTip,
           bodyMins,
           cavMins,
-          totalServiceInput: bodyPrice + restoredCavPrice,
-          totalTipInput: Number(appt.tip || 0) + restoredCavTip,
+          totalServiceInput: blankTotals ? "" : bodyPrice + restoredCavPrice,
+          totalTipInput: blankTotals ? "" : Number(appt.tip || 0) + restoredCavTip,
         });
         return;
       }
@@ -1426,38 +1486,6 @@ export default function SpaDailySheet() {
         });
         const unmatchedEvents = moneyEvents.filter((e, i) => !usedEventIdx.has(i));
 
-        // Beyond simple 1:1 matching: a single logical sale sometimes lands as TWO+ separate
-        // Square payments (e.g. a client splitting one purchase across two cards) or, less
-        // often, one Square payment covers two sheet entries rung up together — either way the
-        // 1:1 pass above leaves both sides "unmatched" even though they really do add up.
-        // Brute-force every 2–3 item combination within the same tender (the unmatched lists
-        // are always small, so this stays cheap) and surface any that sum to within a cent of
-        // something on the other side.
-        const combosSummingTo = (items, target, maxSize = 3) => {
-          const results = [];
-          const tryCombo = (start, combo, sum) => {
-            if (combo.length > 1 && Math.abs(r2(sum) - target) < 0.01) results.push([...combo]);
-            if (combo.length >= maxSize) return;
-            for (let i = start; i < items.length; i++) tryCombo(i + 1, [...combo, i], sum + items[i].amount);
-          };
-          tryCombo(0, [], 0);
-          return results;
-        };
-        const splitMatches = [];
-        ["cash", "card"].forEach(tender => {
-          const payPool = unmatchedPayments.filter(p => p.tender === tender);
-          const evPool = unmatchedEvents.filter(e => e.tender === tender);
-          unmatchedEvents.filter(e => e.tender === tender).forEach(ev => {
-            combosSummingTo(payPool, ev.amount).forEach(idxs => {
-              splitMatches.push({ tender, kind: "payments", target: ev, items: idxs.map(i => payPool[i]) });
-            });
-          });
-          unmatchedPayments.filter(p => p.tender === tender).forEach(p => {
-            combosSummingTo(evPool, p.amount).forEach(idxs => {
-              splitMatches.push({ tender, kind: "events", target: p, items: idxs.map(i => evPool[i]) });
-            });
-          });
-        });
         return (
           <div style={{ background: "#fff", margin: "10px 20px", borderRadius: 10, border: "1px solid #DDD", padding: 14 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
@@ -1497,6 +1525,51 @@ export default function SpaDailySheet() {
             <div style={{ fontSize: 11, color: "#999", marginTop: 8 }}>
               ※ Cash tips aren't broken out separately on Square's side, so they're excluded from this check (only the cash total is compared).
             </div>
+            {/* Full itemized Square transaction list — lets staff scan every payment one by one
+                the way they already do by hand when tracking down a mismatch (treatment/tip/total
+                per transaction), instead of only seeing amounts buried inside the "unmatched"
+                lists below with no breakdown. */}
+            {(reconcileResult.payments || []).length > 0 && (() => {
+              const totalAmount = r2(reconcileResult.payments.reduce((s, p) => s + p.amount, 0));
+              const totalTip = r2(reconcileResult.payments.reduce((s, p) => s + p.tip, 0));
+              const totalTreatment = r2(totalAmount - totalTip);
+              return (
+                <div style={{ marginTop: 12, background: "#F7F4EE", borderRadius: 8, padding: 10 }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: "#5D4037", marginBottom: 6 }}>
+                    🧾 All Square Transactions This Day ({reconcileResult.payments.length})
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: 280, overflowY: "auto" }}>
+                    {reconcileResult.payments.map((p, i) => {
+                      const treatment = r2(p.amount - p.tip);
+                      // A tip made of more than one component (e.g. a ticket sale's own bundled
+                      // tip plus a separate top-up "Tip" line item rung up after the fact) is
+                      // shown broken out instead of collapsed into one number, so staff can see
+                      // exactly why the tip is what it is.
+                      const tipText = p.tipBreakdown
+                        ? p.tipBreakdown.map(t => `Tip ${formatCurrency(t)}`).join(" + ")
+                        : `Tip ${formatCurrency(p.tip)}`;
+                      return (
+                        <div key={i} style={{ fontSize: 12, color: "#3E2723", display: "flex", justifyContent: "space-between", gap: 10, borderBottom: "1px solid #EEE8DD", paddingBottom: 3 }}>
+                          <span>{p.tender === "cash" ? "💵" : "💳"} {p.time}{p.label ? ` — ${p.label}` : ""}</span>
+                          <span style={{ whiteSpace: "nowrap", fontWeight: 600 }}>
+                            Treatment {formatCurrency(treatment)} + {tipText} = {formatCurrency(p.amount)}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10, marginTop: 8, paddingTop: 8, borderTop: "2px solid #D7CCC8", fontSize: 13, fontWeight: 800, color: "#0D4F4F" }}>
+                    <span>Total — This Day's Square Sales</span>
+                    <span style={{ whiteSpace: "nowrap" }}>
+                      Treatment {formatCurrency(totalTreatment)} + Tip {formatCurrency(totalTip)} = {formatCurrency(totalAmount)}
+                    </span>
+                  </div>
+                  <div style={{ fontSize: 10, color: "#999", marginTop: 4 }}>
+                    ※ This total is Square's actual recorded sales for the day (cash + card, treatment + tip) — the same figure a Square Sales Report for this date would show, so there's no need to pull a separate report to confirm the day's total.
+                  </div>
+                </div>
+              );
+            })()}
             {/* When staff charge the client's real card for the FULL visit total and only track
                 the gift-card portion internally (rather than redeeming it as a separate Square
                 gift-card tender), Square's own total naturally includes that GC-covered amount —
@@ -1556,31 +1629,6 @@ export default function SpaDailySheet() {
                 )}
                 <div style={{ fontSize: 10, color: "#5C7A99", marginTop: 6 }}>
                   ※ Best-effort match by tender + amount — two entries charging the exact same amount the same way can't always be told apart.
-                </div>
-              </div>
-            )}
-            {/* A single sale sometimes lands as multiple Square payments (e.g. a client
-                splitting one purchase across two cards) — the 1:1 pass above leaves both sides
-                looking unmatched even though 2-3 of them really do add up to the other side. */}
-            {splitMatches.length > 0 && (
-              <div style={{ marginTop: 12, background: "#FCE4EC", borderRadius: 8, padding: 10 }}>
-                <div style={{ fontSize: 12, fontWeight: 700, color: "#AD1457", marginBottom: 6 }}>
-                  💡 Possible split payment — these add up to within a cent of each other
-                </div>
-                {splitMatches.slice(0, 5).map((m, i) => {
-                  const icon = m.tender === "cash" ? "💵" : "💳";
-                  const sum = r2(m.items.reduce((s, it) => s + it.amount, 0));
-                  const targetLabel = m.kind === "payments"
-                    ? `sheet: ${m.target.label}`
-                    : `Square payment at ${m.target.time}${m.target.label ? ` (${m.target.label})` : ""}`;
-                  return (
-                    <div key={i} style={{ fontSize: 12, color: "#AD1457", marginBottom: 3 }}>
-                      {icon} {m.items.map(it => `${formatCurrency(it.amount)}${m.kind === "payments" && it.time ? ` (${it.time}${it.label ? `, ${it.label}` : ""})` : ""}${m.kind === "events" && it.label ? ` (${it.label})` : ""}`).join(" + ")} = {formatCurrency(sum)} ≈ {targetLabel} {formatCurrency(m.target.amount)}
-                    </div>
-                  );
-                })}
-                <div style={{ fontSize: 10, color: "#AD1457", marginTop: 6 }}>
-                  ※ Just a suggestion based on the numbers adding up — double-check against Square before assuming it's the answer.
                 </div>
               </div>
             )}
@@ -2925,6 +2973,24 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [form.bodyMins, form.cavMins, form.cavTherapist, form.isTicket, isRegularWeightLoss]);
 
+  // Weight Loss equivalent of the effect above: cavTip is a % of the deposit-inclusive true
+  // course price (not a fixed minute ratio), so it has to be recomputed whenever the deposit
+  // amount changes too — otherwise a tip typed in before the deposit was entered (or before it
+  // was corrected) stays frozen at the wrong percentage, computed against a too-small "received
+  // today" figure instead of the true total.
+  useEffect(() => {
+    if (form.isTicket || !form.cavTherapist || !isRegularWeightLoss) return;
+    const tipTotal = Number(form.totalTipInput || 0);
+    if (tipTotal <= 0) return;
+    const svcTotal = Number(form.totalServiceInput || (Number(form.price) + Number(form.cavPrice)) || 0);
+    const truePriceTotal = svcTotal + Number(form.depositApplied || 0);
+    if (truePriceTotal <= 0) return;
+    const pct = tipTotal / truePriceTotal;
+    const cavTip = Math.round(REGULAR_WL_CAV_PRICE * pct * 100) / 100;
+    setForm(f => ({ ...f, cavTip, tip: Math.round((tipTotal - cavTip) * 100) / 100 }));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form.depositApplied, form.totalServiceInput, form.totalTipInput, form.cavTherapist, form.isTicket, isRegularWeightLoss]);
+
   return (
     <Modal onClose={onClose}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
@@ -3413,7 +3479,7 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
           <button onClick={() => { setForm(f => ({...f, isTicket: true, isSameDayTicket: true, useToday: true, ticketCurrent: 1, isGiftCard: false, isPromo: false})); autoDetectAndApplyTicket(); }} style={{ flex: 1, padding: "8px 4px", borderRadius: 8, border: `2px solid ${form.isSameDayTicket ? "#2E7D32" : "#DDD"}`, background: form.isSameDayTicket ? "#E8F5E9" : "#fff", cursor: "pointer", fontWeight: 700, color: form.isSameDayTicket ? "#2E7D32" : "#888", fontSize: 11 }}>
             🟢 Same-Day Purchase
           </button>
-          <button onClick={() => setForm(f => ({...f, isPromo: true, isGiftCard: false, isTicket: false, isSameDayTicket: false}))} style={{ flex: 1, padding: "8px 4px", borderRadius: 8, border: `2px solid ${form.isPromo ? "#1565C0" : "#DDD"}`, background: form.isPromo ? "#E3F2FD" : "#fff", cursor: "pointer", fontWeight: 700, color: form.isPromo ? "#1565C0" : "#888", fontSize: 11 }}>
+          <button onClick={() => setForm(f => ({...f, isPromo: true, isGiftCard: false, isTicket: false, isSameDayTicket: false, extraPrice: "", extraTip: "", extraNotes: "", extraPricePaymentType: "", extraTipPaymentType: ""}))} style={{ flex: 1, padding: "8px 4px", borderRadius: 8, border: `2px solid ${form.isPromo ? "#1565C0" : "#DDD"}`, background: form.isPromo ? "#E3F2FD" : "#fff", cursor: "pointer", fontWeight: 700, color: form.isPromo ? "#1565C0" : "#888", fontSize: 11 }}>
             📸 Complimentary PR
           </button>
         </div>
@@ -3643,7 +3709,7 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                 today's revenue — an add-on service actually paid for today (e.g. a same-therapist
                 "additional massage") has to go here instead, or it silently never shows up as
                 real money received. */}
-            {(!form.isSameDayTicket || form.useToday !== false) && (
+            {(!form.isSameDayTicket || form.useToday !== false) && !form.isPromo && (
               <div style={{ marginTop: 10, background: "#FFF8E1", borderRadius: 8, padding: 10, border: "1px solid #FFE082" }}>
                 <div style={{ fontWeight: 700, fontSize: 12, color: "#F57F17", marginBottom: 8 }}>💝 Extra (optional) — additional payment received today</div>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
@@ -3922,9 +3988,19 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
                 <Field label="Treatment Total ($)" error={errors.includes("price")}>
-                  <input type="number" value={form.totalServiceInput || form.price || ""}
+                  <input type="number" value={form.totalServiceInput !== undefined ? form.totalServiceInput : (form.price || "")}
                     onFocus={e => e.target.select()}
                     onChange={e => {
+                      // Clearing the field to blank must not run the cav-split math below — with
+                      // total=0 the Weight Loss branch still forced cavPrice to the fixed rate and
+                      // computed price as a negative remainder, so the field could never actually
+                      // become blank/zero.
+                      if (e.target.value === "") {
+                        set("totalServiceInput", "");
+                        set("price", "");
+                        if (form.cavTherapist) set("cavPrice", "");
+                        return;
+                      }
                       const total = Number(e.target.value);
                       if (form.cavTherapist && isRegularWeightLoss) {
                         set("cavPrice", REGULAR_WL_CAV_PRICE);
@@ -3952,9 +4028,16 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                     style={{ ...inputStyle, ...(errors.includes("price") ? { borderColor: "#C62828", borderWidth: 2 } : {}) }} placeholder="e.g. 158" />
                 </Field>
                 <Field label="Tip Total ($)">
-                  <input type="number" value={form.totalTipInput || form.tip || ""}
+                  <input type="number" value={form.totalTipInput !== undefined ? form.totalTipInput : (form.tip || "")}
                     onFocus={e => e.target.select()}
                     onChange={e => {
+                      // Same guard as Treatment Total: don't run the split math on a cleared field.
+                      if (e.target.value === "") {
+                        set("totalTipInput", "");
+                        set("tip", "");
+                        if (form.cavTherapist) set("cavTip", "");
+                        return;
+                      }
                       const total = Number(e.target.value);
                       if (form.cavTherapist && isRegularWeightLoss) {
                         // % is based on the TRUE course price (today's total + any deposit already
@@ -4530,7 +4613,7 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                           // Seller amounts represent each person's share of the *tax-excluded* commission
                           // base (same convention as the standalone Retail modal) — staff still work out
                           // their own 10%/4% commission from that base and type the dollar figure in.
-                          const afterTaxTotal = Math.round(Number(item.amount || 0) * (1 - RETAIL_TAX_RATE) * 100) / 100;
+                          const afterTaxTotal = afterTaxAmount(item.amount);
                           // Defaults to just the body therapist getting the full (tax-excluded) amount —
                           // most retail sales are one person. Add rows (up to 3) for the rare cases where
                           // the machine therapist, or a third therapist from a multi-service visit, shares it.
@@ -4638,7 +4721,7 @@ function RetailModal({ retail, onSave, onClose }) {
   const sellersTotal = Math.round(sellers.reduce((s, sel) => s + Number(sel.amount || 0), 0) * 100) / 100;
   // Seller amounts represent each person's share of the *tax-adjusted* commission-eligible base
   // (10% of this goes to staff as commission, 4% for Maki), not the raw sale price.
-  const afterTaxTotal = Math.round(Number(form.price || 0) * (1 - RETAIL_TAX_RATE) * 100) / 100;
+  const afterTaxTotal = afterTaxAmount(form.price);
   const updSeller = (idx, patch) => set("sellers", sellers.map((sel, i) => i === idx ? { ...sel, ...patch } : sel));
   return (
     <Modal onClose={onClose}>
@@ -5423,9 +5506,19 @@ async function exportSalesReportXlsx(monthStr) {
   // "🎟️チケット新規購入" add-on during a different-type visit count as one ticket sale. When two
   // therapists worked the visit (body + cav), the amount is split 50/50 between them for attribution.
   const ticketSaleEvents = [];
-  // Local-customer visits (RL+NL — ticket buyers are mostly local) per staff member, and whether
-  // that same visit converted into a ticket sale — lets the owner see "saw N locals, only sold M".
+  // New-local-customer (NL only) visits per staff member, and whether that same visit converted
+  // into a ticket sale — lets the owner see each staff member's new-customer contract rate.
+  // Repeat locals are excluded: they're not a "conversion" candidate the same way a first-time
+  // local visitor is, so mixing them in would understate the rate.
   const localVisitEvents = [];
+  // New-customer (NL+NT) regular/pay-as-you-go visit revenue by referral source — separate from
+  // ticketSaleEvents above, which only covers ticket/package purchases. Shows how much money a
+  // referral source brings in from customers who *don't* buy a package too.
+  const regularVisitEvents = [];
+  // Ticket/package redemption (消化) visits — never counted as today's revenue anywhere else in
+  // this report (already paid for when the package was purchased), but tracked here as a monthly
+  // count + reference value for utilization/operational insight.
+  const ticketRedemptionEvents = [];
   for (let d = 1; d <= lastDay; d++) {
     const dateStr = `${monthStr}-${String(d).padStart(2,"0")}`;
     const data = days[dateStr];
@@ -5440,9 +5533,26 @@ async function exportSalesReportXlsx(monthStr) {
         if ((a.purchaseTags || []).includes("newTicket") && Number(a.newTicketAmount || 0) > 0) {
           ticketSaleEvents.push({ amount: Number(a.newTicketAmount), customerType: a.customerType, referralSource: a.referralSource, therapists });
         }
-        if (a.customerType === "RL" || a.customerType === "NL") {
+        if (a.customerType === "NL") {
           localVisitEvents.push({ therapists: therapists.map(th => th.name), hasTicketSale });
         }
+        // Regular pay-as-you-go visit (not a ticket redemption, same-day package purchase, gift
+        // card redemption, or comped PR visit) — net of any gift-card-covered portion, same rule
+        // used for revenueAppts elsewhere in this report.
+        if (!a.isTicket && !a.isGiftCard && !a.isPromo && (a.customerType === "NL" || a.customerType === "NT")) {
+          const gcSvc = Math.min(Number(a.giftCardUsed || 0), Number(a.price || 0));
+          const netPrice = Number(a.price || 0) - gcSvc;
+          if (netPrice > 0) regularVisitEvents.push({ amount: netPrice, referralSource: a.referralSource });
+        }
+        // Main-appointment ticket redemption — reference/face value only.
+        if (a.isTicket && !a.isSameDayTicket) {
+          ticketRedemptionEvents.push({ amount: Number(a.price || 0) });
+        }
+        // Add-on ticket redemptions (🎫 Ticket Redemption toggle) — a session drawn from a
+        // package just like the main-appointment case above, just recorded as an add-on.
+        (a.addons || []).filter(ad => ad.countsAsRevenue === false).forEach(ad => {
+          ticketRedemptionEvents.push({ amount: Number(ad.price || 0) });
+        });
       });
 
       dailyData.push({ date: d, ...computeDayTotals(data) });
@@ -5546,13 +5656,18 @@ async function exportSalesReportXlsx(monthStr) {
     ["New customers (NL+NT)", ...countAmt(newSales)],
     ["Repeat customers (RL+RT)", ...countAmt(repeatSales)],
     [],
-    ["New customers by referral source", "Count", "Amount"],
+    ["New customers by referral source — ticket/package purchases", "Count", "Amount"],
   ];
   REFERRAL_SOURCES.forEach(src => {
     tsData.push([REFERRAL_LABELS[src] || src, ...countAmt(newSales.filter(r => r.referralSource === src))]);
   });
   tsData.push([]);
-  tsData.push(["By staff (ranked by New customers $ — who's converting new clients into ticket sales)", "Count", "Amount", "New customers $", "Repeat customers $", "Local visits (RL+NL)", "→ Converted to ticket", "Conversion %"]);
+  tsData.push(["New customers by referral source — regular (non-ticket) visit revenue", "Count", "Amount"]);
+  REFERRAL_SOURCES.forEach(src => {
+    tsData.push([REFERRAL_LABELS[src] || src, ...countAmt(regularVisitEvents.filter(r => r.referralSource === src))]);
+  });
+  tsData.push([]);
+  tsData.push(["By staff (ranked by New customers $ — who's converting new clients into ticket sales)", "Count", "Amount", "New customers $", "Repeat customers $", "New local visits (NL)", "→ Converted to ticket", "Conversion %"]);
   // A visit worked by two therapists counts as 1 "件" for each, but the $ amount is split by share.
   const shareAmtFor = (t, list) => Math.round(list.reduce((s, r) => s + r.amount * r.therapists.find(th => th.name === t).share, 0) * 100) / 100;
   const byStaffRows = THERAPISTS.map(t => {
@@ -5568,6 +5683,20 @@ async function exportSalesReportXlsx(monthStr) {
   const tsWs = XLSX.utils.aoa_to_sheet(tsData);
   tsWs["!cols"] = [{wch:26},{wch:12},{wch:14},{wch:14},{wch:16},{wch:14},{wch:16},{wch:12}];
   XLSX.utils.book_append_sheet(wb, tsWs, "Ticket Sales");
+
+  // Ticket/package redemption (消化) tally — count + reference value, informational only. This
+  // money was already counted as revenue on the (earlier) day the package itself was purchased,
+  // so it's never added to any $ total above; it's tracked here purely as a monthly utilization
+  // figure (how much service was delivered against existing packages this month).
+  const trData = [
+    [`Ticket Redemptions — ${monthName} ${y}`],
+    [],
+    ["Count", "Reference Value ($ — not counted as revenue)"],
+    [ticketRedemptionEvents.length, Math.round(ticketRedemptionEvents.reduce((s, r) => s + r.amount, 0) * 100) / 100],
+  ];
+  const trWs = XLSX.utils.aoa_to_sheet(trData);
+  trWs["!cols"] = [{wch:10},{wch:38}];
+  XLSX.utils.book_append_sheet(wb, trWs, "Ticket Redemptions");
 
   XLSX.writeFile(wb, `SalesReport_${monthStr}.xlsx`);
 }
