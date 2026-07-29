@@ -373,6 +373,7 @@ const STAFF_PURCHASE_PRODUCTS = [
   { name: "Lipid Recovery Mask - Face (10pcs)", price: 90 },
   { name: "Lipid Recovery Mask - Neck (10pcs)", price: 100 },
   { name: "Luxury Set", price: 100 },
+  { name: "ProCell Staff", price: 100 },
 ];
 
 const formatCurrency = (n) => `$${Number(n || 0).toLocaleString("en-US", { minimumFractionDigits: 0 })}`;
