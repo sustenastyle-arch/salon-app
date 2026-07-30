@@ -410,6 +410,7 @@ const canonicalDay = (d) => JSON.stringify({
   forgottenTips: d?.forgottenTips || [],
   locked: !!d?.locked,
   workingStaff: d?.workingStaff || [],
+  dismissedApptIds: d?.dismissedApptIds || [],
 });
 
 const PaymentToggle = ({ value, onChange, small }) => (
@@ -443,6 +444,12 @@ export default function SpaDailySheet() {
   const [staffPurchases, setStaffPurchases] = useState([]);
   const [refunds, setRefunds] = useState([]);
   const [forgottenTips, setForgottenTips] = useState([]);
+  // Appointment ids deleted from this day's sheet that came from a Square booking — kept so a
+  // later "🔄 Fetch Square" (from anyone, on any device) doesn't silently bring a deleted
+  // no-show/cancellation back just because staff cancelled it here without also cancelling the
+  // booking in Square itself. Deleting the same real-world booking a second time just re-adds
+  // its id here, so this never needs to be cleared.
+  const [dismissedApptIds, setDismissedApptIds] = useState([]);
   const [locked, setLocked] = useState(false);
   const [editingStaffPurchase, setEditingStaffPurchase] = useState(null);
   const [editingAppt, setEditingAppt] = useState(null);
@@ -491,7 +498,7 @@ export default function SpaDailySheet() {
   // 常に最新の状態を読めるようrefに同期しておき、非同期処理の続き(awaitの後)はこちらを使う。
   const stateRef = useRef({});
   useEffect(() => {
-    stateRef.current = { appointments, retails, deposits, ticketPurchases, staffPurchases, refunds, forgottenTips, locked, workingStaff };
+    stateRef.current = { appointments, retails, deposits, ticketPurchases, staffPurchases, refunds, forgottenTips, locked, workingStaff, dismissedApptIds };
   });
 
   // Snapshot of the day's data as this browser last knew the server to have it — set whenever
@@ -516,6 +523,7 @@ export default function SpaDailySheet() {
           setStaffPurchases(d.staffPurchases || []);
           setRefunds(d.refunds || []);
           setForgottenTips(d.forgottenTips || []);
+          setDismissedApptIds(d.dismissedApptIds || []);
           setLocked(!!d.locked);
           // Working-staff selection is per-day (who actually came in that day) — without this,
           // leaving the day and coming back always reset it to "everyone", which pushed staff
@@ -530,6 +538,7 @@ export default function SpaDailySheet() {
           }
         } else {
           setAppointments([]); setRetails([]); setDeposits([]); setTicketPurchases([]); setStaffPurchases([]); setRefunds([]); setForgottenTips([]);
+          setDismissedApptIds([]);
           setLocked(false);
           setWorkingStaff(THERAPISTS);
         }
@@ -620,6 +629,7 @@ export default function SpaDailySheet() {
       setStaffPurchases(serverNow?.staffPurchases || []);
       setRefunds(serverNow?.refunds || []);
       setForgottenTips(serverNow?.forgottenTips || []);
+      setDismissedApptIds(serverNow?.dismissedApptIds || []);
       setLocked(!!serverNow?.locked);
       setWorkingStaff(serverNow?.workingStaff?.length > 0 ? serverNow.workingStaff : THERAPISTS);
       lastServerDataRef.current = canonicalDay(serverNow);
@@ -629,10 +639,10 @@ export default function SpaDailySheet() {
     return serverNow;
   };
 
-  const save = useCallback(async (appts, rets, deps, tps, sps, refs, fts, ws) => {
+  const save = useCallback(async (appts, rets, deps, tps, sps, refs, fts, ws, dismissed) => {
     try {
       if (await checkNoConcurrentChange() === null) return false;
-      const payload = { appointments: appts, retails: rets, deposits: deps, ticketPurchases: tps || [], staffPurchases: sps || [], refunds: refs || [], forgottenTips: fts || [], locked, workingStaff: ws || workingStaff };
+      const payload = { appointments: appts, retails: rets, deposits: deps, ticketPurchases: tps || [], staffPurchases: sps || [], refunds: refs || [], forgottenTips: fts || [], locked, workingStaff: ws || workingStaff, dismissedApptIds: dismissed || dismissedApptIds };
       await apiFetch("/api/day-data", {
         method: "POST",
         body: JSON.stringify({ date, data: payload }),
@@ -644,7 +654,7 @@ export default function SpaDailySheet() {
       showToast("Failed to save. Please check your internet connection and try again", "error");
       return false;
     }
-  }, [date, locked, workingStaff]);
+  }, [date, locked, workingStaff, dismissedApptIds]);
 
   // Toggling the lock writes immediately (doesn't wait for another edit) using current state.
   // Only flips the UI state after the cloud write actually succeeds, so "locked" shown on
@@ -652,7 +662,7 @@ export default function SpaDailySheet() {
   const setDayLocked = async (newLocked) => {
     try {
       if (await checkNoConcurrentChange() === null) return false;
-      const payload = { appointments, retails, deposits, ticketPurchases, staffPurchases, refunds, forgottenTips, locked: newLocked, workingStaff };
+      const payload = { appointments, retails, deposits, ticketPurchases, staffPurchases, refunds, forgottenTips, locked: newLocked, workingStaff, dismissedApptIds };
       await apiFetch("/api/day-data", {
         method: "POST",
         body: JSON.stringify({ date, data: payload }),
@@ -728,7 +738,13 @@ export default function SpaDailySheet() {
           return;
         }
         const merged = [...cur.appointments];
+        const dismissed = cur.dismissedApptIds || [];
+        let skippedDismissed = 0;
         newAppts.forEach(na => {
+          // Previously deleted from this day's sheet — don't bring it back just because the
+          // booking is still "accepted" in Square (e.g. staff cancelled here without also
+          // cancelling it in Square). See dismissedApptIds declaration for why.
+          if (dismissed.includes(na.id)) { skippedDismissed++; return; }
           // Same client + same start time isn't necessarily the same booking — a customer can
           // have two simultaneous bookings with two different therapists (e.g. a couple's
           // service, or a body+cav split). Matching therapist too avoids treating the second
@@ -746,9 +762,9 @@ export default function SpaDailySheet() {
         const bookingTherapists = [...new Set(newAppts.map(a => a.therapist).filter(t => t && THERAPISTS.includes(t)))];
         const nextWorkingStaff = bookingTherapists.length > 0 ? bookingTherapists : cur.workingStaff;
         if (bookingTherapists.length > 0) setWorkingStaff(bookingTherapists);
-        await save(merged, cur.retails, cur.deposits, cur.ticketPurchases, cur.staffPurchases, cur.refunds, cur.forgottenTips, nextWorkingStaff);
+        await save(merged, cur.retails, cur.deposits, cur.ticketPurchases, cur.staffPurchases, cur.refunds, cur.forgottenTips, nextWorkingStaff, dismissed);
 
-        showToast(`✅ Fetched ${newAppts.length} booking(s)`);
+        showToast(`✅ Fetched ${newAppts.length - skippedDismissed} booking(s)${skippedDismissed > 0 ? ` (${skippedDismissed} previously-deleted booking(s) skipped)` : ""}`);
       }
     } catch (e) {
       console.error("Square sync error:", e);
@@ -984,8 +1000,16 @@ export default function SpaDailySheet() {
   const deleteAppt = async (id) => {
     if (guardLocked()) return;
     const cavSlotId = `cav-${id}`;
+    const target = appointments.find(a => a.id === id);
     const next = appointments.filter(a => a.id !== id && a.id !== cavSlotId);
-    setAppointments(next); await save(next, retails, deposits, ticketPurchases, staffPurchases, refunds, forgottenTips); setEditingAppt(null);
+    setAppointments(next);
+    // Remember Square-sourced bookings deleted here so a later "Fetch Square" (possibly by
+    // someone else, on a different device, who never cancelled the booking in Square itself)
+    // doesn't silently bring it back — see dismissedApptIds declaration above.
+    const nextDismissed = target?.fromSquare ? [...dismissedApptIds, id] : dismissedApptIds;
+    if (target?.fromSquare) setDismissedApptIds(nextDismissed);
+    await save(next, retails, deposits, ticketPurchases, staffPurchases, refunds, forgottenTips, undefined, nextDismissed);
+    setEditingAppt(null);
   };
 
   // When editing an existing appointment, restore cavPrice/cavTip from the cav slot.
