@@ -385,11 +385,28 @@ const formatTime = (hour) => { const h = hour % 12 || 12; return `${h}:00 ${hour
 // whichever browser it was typed into. The site password (already shipped to this bundle
 // for PasswordGate) doubles as this API's shared secret — see checkAuth in dayDataStore.js.
 const API_PASSWORD = import.meta.env.VITE_APP_PASSWORD || "";
+// A weak/flaky salon WiFi connection can leave a plain fetch() neither resolving nor rejecting
+// for a very long time — with no timeout, a save silently hangs forever: no "Saved" toast, no
+// "Failed to save" toast either, so nothing tells the user it didn't go through. The screen still
+// shows the just-typed value (state was already updated optimistically before this awaited), so
+// it *looks* saved until a reload proves otherwise. Aborting after 15s guarantees save()'s catch
+// block actually runs and surfaces a real error instead of hanging silently.
 async function apiFetch(path, options = {}) {
-  const res = await fetch(path, {
-    ...options,
-    headers: { "Content-Type": "application/json", "X-App-Password": API_PASSWORD, ...(options.headers || {}) },
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15000);
+  let res;
+  try {
+    res = await fetch(path, {
+      ...options,
+      signal: controller.signal,
+      headers: { "Content-Type": "application/json", "X-App-Password": API_PASSWORD, ...(options.headers || {}) },
+    });
+  } catch (e) {
+    if (e.name === "AbortError") throw new Error("Request timed out — check your internet connection");
+    throw e;
+  } finally {
+    clearTimeout(timeout);
+  }
   if (!res.ok) throw new Error(`API error ${res.status}`);
   return res.json();
 }
@@ -619,20 +636,27 @@ export default function SpaDailySheet() {
   // what actually changed) when it isn't — the in-progress edit that triggered this check is
   // lost either way, but at least the screen now shows the truth instead of staying stale, so
   // the edit can be redone on top of it instead of silently vanishing again on the next save.
+  // Snaps every piece of this day's state to match what the server actually has — used both
+  // when a concurrent-edit conflict is detected, and (see save()'s catch block) after a failed
+  // save, so the screen never keeps showing an optimistic edit that didn't actually persist.
+  const applyServerSnapshot = (serverNow) => {
+    setAppointments(serverNow?.appointments || []);
+    setRetails(serverNow?.retails || []);
+    setDeposits(serverNow?.deposits || []);
+    setTicketPurchases(serverNow?.ticketPurchases || []);
+    setStaffPurchases(serverNow?.staffPurchases || []);
+    setRefunds(serverNow?.refunds || []);
+    setForgottenTips(serverNow?.forgottenTips || []);
+    setDismissedApptIds(serverNow?.dismissedApptIds || []);
+    setLocked(!!serverNow?.locked);
+    setWorkingStaff(serverNow?.workingStaff?.length > 0 ? serverNow.workingStaff : THERAPISTS);
+    lastServerDataRef.current = canonicalDay(serverNow);
+  };
+
   const checkNoConcurrentChange = async () => {
     const { data: serverNow } = await apiFetch(`/api/day-data?date=${date}`);
     if (lastServerDataRef.current !== null && canonicalDay(serverNow) !== lastServerDataRef.current) {
-      setAppointments(serverNow?.appointments || []);
-      setRetails(serverNow?.retails || []);
-      setDeposits(serverNow?.deposits || []);
-      setTicketPurchases(serverNow?.ticketPurchases || []);
-      setStaffPurchases(serverNow?.staffPurchases || []);
-      setRefunds(serverNow?.refunds || []);
-      setForgottenTips(serverNow?.forgottenTips || []);
-      setDismissedApptIds(serverNow?.dismissedApptIds || []);
-      setLocked(!!serverNow?.locked);
-      setWorkingStaff(serverNow?.workingStaff?.length > 0 ? serverNow.workingStaff : THERAPISTS);
-      lastServerDataRef.current = canonicalDay(serverNow);
+      applyServerSnapshot(serverNow);
       showToast("⚠️ Someone else just updated this day — refreshed to show their change. Please redo your edit and save again.", "error");
       return null;
     }
@@ -651,7 +675,17 @@ export default function SpaDailySheet() {
       return true;
     } catch (e) {
       console.error("Save error:", e);
-      showToast("Failed to save. Please check your internet connection and try again", "error");
+      showToast("⚠️ Failed to save — please check your internet connection and redo this edit", "error");
+      // The optimistic local update (applied by the caller before awaiting this) never actually
+      // reached the server, so leaving it on screen would make an unsaved edit look saved. Best-
+      // effort resync to the real server state so the screen doesn't lie about what's persisted —
+      // if this also fails (e.g. genuinely offline), the toast above is the only signal left.
+      try {
+        const { data: serverNow } = await apiFetch(`/api/day-data?date=${date}`);
+        applyServerSnapshot(serverNow);
+      } catch (e2) {
+        console.error("Resync after failed save also failed:", e2);
+      }
       return false;
     }
   }, [date, locked, workingStaff, dismissedApptIds]);
