@@ -652,19 +652,24 @@ export default function SpaDailySheet() {
     lastServerDataRef.current = canonicalDay(serverNow);
   };
 
+  // A day that has never been saved before legitimately has serverNow === null (no conflict,
+  // just nothing there yet) — that's indistinguishable from "return null" meaning "conflict
+  // detected" unless a separate sentinel is used. Reusing null for both meant every first save
+  // of a brand-new day was silently treated as a conflict: no toast, no POST, no closed modal.
+  const CONCURRENT_CONFLICT = Symbol("concurrent-conflict");
   const checkNoConcurrentChange = async () => {
     const { data: serverNow } = await apiFetch(`/api/day-data?date=${date}`);
     if (lastServerDataRef.current !== null && canonicalDay(serverNow) !== lastServerDataRef.current) {
       applyServerSnapshot(serverNow);
       showToast("⚠️ Someone else just updated this day — refreshed to show their change. Please redo your edit and save again.", "error");
-      return null;
+      return CONCURRENT_CONFLICT;
     }
     return serverNow;
   };
 
   const save = useCallback(async (appts, rets, deps, tps, sps, refs, fts, ws, dismissed) => {
     try {
-      if (await checkNoConcurrentChange() === null) return false;
+      if (await checkNoConcurrentChange() === CONCURRENT_CONFLICT) return false;
       const payload = { appointments: appts, retails: rets, deposits: deps, ticketPurchases: tps || [], staffPurchases: sps || [], refunds: refs || [], forgottenTips: fts || [], locked, workingStaff: ws || workingStaff, dismissedApptIds: dismissed || dismissedApptIds };
       await apiFetch("/api/day-data", {
         method: "POST",
@@ -694,7 +699,7 @@ export default function SpaDailySheet() {
   // screen can't diverge from what the server recorded.
   const setDayLocked = async (newLocked) => {
     try {
-      if (await checkNoConcurrentChange() === null) return false;
+      if (await checkNoConcurrentChange() === CONCURRENT_CONFLICT) return false;
       const payload = { appointments, retails, deposits, ticketPurchases, staffPurchases, refunds, forgottenTips, locked: newLocked, workingStaff, dismissedApptIds };
       await apiFetch("/api/day-data", {
         method: "POST",
