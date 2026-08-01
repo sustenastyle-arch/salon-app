@@ -2279,8 +2279,8 @@ export default function SpaDailySheet() {
       {editingForgottenTip && <ForgottenTipModal ft={editingForgottenTip} onSave={saveForgottenTip} onDelete={() => { deleteForgottenTip(editingForgottenTip.id); setEditingForgottenTip(null); }} onClose={() => setEditingForgottenTip(null)} />}
 
       {toast && (
-        <div style={{ position: "fixed", bottom: 20, right: 20, padding: "12px 20px", borderRadius: 10, background: toast.type === "error" ? "#C62828" : toast.type === "info" ? "#1565C0" : "#0D4F4F", color: "#fff", fontWeight: 600, fontSize: 14, boxShadow: "0 4px 12px rgba(0,0,0,0.2)", zIndex: 9999 }}>
-          {toast.msg}
+        <div style={{ position: "fixed", top: 20, left: "50%", transform: "translateX(-50%)", padding: "16px 28px", borderRadius: 12, background: toast.type === "error" ? "#C62828" : toast.type === "info" ? "#1565C0" : "#2E7D32", color: "#fff", fontWeight: 700, fontSize: 16, boxShadow: "0 6px 20px rgba(0,0,0,0.3)", zIndex: 9999, display: "flex", alignItems: "center", gap: 8 }}>
+          {toast.type === "error" ? "" : toast.type === "info" ? "" : "✅ "}{toast.msg}
         </div>
       )}
     </div>
