@@ -505,15 +505,31 @@ export default function SpaDailySheet() {
   // server against this immediately before writing, so a second person's stale save can be
   // caught and refused instead of silently erasing what someone else just added.
   const lastServerDataRef = useRef(null);
+  // Bumped every time a save/lock-toggle actually completes, so the initial per-date load below
+  // can tell if one raced ahead of it. Without this: open a brand-new day, add something fast
+  // enough that the save finishes before this effect's own (slower) GET returns, and the GET's
+  // stale "day doesn't exist yet" result would blow away the just-saved local state AND reset
+  // lastServerDataRef back to empty — after which the concurrent-change guard sees "no known
+  // prior state" and waves through the next save, which then writes the (now-wiped) local state
+  // over the real data on the server. This actually happened (July 31 entries vanishing).
+  const saveGenRef = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
+    const genAtLoadStart = saveGenRef.current;
     setReconcileResult(null);
     setDayLoading(true);
     (async () => {
       try {
         const { data: d } = await apiFetch(`/api/day-data?date=${date}`);
         if (cancelled) return;
+        if (saveGenRef.current !== genAtLoadStart) {
+          // A save completed for this date while this GET was still in flight — that save's
+          // outcome is newer than what we just fetched, so applying this stale result would
+          // erase real data. Just stop the loading spinner and leave the (already-current) state.
+          setDayLoading(false);
+          return;
+        }
         if (d) {
           setAppointments(d.appointments || []);
           setRetails(d.retails || []);
@@ -632,6 +648,7 @@ export default function SpaDailySheet() {
       setLocked(!!serverNow?.locked);
       setWorkingStaff(serverNow?.workingStaff?.length > 0 ? serverNow.workingStaff : THERAPISTS);
       lastServerDataRef.current = canonicalDay(serverNow);
+      saveGenRef.current++;
       showToast("⚠️ Someone else just updated this day — refreshed to show their change. Please redo your edit and save again.", "error");
       return null;
     }
@@ -647,6 +664,7 @@ export default function SpaDailySheet() {
         body: JSON.stringify({ date, data: payload }),
       });
       lastServerDataRef.current = canonicalDay(payload);
+      saveGenRef.current++;
       return true;
     } catch (e) {
       console.error("Save error:", e);
@@ -667,6 +685,7 @@ export default function SpaDailySheet() {
         body: JSON.stringify({ date, data: payload }),
       });
       lastServerDataRef.current = canonicalDay(payload);
+      saveGenRef.current++;
       setLocked(newLocked);
       checkUnlockedPastDays();
       return true;
