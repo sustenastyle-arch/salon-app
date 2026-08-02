@@ -822,10 +822,15 @@ export default function SpaDailySheet() {
         merged.sort((a, b) => (a.startTime || "").localeCompare(b.startTime || ""));
         setAppointments(merged);
 
-        // Only show columns for staff who actually have a booking today.
+        // Show columns for staff who have a Square booking today, plus anyone who already has an
+        // appointment on this day's sheet (e.g. a manually-added walk-in with no Square booking
+        // of their own) — replacing workingStaff outright used to drop that second group's column
+        // entirely, making their appointment invisible even though it was still saved correctly.
         const bookingTherapists = [...new Set(newAppts.map(a => a.therapist).filter(t => t && THERAPISTS.includes(t)))];
-        const nextWorkingStaff = bookingTherapists.length > 0 ? bookingTherapists : cur.workingStaff;
-        if (bookingTherapists.length > 0) setWorkingStaff(bookingTherapists);
+        const existingTherapists = [...new Set(merged.map(a => a.therapist).filter(t => t && THERAPISTS.includes(t)))];
+        const unionTherapists = [...new Set([...bookingTherapists, ...existingTherapists])];
+        const nextWorkingStaff = unionTherapists.length > 0 ? unionTherapists : cur.workingStaff;
+        if (unionTherapists.length > 0) setWorkingStaff(unionTherapists);
         await save(merged, cur.retails, cur.deposits, cur.ticketPurchases, cur.staffPurchases, cur.refunds, cur.forgottenTips, nextWorkingStaff, dismissed);
 
         showToast(`✅ Fetched ${newAppts.length - skippedDismissed} booking(s)${skippedDismissed > 0 ? ` (${skippedDismissed} previously-deleted booking(s) skipped)` : ""}`);
