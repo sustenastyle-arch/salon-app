@@ -322,6 +322,11 @@ const RETAIL_TAX_RATE = 0.04712;
 // The entered price is tax-inclusive (what the customer actually paid), so the pre-tax base is
 // found by dividing out the tax rate, not subtracting it — amt / 1.04712, not amt * 0.95288.
 const afterTaxAmount = (amt) => Math.round(Number(amt || 0) / (1 + RETAIL_TAX_RATE) * 100) / 100;
+// What staff actually get paid for a retail sale: 10% of the tax-excluded (Retail column) amount,
+// except Maki whose rate is 4%. The Retail column itself stays the full tax-excluded figure —
+// this is only used to add a separate commission column to the payroll export, not to change
+// what gets credited/displayed anywhere else.
+const retailCommissionRate = (therapist) => (therapist === "Maki" ? 0.04 : 0.10);
 
 // Kept alphabetical by name so staff can find a product quickly in the dropdown.
 const RETAIL_PRODUCTS = [
@@ -6116,14 +6121,15 @@ function PayrollTab() {
       r.partner ? `with ${r.partner}` : "",
       r.notes || "",
     ].filter(Boolean).join("　");
+    const rate = retailCommissionRate(therapist);
     const rows = [
-      ["Date", "Client", ...(therapist === "Maki" ? ["Minutes"] : []), "Treatment", "Tip", "Total", "Retail", "Remarks"],
+      ["Date", "Client", ...(therapist === "Maki" ? ["Minutes"] : []), "Treatment", "Tip", "Total", "Retail", `Retail Commission (${Math.round(rate * 100)}%)`, "Remarks"],
       ...data.rows.map(r => [
         r.date, r.client, ...(therapist === "Maki" ? [r.duration || ""] : []), r.service || "",
-        r.tip || "", r2(r.service + r.tip), r.retail || "", remarksFor(r)
+        r.tip || "", r2(r.service + r.tip), r.retail || "", r.retail ? r2(r.retail * rate) : "", remarksFor(r)
       ]),
       [],
-      ["", "Total", ...(therapist === "Maki" ? [""] : []), data.totalService, data.totalTip, r2(data.totalService + data.totalTip), data.totalRetail, ""],
+      ["", "Total", ...(therapist === "Maki" ? [""] : []), data.totalService, data.totalTip, r2(data.totalService + data.totalTip), data.totalRetail, r2(data.totalRetail * rate), ""],
     ];
     const csv = rows.map(r => r.join(",")).join("\n");
     const bom = "\uFEFF";
@@ -6142,17 +6148,18 @@ function PayrollTab() {
       r.partner ? `with ${r.partner}` : "",
       r.notes || "",
     ].filter(Boolean).join("　");
-    const allRows = [["Therapist", "Date", "Client", "Minutes (Maki only)", "Treatment", "Tip", "Total", "Retail", "Remarks"]];
+    const allRows = [["Therapist", "Date", "Client", "Minutes (Maki only)", "Treatment", "Tip", "Total", "Retail", "Retail Commission (10%/4%)", "Remarks"]];
     THERAPISTS.forEach(t => {
       const data = payrollData.byTherapist[t];
       if (!data || data.rows.length === 0) return;
+      const rate = retailCommissionRate(t);
       data.rows.forEach(r => {
         allRows.push([
           t, r.date, r.client, t === "Maki" ? (r.duration || "") : "",
-          r.service || "", r.tip || "", r2(r.service + r.tip), r.retail || "", remarksForAll(r)
+          r.service || "", r.tip || "", r2(r.service + r.tip), r.retail || "", r.retail ? r2(r.retail * rate) : "", remarksForAll(r)
         ]);
       });
-      allRows.push([t, "", "Subtotal", "", data.totalService, data.totalTip, r2(data.totalService + data.totalTip), data.totalRetail, ""]);
+      allRows.push([t, "", "Subtotal", "", data.totalService, data.totalTip, r2(data.totalService + data.totalTip), data.totalRetail, r2(data.totalRetail * rate), ""]);
       allRows.push([]);
     });
     const csv = allRows.map(r => r.join(",")).join("\n");
