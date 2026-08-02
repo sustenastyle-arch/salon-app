@@ -23,9 +23,29 @@ import { computeDayTotals } from "../src/lib/reportTotals.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "..");
-const REPORT_PATH = "C:/Users/Dr. Body/Desktop/2026 July Sales Report -/Sales Report2026 NEW.xlsx";
+const DESKTOP_DIR = "C:/Users/Dr. Body/Desktop";
 
 const MONTH_NAMES = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+
+// The owner starts each new month by copying/renaming the previous month's whole folder, so the
+// folder name isn't perfectly consistent (e.g. "2026 July Sales Report -" vs "2026 August Sales
+// Report", no trailing dash) — match loosely on year + month name instead of a fixed path, and
+// pick the most-recently-modified match if more than one folder somehow qualifies.
+function resolveReportPath(year, monthName) {
+  const candidates = fs.readdirSync(DESKTOP_DIR, { withFileTypes: true })
+    .filter(d => d.isDirectory())
+    .map(d => d.name)
+    .filter(name => name.includes(String(year)) && name.toLowerCase().includes(monthName.toLowerCase()) && name.toLowerCase().includes("sales report"));
+  if (candidates.length === 0) {
+    throw new Error(`No Desktop folder found matching "${year} ${monthName} Sales Report..."`);
+  }
+  candidates.sort((a, b) => {
+    const statA = fs.statSync(path.join(DESKTOP_DIR, a));
+    const statB = fs.statSync(path.join(DESKTOP_DIR, b));
+    return statB.mtimeMs - statA.mtimeMs;
+  });
+  return path.join(DESKTOP_DIR, candidates[0], "Sales Report2026 NEW.xlsx");
+}
 
 function loadEnv() {
   const text = fs.readFileSync(path.join(REPO_ROOT, ".env"), "utf8");
@@ -171,6 +191,7 @@ async function main() {
   const monthLabel = `${MONTH_NAMES[m - 1]} ${y}`;
   const monthStr = `${y}-${String(m).padStart(2, "0")}`;
   const lastDay = new Date(y, m, 0).getDate();
+  const REPORT_PATH = resolveReportPath(y, MONTH_NAMES[m - 1]);
 
   console.log(`Syncing locked days for ${monthLabel} into: ${REPORT_PATH}`);
 
