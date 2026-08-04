@@ -6133,6 +6133,11 @@ function PayrollTab() {
       r.notes || "",
     ].filter(Boolean).join("　");
     const rate = retailCommissionRate(therapist);
+    // Sum of each row's own (already-rounded-to-the-cent) commission, not rate * totalRetail —
+    // rounding each row then summing vs. summing then rounding once can land a cent apart, which
+    // made the Total row not match a hand-add of the column above it (real case: 4 rows of
+    // $0.10/$0.10/$0.10/$0.19 = $0.49 by hand, but rate*totalRetail rounded to $0.48).
+    const totalRetailCommission = r2(data.rows.reduce((s, r) => s + (r.retail ? r2(r.retail * rate) : 0), 0));
     const rows = [
       ["Date", "Client", ...(therapist === "Maki" ? ["Minutes"] : []), "Treatment", "Tip", "Total", "Retail", `Retail Commission (${Math.round(rate * 100)}%)`, "Remarks"],
       ...data.rows.map(r => [
@@ -6140,7 +6145,7 @@ function PayrollTab() {
         r.tip || "", r2(r.service + r.tip), r.retail || "", r.retail ? r2(r.retail * rate) : "", remarksFor(r)
       ]),
       [],
-      ["", "Total", ...(therapist === "Maki" ? [""] : []), data.totalService, data.totalTip, r2(data.totalService + data.totalTip), data.totalRetail, r2(data.totalRetail * rate), ""],
+      ["", "Total", ...(therapist === "Maki" ? [""] : []), data.totalService, data.totalTip, r2(data.totalService + data.totalTip), data.totalRetail, totalRetailCommission, ""],
     ];
     const csv = rows.map(r => r.join(",")).join("\n");
     const bom = "\uFEFF";
@@ -6170,7 +6175,10 @@ function PayrollTab() {
           r.service || "", r.tip || "", r2(r.service + r.tip), r.retail || "", r.retail ? r2(r.retail * rate) : "", remarksForAll(r)
         ]);
       });
-      allRows.push([t, "", "Subtotal", "", data.totalService, data.totalTip, r2(data.totalService + data.totalTip), data.totalRetail, r2(data.totalRetail * rate), ""]);
+      // Sum of each row's own rounded commission — see comment in downloadCSV for why this
+      // can't just be rate * data.totalRetail rounded once.
+      const totalRetailCommission = r2(data.rows.reduce((s, r) => s + (r.retail ? r2(r.retail * rate) : 0), 0));
+      allRows.push([t, "", "Subtotal", "", data.totalService, data.totalTip, r2(data.totalService + data.totalTip), data.totalRetail, totalRetailCommission, ""]);
       allRows.push([]);
     });
     const csv = allRows.map(r => r.join(",")).join("\n");
