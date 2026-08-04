@@ -5742,6 +5742,14 @@ async function exportSalesReportXlsx(monthStr) {
     return [t, involved.length, shareAmtFor(t, involved), newAmt, repeatAmt, localVisits.length, localConverted, conversionPct];
   }).sort((a, b) => b[3] - a[3]);
   byStaffRows.forEach(row => tsData.push(row));
+  const staffTotalCount = byStaffRows.reduce((s, row) => s + row[1], 0);
+  const staffTotalAmt = Math.round(byStaffRows.reduce((s, row) => s + row[2], 0) * 100) / 100;
+  const staffTotalNewAmt = Math.round(byStaffRows.reduce((s, row) => s + row[3], 0) * 100) / 100;
+  const staffTotalRepeatAmt = Math.round(byStaffRows.reduce((s, row) => s + row[4], 0) * 100) / 100;
+  const staffTotalLocalVisits = byStaffRows.reduce((s, row) => s + row[5], 0);
+  const staffTotalConverted = byStaffRows.reduce((s, row) => s + row[6], 0);
+  const staffTotalConversionPct = staffTotalLocalVisits > 0 ? `${Math.round(staffTotalConverted / staffTotalLocalVisits * 1000) / 10}%` : "";
+  tsData.push(["Total", staffTotalCount, staffTotalAmt, staffTotalNewAmt, staffTotalRepeatAmt, staffTotalLocalVisits, staffTotalConverted, staffTotalConversionPct]);
   const tsWs = XLSX.utils.aoa_to_sheet(tsData);
   tsWs["!cols"] = [{wch:26},{wch:12},{wch:14},{wch:14},{wch:16},{wch:14},{wch:16},{wch:12}];
   XLSX.utils.book_append_sheet(wb, tsWs, "Ticket Sales");
