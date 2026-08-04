@@ -5680,23 +5680,23 @@ async function exportSalesReportXlsx(monthStr) {
     ]);
   });
 
-  // Total row
-  const dataStart = 5; // row index in wsData where data starts (1-based in Excel = row 5)
-  const dataEnd = 5 + lastDay - 1;
+  // Total row — computed values, not Excel formulas, so the total is visible in viewers
+  // that don't (re)calculate formulas (e.g. a quick-look preview on the home PC).
+  const sumField = (field) => Math.round(dailyData.reduce((s, row) => s + Number(row[field] || 0), 0) * 100) / 100;
   wsData.push([
     "Total",
-    { f: `SUM(B${dataStart}:B${dataEnd})` },
-    { f: `SUM(C${dataStart}:C${dataEnd})` },
-    { f: `SUM(D${dataStart}:D${dataEnd})` },
-    { f: `SUM(E${dataStart}:E${dataEnd})` },
-    { f: `SUM(F${dataStart}:F${dataEnd})` },
-    { f: `SUM(G${dataStart}:G${dataEnd})` },
-    { f: `SUM(H${dataStart}:H${dataEnd})` },
-    { f: `SUM(I${dataStart}:I${dataEnd})` },
-    { f: `SUM(J${dataStart}:J${dataEnd})` },
-    { f: `SUM(K${dataStart}:K${dataEnd})` },
-    { f: `SUM(L${dataStart}:L${dataEnd})` },
-    { f: `SUM(M${dataStart}:M${dataEnd})` },
+    sumField("totalSales"),
+    sumField("clients"),
+    sumField("cashTreatment"),
+    sumField("cashProduct"),
+    sumField("totalCash"),
+    sumField("cashTip"),
+    sumField("cardTreatment"),
+    sumField("cardProduct"),
+    sumField("totalCard"),
+    sumField("cardTip"),
+    sumField("totalTip"),
+    sumField("grandTotal"),
   ]);
 
   const ws = XLSX.utils.aoa_to_sheet(wsData);
@@ -5724,13 +5724,11 @@ async function exportSalesReportXlsx(monthStr) {
   dailyData.forEach(row => {
     ctData.push([row.date, row.rl, row.rt, row.nl, row.nt, row.rl + row.rt + row.nl + row.nt, ...row.referrals]);
   });
-  const ctDataStart = 4;
-  const ctDataEnd = 4 + lastDay - 1;
-  const ctCols = ["B","C","D","E","F","G","H","I","J","K"];
-  ctData.push([
-    "Total",
-    ...ctCols.slice(0, 5 + REFERRAL_SOURCES.length).map(col => ({ f: `SUM(${col}${ctDataStart}:${col}${ctDataEnd})` })),
-  ]);
+  // Computed values, not Excel formulas — same reason as the Total row above.
+  const ctDailyRows = dailyData.map(row => [row.rl, row.rt, row.nl, row.nt, row.rl + row.rt + row.nl + row.nt, ...row.referrals]);
+  const ctColCount = 5 + REFERRAL_SOURCES.length;
+  const ctTotals = Array.from({ length: ctColCount }, (_, i) => ctDailyRows.reduce((s, row) => s + Number(row[i] || 0), 0));
+  ctData.push(["Total", ...ctTotals]);
   const ctWs = XLSX.utils.aoa_to_sheet(ctData);
   ctWs["!cols"] = [{wch:6},{wch:8},{wch:8},{wch:8},{wch:8},{wch:8}, ...REFERRAL_SOURCES.map(() => ({wch:14}))];
   XLSX.utils.book_append_sheet(wb, ctWs, "Customer Type");
