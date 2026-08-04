@@ -322,6 +322,11 @@ const RETAIL_TAX_RATE = 0.04712;
 // The entered price is tax-inclusive (what the customer actually paid), so the pre-tax base is
 // found by dividing out the tax rate, not subtracting it — amt / 1.04712, not amt * 0.95288.
 const afterTaxAmount = (amt) => Math.round(Number(amt || 0) / (1 + RETAIL_TAX_RATE) * 100) / 100;
+// What staff actually get paid for a retail sale: 10% of the tax-excluded (Retail column) amount,
+// except Maki whose rate is 4%. The Retail column itself stays the full tax-excluded figure —
+// this is only used to add a separate commission column to the payroll export, not to change
+// what gets credited/displayed anywhere else.
+const retailCommissionRate = (therapist) => (therapist === "Maki" ? 0.04 : 0.10);
 
 // Kept alphabetical by name so staff can find a product quickly in the dropdown.
 const RETAIL_PRODUCTS = [
@@ -522,15 +527,31 @@ export default function SpaDailySheet() {
   // server against this immediately before writing, so a second person's stale save can be
   // caught and refused instead of silently erasing what someone else just added.
   const lastServerDataRef = useRef(null);
+  // Bumped every time a save/lock-toggle actually completes, so the initial per-date load below
+  // can tell if one raced ahead of it. Without this: open a brand-new day, add something fast
+  // enough that the save finishes before this effect's own (slower) GET returns, and the GET's
+  // stale "day doesn't exist yet" result would blow away the just-saved local state AND reset
+  // lastServerDataRef back to empty — after which the concurrent-change guard sees "no known
+  // prior state" and waves through the next save, which then writes the (now-wiped) local state
+  // over the real data on the server. This actually happened (July 31 entries vanishing).
+  const saveGenRef = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
+    const genAtLoadStart = saveGenRef.current;
     setReconcileResult(null);
     setDayLoading(true);
     (async () => {
       try {
         const { data: d } = await apiFetch(`/api/day-data?date=${date}`);
         if (cancelled) return;
+        if (saveGenRef.current !== genAtLoadStart) {
+          // A save completed for this date while this GET was still in flight — that save's
+          // outcome is newer than what we just fetched, so applying this stale result would
+          // erase real data. Just stop the loading spinner and leave the (already-current) state.
+          setDayLoading(false);
+          return;
+        }
         if (d) {
           setAppointments(d.appointments || []);
           setRetails(d.retails || []);
@@ -650,6 +671,9 @@ export default function SpaDailySheet() {
     setLocked(!!serverNow?.locked);
     setWorkingStaff(serverNow?.workingStaff?.length > 0 ? serverNow.workingStaff : THERAPISTS);
     lastServerDataRef.current = canonicalDay(serverNow);
+    // Invalidates any initial per-date load still in flight — see saveGenRef above — so that
+    // GET can't land afterward and clobber this snapshot with an even staler one.
+    saveGenRef.current++;
   };
 
   // A day that has never been saved before legitimately has serverNow === null (no conflict,
@@ -676,6 +700,7 @@ export default function SpaDailySheet() {
         body: JSON.stringify({ date, data: payload }),
       });
       lastServerDataRef.current = canonicalDay(payload);
+      saveGenRef.current++;
       return true;
     } catch (e) {
       console.error("Save error:", e);
@@ -706,6 +731,7 @@ export default function SpaDailySheet() {
         body: JSON.stringify({ date, data: payload }),
       });
       lastServerDataRef.current = canonicalDay(payload);
+      saveGenRef.current++;
       setLocked(newLocked);
       checkUnlockedPastDays();
       return true;
@@ -796,10 +822,15 @@ export default function SpaDailySheet() {
         merged.sort((a, b) => (a.startTime || "").localeCompare(b.startTime || ""));
         setAppointments(merged);
 
-        // Only show columns for staff who actually have a booking today.
+        // Show columns for staff who have a Square booking today, plus anyone who already has an
+        // appointment on this day's sheet (e.g. a manually-added walk-in with no Square booking
+        // of their own) — replacing workingStaff outright used to drop that second group's column
+        // entirely, making their appointment invisible even though it was still saved correctly.
         const bookingTherapists = [...new Set(newAppts.map(a => a.therapist).filter(t => t && THERAPISTS.includes(t)))];
-        const nextWorkingStaff = bookingTherapists.length > 0 ? bookingTherapists : cur.workingStaff;
-        if (bookingTherapists.length > 0) setWorkingStaff(bookingTherapists);
+        const existingTherapists = [...new Set(merged.map(a => a.therapist).filter(t => t && THERAPISTS.includes(t)))];
+        const unionTherapists = [...new Set([...bookingTherapists, ...existingTherapists])];
+        const nextWorkingStaff = unionTherapists.length > 0 ? unionTherapists : cur.workingStaff;
+        if (unionTherapists.length > 0) setWorkingStaff(unionTherapists);
         await save(merged, cur.retails, cur.deposits, cur.ticketPurchases, cur.staffPurchases, cur.refunds, cur.forgottenTips, nextWorkingStaff, dismissed);
 
         showToast(`✅ Fetched ${newAppts.length - skippedDismissed} booking(s)${skippedDismissed > 0 ? ` (${skippedDismissed} previously-deleted booking(s) skipped)` : ""}`);
@@ -6103,14 +6134,15 @@ function PayrollTab() {
       r.partner ? `with ${r.partner}` : "",
       r.notes || "",
     ].filter(Boolean).join("　");
+    const rate = retailCommissionRate(therapist);
     const rows = [
-      ["Date", "Client", ...(therapist === "Maki" ? ["Minutes"] : []), "Treatment", "Tip", "Total", "Retail", "Remarks"],
+      ["Date", "Client", ...(therapist === "Maki" ? ["Minutes"] : []), "Treatment", "Tip", "Total", "Retail", `Retail Commission (${Math.round(rate * 100)}%)`, "Remarks"],
       ...data.rows.map(r => [
         r.date, r.client, ...(therapist === "Maki" ? [r.duration || ""] : []), r.service || "",
-        r.tip || "", r2(r.service + r.tip), r.retail || "", remarksFor(r)
+        r.tip || "", r2(r.service + r.tip), r.retail || "", r.retail ? r2(r.retail * rate) : "", remarksFor(r)
       ]),
       [],
-      ["", "Total", ...(therapist === "Maki" ? [""] : []), data.totalService, data.totalTip, r2(data.totalService + data.totalTip), data.totalRetail, ""],
+      ["", "Total", ...(therapist === "Maki" ? [""] : []), data.totalService, data.totalTip, r2(data.totalService + data.totalTip), data.totalRetail, r2(data.totalRetail * rate), ""],
     ];
     const csv = rows.map(r => r.join(",")).join("\n");
     const bom = "\uFEFF";
@@ -6129,17 +6161,18 @@ function PayrollTab() {
       r.partner ? `with ${r.partner}` : "",
       r.notes || "",
     ].filter(Boolean).join("　");
-    const allRows = [["Therapist", "Date", "Client", "Minutes (Maki only)", "Treatment", "Tip", "Total", "Retail", "Remarks"]];
+    const allRows = [["Therapist", "Date", "Client", "Minutes (Maki only)", "Treatment", "Tip", "Total", "Retail", "Retail Commission (10%/4%)", "Remarks"]];
     THERAPISTS.forEach(t => {
       const data = payrollData.byTherapist[t];
       if (!data || data.rows.length === 0) return;
+      const rate = retailCommissionRate(t);
       data.rows.forEach(r => {
         allRows.push([
           t, r.date, r.client, t === "Maki" ? (r.duration || "") : "",
-          r.service || "", r.tip || "", r2(r.service + r.tip), r.retail || "", remarksForAll(r)
+          r.service || "", r.tip || "", r2(r.service + r.tip), r.retail || "", r.retail ? r2(r.retail * rate) : "", remarksForAll(r)
         ]);
       });
-      allRows.push([t, "", "Subtotal", "", data.totalService, data.totalTip, r2(data.totalService + data.totalTip), data.totalRetail, ""]);
+      allRows.push([t, "", "Subtotal", "", data.totalService, data.totalTip, r2(data.totalService + data.totalTip), data.totalRetail, r2(data.totalRetail * rate), ""]);
       allRows.push([]);
     });
     const csv = allRows.map(r => r.join(",")).join("\n");
