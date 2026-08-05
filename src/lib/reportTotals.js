@@ -180,6 +180,7 @@ export function computeDayTotals(data) {
     + sameDayTicketAppts.filter(a => a.packageSplitPayment).reduce((s,a) => s + Number(a.packageCashPortion||0), 0)
     + pureTicketAppts.filter(a => a.extraPricePaymentType === "cash").reduce((s,a) => s + Number(a.extraPrice||0), 0)
     + sameDayTicketAppts.filter(a => a.extraPricePaymentType === "cash").reduce((s,a) => s + Number(a.extraPrice||0), 0)
+    + revenueAppts.filter(a => a.extraPricePaymentType === "cash").reduce((s,a) => s + Number(a.extraPrice||0), 0)
     + revenueAddons.filter(ad => ad.paymentType === "cash").reduce((s,ad) => s + Number(ad.price||0) - addonGcAlloc(ad).gcSvc, 0)
     + cavSlotAppts.filter(a => a.paymentType === "cash").reduce((s,a) => s + Number(a.price||0), 0)
     + depositCash
@@ -193,6 +194,7 @@ export function computeDayTotals(data) {
     + sameDayTicketAppts.filter(a => a.tipPaymentType === "cash").reduce((s,a) => s + Number(a.packageTip ?? a.tip ?? 0) - gcAllocPackage(a).gcTip, 0)
     + pureTicketAppts.filter(a => a.extraTipPaymentType === "cash").reduce((s,a) => s + Number(a.extraTip||0), 0)
     + sameDayTicketAppts.filter(a => a.extraTipPaymentType === "cash").reduce((s,a) => s + Number(a.extraTip||0), 0)
+    + revenueAppts.filter(a => a.extraTipPaymentType === "cash").reduce((s,a) => s + Number(a.extraTip||0), 0)
     + revenueAddons.filter(ad => ad.tipPaymentType === "cash").reduce((s,ad) => s + Number(ad.tip||0) - addonGcAlloc(ad).gcTip, 0)
     + cavSlotAppts.filter(a => a.tipPaymentType === "cash").reduce((s,a) => s + Number(a.tip||0), 0)
     + tpTipCash
@@ -205,6 +207,7 @@ export function computeDayTotals(data) {
     + sameDayTicketAppts.filter(a => a.packageSplitPayment).reduce((s,a) => s + Number(a.packageCardPortion||0), 0)
     + pureTicketAppts.filter(a => a.extraPricePaymentType === "card").reduce((s,a) => s + Number(a.extraPrice||0), 0)
     + sameDayTicketAppts.filter(a => a.extraPricePaymentType === "card").reduce((s,a) => s + Number(a.extraPrice||0), 0)
+    + revenueAppts.filter(a => a.extraPricePaymentType === "card").reduce((s,a) => s + Number(a.extraPrice||0), 0)
     + revenueAddons.filter(ad => ad.paymentType !== "cash").reduce((s,ad) => s + Number(ad.price||0) - addonGcAlloc(ad).gcSvc, 0)
     + cavSlotAppts.filter(a => a.paymentType !== "cash").reduce((s,a) => s + Number(a.price||0), 0)
     + depositCard
@@ -218,6 +221,7 @@ export function computeDayTotals(data) {
     + sameDayTicketAppts.filter(a => a.tipPaymentType === "card").reduce((s,a) => s + Number(a.packageTip ?? a.tip ?? 0) - gcAllocPackage(a).gcTip, 0)
     + pureTicketAppts.filter(a => a.extraTipPaymentType === "card").reduce((s,a) => s + Number(a.extraTip||0), 0)
     + sameDayTicketAppts.filter(a => a.extraTipPaymentType === "card").reduce((s,a) => s + Number(a.extraTip||0), 0)
+    + revenueAppts.filter(a => a.extraTipPaymentType === "card").reduce((s,a) => s + Number(a.extraTip||0), 0)
     + revenueAddons.filter(ad => ad.tipPaymentType !== "cash").reduce((s,ad) => s + Number(ad.tip||0) - addonGcAlloc(ad).gcTip, 0)
     + cavSlotAppts.filter(a => a.tipPaymentType !== "cash").reduce((s,a) => s + Number(a.tip||0), 0)
     + tpTipCard
@@ -228,6 +232,7 @@ export function computeDayTotals(data) {
     + sameDayTicketAppts.reduce((s,a) => s + Number(a.packageTip ?? a.tip ?? 0) - gcAllocPackage(a).gcTip, 0)
     + pureTicketAppts.reduce((s,a) => s + Number(a.extraTip||0), 0)
     + sameDayTicketAppts.reduce((s,a) => s + Number(a.extraTip||0), 0)
+    + revenueAppts.reduce((s,a) => s + Number(a.extraTip||0), 0)
     + revenueAddons.reduce((s,ad) => s + Number(ad.tip||0) - addonGcAlloc(ad).gcTip, 0)
     + cavSlotAppts.reduce((s,a) => s + Number(a.tip||0), 0)
     + tpTipCash + tpTipCard

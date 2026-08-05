@@ -1214,6 +1214,7 @@ export default function SpaDailySheet() {
   const totalRevenue = regularAppts.reduce((s, a) => s + Number(a.price || 0) - gcAlloc(a).gcSvc, 0)
     + sameDayAppts.reduce((s, a) => s + Number(a.packagePrice || 0) - gcAllocPackage(a).gcSvc, 0)
     + ticketAppts.reduce((s, a) => s + Number(a.extraPrice || 0), 0)
+    + regularAppts.reduce((s, a) => s + Number(a.extraPrice || 0), 0)
     + revenueAddons.reduce((s, ad) => s + Number(ad.price || 0) - addonGcAlloc(ad).gcSvc, 0)
     + totalForgottenService
     - totalRefundService;
@@ -1222,6 +1223,7 @@ export default function SpaDailySheet() {
   const totalTips = regularAppts.reduce((s, a) => s + Number(a.tip || 0) - gcAlloc(a).gcTip, 0)
     + sameDayAppts.reduce((s, a) => s + Number(a.packageTip ?? a.tip ?? 0) - gcAllocPackage(a).gcTip, 0)
     + ticketAppts.reduce((s, a) => s + Number(a.extraTip || 0), 0)
+    + regularAppts.reduce((s, a) => s + Number(a.extraTip || 0), 0)
     + revenueAddons.reduce((s, ad) => s + Number(ad.tip || 0) - addonGcAlloc(ad).gcTip, 0)
     + totalForgottenTip
     - totalRefundTip;
@@ -1235,6 +1237,7 @@ export default function SpaDailySheet() {
     + sameDayAppts.filter(a => !a.packageSplitPayment && a.paymentType === "cash").reduce((s, a) => s + Math.max(0, Number(a.packagePrice || 0) - gcAllocPackage(a).gcSvc), 0)
     + sameDayAppts.filter(a => a.packageSplitPayment).reduce((s, a) => s + Number(a.packageCashPortion || 0), 0)
     + ticketAppts.filter(a => a.extraPricePaymentType === "cash").reduce((s, a) => s + Number(a.extraPrice || 0), 0)
+    + regularAppts.filter(a => a.extraPricePaymentType === "cash").reduce((s, a) => s + Number(a.extraPrice || 0), 0)
     + revenueAddons.filter(ad => ad.paymentType === "cash").reduce((s, ad) => s + Number(ad.price || 0) - addonGcAlloc(ad).gcSvc, 0)
     + cavSlotAppts.filter(a => a.paymentType === "cash").reduce((s, a) => s + Number(a.price || 0), 0)
     + totalForgottenCash
@@ -1244,6 +1247,7 @@ export default function SpaDailySheet() {
     + sameDayAppts.filter(a => !a.packageSplitPayment && a.paymentType === "card").reduce((s, a) => s + Math.max(0, Number(a.packagePrice || 0) - gcAllocPackage(a).gcSvc), 0)
     + sameDayAppts.filter(a => a.packageSplitPayment).reduce((s, a) => s + Number(a.packageCardPortion || 0), 0)
     + ticketAppts.filter(a => a.extraPricePaymentType === "card").reduce((s, a) => s + Number(a.extraPrice || 0), 0)
+    + regularAppts.filter(a => a.extraPricePaymentType === "card").reduce((s, a) => s + Number(a.extraPrice || 0), 0)
     + revenueAddons.filter(ad => ad.paymentType !== "cash").reduce((s, ad) => s + Number(ad.price || 0) - addonGcAlloc(ad).gcSvc, 0)
     + cavSlotAppts.filter(a => a.paymentType !== "cash").reduce((s, a) => s + Number(a.price || 0), 0)
     + totalForgottenCard
@@ -1252,6 +1256,7 @@ export default function SpaDailySheet() {
     + regularAppts.filter(a => a.tipSplitPayment).reduce((s, a) => s + Number(a.tipCashPortion || 0), 0)
     + sameDayAppts.filter(a => a.tipPaymentType === "cash").reduce((s, a) => s + Math.max(0, Number(a.packageTip ?? a.tip ?? 0) - gcAllocPackage(a).gcTip), 0)
     + ticketAppts.filter(a => a.extraTipPaymentType === "cash").reduce((s, a) => s + Number(a.extraTip || 0), 0)
+    + regularAppts.filter(a => a.extraTipPaymentType === "cash").reduce((s, a) => s + Number(a.extraTip || 0), 0)
     + revenueAddons.filter(ad => ad.tipPaymentType === "cash").reduce((s, ad) => s + Number(ad.tip || 0) - addonGcAlloc(ad).gcTip, 0)
     + cavSlotAppts.filter(a => a.tipPaymentType === "cash").reduce((s, a) => s + Number(a.tip || 0), 0)
     + deposits.filter(d => d.tipPaymentType === "cash" || !d.tipPaymentType).reduce((s, d) => s + Number(d.tip || 0), 0)
@@ -1261,6 +1266,7 @@ export default function SpaDailySheet() {
     + regularAppts.filter(a => a.tipSplitPayment).reduce((s, a) => s + Number(a.tipCardPortion || 0), 0)
     + sameDayAppts.filter(a => a.tipPaymentType === "card").reduce((s, a) => s + Math.max(0, Number(a.packageTip ?? a.tip ?? 0) - gcAllocPackage(a).gcTip), 0)
     + ticketAppts.filter(a => a.extraTipPaymentType === "card").reduce((s, a) => s + Number(a.extraTip || 0), 0)
+    + regularAppts.filter(a => a.extraTipPaymentType === "card").reduce((s, a) => s + Number(a.extraTip || 0), 0)
     + revenueAddons.filter(ad => ad.tipPaymentType !== "cash").reduce((s, ad) => s + Number(ad.tip || 0) - addonGcAlloc(ad).gcTip, 0)
     + cavSlotAppts.filter(a => a.tipPaymentType === "card").reduce((s, a) => s + Number(a.tip || 0), 0)
     + deposits.filter(d => d.tipPaymentType === "card").reduce((s, d) => s + Number(d.tip || 0), 0)
