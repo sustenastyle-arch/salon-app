@@ -6087,7 +6087,7 @@ function PayrollTab() {
         const svcSplit = hasCav ? splitAddonAmount(addon.price, addon.duration, addon.cavMins) : { body: Number(addon.price || 0), cav: 0 };
         const tipSplit = hasCav ? splitAddonAmount(addon.tip, addon.duration, addon.cavMins) : { body: Number(addon.tip || 0), cav: 0 };
 
-        const pushRow = (t, svc, tip, noteSuffix) => {
+        const pushRow = (t, svc, tip, dur, noteSuffix) => {
           if (!t || !byTherapist[t]) return;
           // Skip only if no explicit therapist AND no price (pure label with no data)
           if (!addonTherapist && svc + tip === 0) return;
@@ -6097,7 +6097,7 @@ function PayrollTab() {
             isTicket: false,
             isGiftCard: a.isGiftCard,
             ticketInfo: "",
-            duration: 0,
+            duration: dur,
             service: svc,
             tip,
             paymentType: a.isGiftCard ? "gc" : (addon.paymentType || "cash"),
@@ -6112,10 +6112,12 @@ function PayrollTab() {
 
         const bodyT = addonTherapist || a.therapist;
         if (hasCav) {
-          pushRow(bodyT, svcSplit.body, tipSplit.body, ` (body)`);
-          pushRow(addon.cavTherapist, svcSplit.cav, tipSplit.cav, ` (machine)`);
+          const cavMins = Number(addon.cavMins || 0);
+          const bodyMins = Math.max(0, Number(addon.duration || 0) - cavMins);
+          pushRow(bodyT, svcSplit.body, tipSplit.body, bodyMins, ` (body)`);
+          pushRow(addon.cavTherapist, svcSplit.cav, tipSplit.cav, cavMins, ` (machine)`);
         } else {
-          pushRow(bodyT, svcSplit.body, tipSplit.body, "");
+          pushRow(bodyT, svcSplit.body, tipSplit.body, Number(addon.duration || 0), "");
         }
       });
     });
