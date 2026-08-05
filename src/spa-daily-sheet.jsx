@@ -4434,6 +4434,43 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
 
             </div>
 
+            {/* Extra service fee + tip — the Treatment/Tip Total above always splits a cav-split
+                appointment proportionally by machine minutes, so there's no way to give a flat
+                one-off amount (e.g. a $10 designation fee) to the body therapist alone without
+                it also being partly attributed to the machine therapist. This always credits
+                form.therapist only (see the payroll aggregation's extraPrice/extraTip handling). */}
+            {!form.isPromo && (
+              <div style={{ marginTop: 10, background: "#FFF8E1", borderRadius: 8, padding: 10, border: "1px solid #FFE082" }}>
+                <div style={{ fontWeight: 700, fontSize: 12, color: "#F57F17", marginBottom: 8 }}>💝 Extra (optional) — additional payment for {form.therapist} only</div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                  <Field label="Extra Treatment Fee ($)">
+                    <input type="number" value={form.extraPrice || ""} onChange={e => set("extraPrice", e.target.value)} style={inputStyle} placeholder="e.g. 27" />
+                  </Field>
+                  <Field label="Extra Tip ($)">
+                    <input type="number" value={form.extraTip || ""} onChange={e => set("extraTip", e.target.value)} style={inputStyle} placeholder="e.g. 10" />
+                  </Field>
+                </div>
+                {(Number(form.extraPrice||0) > 0 || Number(form.extraTip||0) > 0) && (
+                  <div style={{ marginTop: 8 }}>
+                    <Field label="Notes (e.g. what this extra is for)">
+                      <input value={form.extraNotes || ""} onChange={e => set("extraNotes", e.target.value)} style={inputStyle} placeholder="e.g. Designation fee" />
+                    </Field>
+                  </div>
+                )}
+                {(Number(form.extraPrice||0) > 0) && (
+                  <div style={{ marginTop: 8 }}>
+                    <Field label="Extra Treatment Fee Payment Method" error={errors.includes("extraPricePaymentType")}><PaymentToggle value={form.extraPricePaymentType} onChange={v => set("extraPricePaymentType", v)} /></Field>
+                  </div>
+                )}
+                {(form.extraTip > 0) && (
+                  <div style={{ marginTop: 8 }}>
+                    <Field label="Tip Payment Method" error={errors.includes("extraTipPaymentType")}><PaymentToggle value={form.extraTipPaymentType} onChange={v => set("extraTipPaymentType", v)} /></Field>
+                  </div>
+                )}
+                <div style={{ fontSize: 11, color: "#888", marginTop: 6 }}>For retail purchases, use the Retail section below</div>
+              </div>
+            )}
+
             {/* Gift Card Redemption banner — replaces payment type selectors */}
             {form.isGiftCard && (
               <div style={{ background: "#FFFDE7", borderRadius: 10, padding: 12, border: "2px solid #F59E0B", marginTop: 0 }}>
