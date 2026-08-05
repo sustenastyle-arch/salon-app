@@ -3827,7 +3827,14 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                 )}
                 {(form.extraTip > 0) && (
                   <div style={{ marginTop: 8 }}>
-                    <Field label="Tip Payment Method" error={errors.includes("extraTipPaymentType")}><PaymentToggle value={form.extraTipPaymentType} onChange={v => set("extraTipPaymentType", v)} /></Field>
+                    <Field label="Who gets this tip?">
+                      <select value={form.extraTipTherapist || form.therapist || ""} onChange={e => set("extraTipTherapist", e.target.value)} style={inputStyle}>
+                        {THERAPISTS.map(t => <option key={t} value={t}>{t}</option>)}
+                      </select>
+                    </Field>
+                    <div style={{ marginTop: 8 }}>
+                      <Field label="Tip Payment Method" error={errors.includes("extraTipPaymentType")}><PaymentToggle value={form.extraTipPaymentType} onChange={v => set("extraTipPaymentType", v)} /></Field>
+                    </div>
                   </div>
                 )}
                 <div style={{ fontSize: 11, color: "#888", marginTop: 6 }}>For retail purchases, use the Retail section below</div>
@@ -4464,7 +4471,14 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                 )}
                 {(form.extraTip > 0) && (
                   <div style={{ marginTop: 8 }}>
-                    <Field label="Tip Payment Method" error={errors.includes("extraTipPaymentType")}><PaymentToggle value={form.extraTipPaymentType} onChange={v => set("extraTipPaymentType", v)} /></Field>
+                    <Field label="Who gets this tip?">
+                      <select value={form.extraTipTherapist || form.therapist || ""} onChange={e => set("extraTipTherapist", e.target.value)} style={inputStyle}>
+                        {THERAPISTS.map(t => <option key={t} value={t}>{t}</option>)}
+                      </select>
+                    </Field>
+                    <div style={{ marginTop: 8 }}>
+                      <Field label="Tip Payment Method" error={errors.includes("extraTipPaymentType")}><PaymentToggle value={form.extraTipPaymentType} onChange={v => set("extraTipPaymentType", v)} /></Field>
+                    </div>
                   </div>
                 )}
                 <div style={{ fontSize: 11, color: "#888", marginTop: 6 }}>For retail purchases, use the Retail section below</div>
@@ -5940,10 +5954,12 @@ function PayrollTab() {
       } else {
         svc = bodyReceived;
       }
-      // Extra service fee/tip (💝 given on top of a ticket redemption) always count toward the
-      // therapist's payroll too.
+      // Extra treatment fee always counts toward the appointment's own therapist — the extra
+      // TIP is credited separately below, to whichever therapist was picked in extraTipTherapist
+      // (defaults to this same therapist, but staff can reassign it to someone else who actually
+      // received it).
       svc += Number(a.extraPrice || 0);
-      const tip = Number(a.tip || 0) + Number(a.extraTip || 0);
+      const tip = Number(a.tip || 0);
       const isCard = a.paymentType === "card";
       const isTipCard = a.tipPaymentType === "card";
       byTherapist[t].rows.push({
@@ -6150,6 +6166,30 @@ function PayrollTab() {
       });
       byTherapist[t].totalService += svc;
       byTherapist[t].totalTip += tip;
+    });
+
+    // Extra tip — a separate line item so it can be credited to any therapist, not just whoever
+    // ran the appointment (e.g. another staff member happened to receive a designation fee).
+    allAppts.filter(a => !a.isCavSlot && Number(a.extraTip || 0) > 0).forEach(a => {
+      const t = a.extraTipTherapist || a.therapist;
+      if (!t || !byTherapist[t]) return;
+      const tip = Number(a.extraTip || 0);
+      const isTipCard = a.extraTipPaymentType === "card";
+      byTherapist[t].rows.push({
+        date: a.date,
+        client: a.clientName,
+        isTicket: a.isTicket,
+        ticketInfo: "",
+        partner: "",
+        duration: 0,
+        service: 0,
+        tip,
+        paymentType: "",
+        tipPaymentType: a.extraTipPaymentType,
+        notes: ["💝 Extra tip" + (a.extraNotes ? `: ${a.extraNotes}` : ""), t !== a.therapist ? `(main therapist: ${a.therapist})` : ""].filter(Boolean).join("　"),
+      });
+      byTherapist[t].totalTip += tip;
+      if (isTipCard) byTherapist[t].totalTipCard += tip;
     });
 
     setPayrollData({ byTherapist, start, end });
