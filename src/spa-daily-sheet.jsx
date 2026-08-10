@@ -345,6 +345,8 @@ const RETAIL_PRODUCTS = [
   { name: "Liftech Cream", price: 0 },
   { name: "Lipid Body Treatment", price: 225 },
   { name: "Lipid Recovery Mask", price: 125 },
+  { name: "Lipid Recovery Mask for Eyes", price: 105 },
+  { name: "Lipid Recovery Mask for Neck+Décolleté", price: 140 },
   { name: "Lipid Serum", price: 250 },
   { name: "Luxury Skin Care Set", price: 395 },
   { name: "Lymph Love Herbal Tea 4oz", price: 30 },
@@ -376,6 +378,8 @@ const STAFF_PURCHASE_PRODUCTS = [
   { name: "Lipid Recovery Mask - Eyes (10pcs)", price: 80 },
   { name: "Lipid Recovery Mask - Face (10pcs)", price: 90 },
   { name: "Lipid Recovery Mask - Neck (10pcs)", price: 100 },
+  { name: "Lipid Recovery Mask for Eyes", price: 105 },
+  { name: "Lipid Recovery Mask for Neck+Décolleté", price: 140 },
   { name: "Luxury Set", price: 100 },
   { name: "ProCell Staff", price: 100 },
 ];
