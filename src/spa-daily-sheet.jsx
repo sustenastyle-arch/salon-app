@@ -373,6 +373,7 @@ const STAFF_PURCHASE_PRODUCTS = [
   { name: "Back Bar Lipid Shield SPF 30", price: 135 },
   { name: "Backbar Enzyme Powder (32g)", price: 45 },
   { name: "Backbar Lipid Body Treatment", price: 175 },
+  { name: "Backbar Lipid Serum", price: 145 },
   { name: "Backbar Oil Cleanser (16oz)", price: 100 },
   { name: "Ice Globes", price: 100 },
   { name: "Lipid Recovery Mask - Eyes (10pcs)", price: 80 },
