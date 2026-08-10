@@ -1190,6 +1190,26 @@ export default function SpaDailySheet() {
     const gcRetail = Math.min(r2(gc - gcSvc - gcTip), retail);
     return { gcSvc, gcTip, gcRetail };
   };
+  // A cav (machine) slot never carries its own giftCardUsed — the gift card is only recorded on
+  // the parent/body appointment — so a gift card that covers the WHOLE split visit (body + machine)
+  // left the machine's share counting as new revenue with no way to mark it otherwise. Allocates
+  // whatever's left of the parent's gift card after covering the body's price+tip (in that order,
+  // matching gcAlloc above) against the cav slot's own price+tip.
+  const apptByIdForGc = {};
+  appointments.forEach(a => { if (a.id) apptByIdForGc[a.id] = a; });
+  const gcAllocCav = (cavAppt) => {
+    const parent = cavAppt.parentId ? apptByIdForGc[cavAppt.parentId] : null;
+    if (!parent) return { gcSvc: 0, gcTip: 0 };
+    const gc = Number(parent.giftCardUsed || 0);
+    const bodySvc = Number(parent.price || 0);
+    const bodyTip = Number(parent.tip || 0);
+    const remaining = Math.max(0, r2(gc - bodySvc - bodyTip));
+    const svc = Number(cavAppt.price || 0);
+    const tip = Number(cavAppt.tip || 0);
+    const gcSvc = Math.min(remaining, svc);
+    const gcTip = Math.min(r2(remaining - gcSvc), tip);
+    return { gcSvc, gcTip };
+  };
   // Same allocation, but for a same-day ticket *purchase*'s package price/tip (giftCardUsed there
   // covers the package, not the per-visit staff-allocation price/tip fields).
   const gcAllocPackage = (a) => {
@@ -1219,7 +1239,7 @@ export default function SpaDailySheet() {
     + totalForgottenService
     - totalRefundService;
   const totalCavRevenue = regularAppts.reduce((s, a) => s + Number(a.cavPrice || 0), 0)
-    + cavSlotAppts.reduce((s, a) => s + Number(a.price || 0), 0);
+    + cavSlotAppts.reduce((s, a) => s + Number(a.price || 0) - gcAllocCav(a).gcSvc, 0);
   const totalTips = regularAppts.reduce((s, a) => s + Number(a.tip || 0) - gcAlloc(a).gcTip, 0)
     + sameDayAppts.reduce((s, a) => s + Number(a.packageTip ?? a.tip ?? 0) - gcAllocPackage(a).gcTip, 0)
     + ticketAppts.reduce((s, a) => s + Number(a.extraTip || 0), 0)
@@ -1228,7 +1248,7 @@ export default function SpaDailySheet() {
     + totalForgottenTip
     - totalRefundTip;
   const totalCavTips = regularAppts.reduce((s, a) => s + Number(a.cavTip || 0), 0)
-    + cavSlotAppts.reduce((s, a) => s + Number(a.tip || 0), 0);
+    + cavSlotAppts.reduce((s, a) => s + Number(a.tip || 0) - gcAllocCav(a).gcTip, 0);
   const totalGCUsed = regularAppts.reduce((s, a) => s + Number(a.giftCardUsed || 0), 0)
     + sameDayAppts.reduce((s, a) => s + Number(a.giftCardUsed || 0), 0)
     + revenueAddons.reduce((s, ad) => s + Number(ad.giftCardUsed || 0), 0);
@@ -1239,7 +1259,7 @@ export default function SpaDailySheet() {
     + ticketAppts.filter(a => a.extraPricePaymentType === "cash").reduce((s, a) => s + Number(a.extraPrice || 0), 0)
     + regularAppts.filter(a => a.extraPricePaymentType === "cash").reduce((s, a) => s + Number(a.extraPrice || 0), 0)
     + revenueAddons.filter(ad => ad.paymentType === "cash").reduce((s, ad) => s + Number(ad.price || 0) - addonGcAlloc(ad).gcSvc, 0)
-    + cavSlotAppts.filter(a => a.paymentType === "cash").reduce((s, a) => s + Number(a.price || 0), 0)
+    + cavSlotAppts.filter(a => a.paymentType === "cash").reduce((s, a) => s + Math.max(0, Number(a.price || 0) - gcAllocCav(a).gcSvc), 0)
     + totalForgottenCash
     - totalRefundCash;
   const totalCard = regularAppts.filter(a => !a.svcSplitPayment && a.paymentType === "card").reduce((s, a) => s + Math.max(0, Number(a.price || 0) - gcAlloc(a).gcSvc), 0)
@@ -1249,7 +1269,7 @@ export default function SpaDailySheet() {
     + ticketAppts.filter(a => a.extraPricePaymentType === "card").reduce((s, a) => s + Number(a.extraPrice || 0), 0)
     + regularAppts.filter(a => a.extraPricePaymentType === "card").reduce((s, a) => s + Number(a.extraPrice || 0), 0)
     + revenueAddons.filter(ad => ad.paymentType !== "cash").reduce((s, ad) => s + Number(ad.price || 0) - addonGcAlloc(ad).gcSvc, 0)
-    + cavSlotAppts.filter(a => a.paymentType !== "cash").reduce((s, a) => s + Number(a.price || 0), 0)
+    + cavSlotAppts.filter(a => a.paymentType !== "cash").reduce((s, a) => s + Math.max(0, Number(a.price || 0) - gcAllocCav(a).gcSvc), 0)
     + totalForgottenCard
     - totalRefundCard;
   const totalTipCash = regularAppts.filter(a => !a.tipSplitPayment && a.tipPaymentType === "cash").reduce((s, a) => s + Math.max(0, Number(a.tip || 0) - gcAlloc(a).gcTip), 0)
@@ -1258,7 +1278,7 @@ export default function SpaDailySheet() {
     + ticketAppts.filter(a => a.extraTipPaymentType === "cash").reduce((s, a) => s + Number(a.extraTip || 0), 0)
     + regularAppts.filter(a => a.extraTipPaymentType === "cash").reduce((s, a) => s + Number(a.extraTip || 0), 0)
     + revenueAddons.filter(ad => ad.tipPaymentType === "cash").reduce((s, ad) => s + Number(ad.tip || 0) - addonGcAlloc(ad).gcTip, 0)
-    + cavSlotAppts.filter(a => a.tipPaymentType === "cash").reduce((s, a) => s + Number(a.tip || 0), 0)
+    + cavSlotAppts.filter(a => a.tipPaymentType === "cash").reduce((s, a) => s + Math.max(0, Number(a.tip || 0) - gcAllocCav(a).gcTip), 0)
     + deposits.filter(d => d.tipPaymentType === "cash" || !d.tipPaymentType).reduce((s, d) => s + Number(d.tip || 0), 0)
     + totalForgottenTipCash
     - totalRefundTipCash;
@@ -1268,7 +1288,7 @@ export default function SpaDailySheet() {
     + ticketAppts.filter(a => a.extraTipPaymentType === "card").reduce((s, a) => s + Number(a.extraTip || 0), 0)
     + regularAppts.filter(a => a.extraTipPaymentType === "card").reduce((s, a) => s + Number(a.extraTip || 0), 0)
     + revenueAddons.filter(ad => ad.tipPaymentType !== "cash").reduce((s, ad) => s + Number(ad.tip || 0) - addonGcAlloc(ad).gcTip, 0)
-    + cavSlotAppts.filter(a => a.tipPaymentType === "card").reduce((s, a) => s + Number(a.tip || 0), 0)
+    + cavSlotAppts.filter(a => a.tipPaymentType === "card").reduce((s, a) => s + Math.max(0, Number(a.tip || 0) - gcAllocCav(a).gcTip), 0)
     + deposits.filter(d => d.tipPaymentType === "card").reduce((s, d) => s + Number(d.tip || 0), 0)
     + totalForgottenTipCard
     - totalRefundTipCard;
@@ -2412,7 +2432,6 @@ function ApptCard({ appt, onClick, allAppointments }) {
   // purchase, its price/tip are always just the per-session payroll-reference split (the real
   // revenue for that purchase shows in red on the body/main card's own package-price line
   // instead), so it should read as non-revenue here regardless of isSameDayTicket.
-  const cavAmountColor = (!isGiftCard && !isPromo && !gcFullyCovers && !isTicket) ? REVENUE_COLOR : NON_REVENUE_COLOR;
   const borderColor = isCavSlot ? "#9C27B0" : isGiftCard ? "#F59E0B" : isPromo ? "#1565C0" : isTicket ? "#1565C0" : appt.paymentType === "cash" ? "#4CAF50" : "#2196F3";
   const bg = isCavSlot ? "#F9F0FF" : isGiftCard ? "#FFFDE7" : isPromo ? "#E3F2FD" : isTicket ? "#EEF5FF" : appt.paymentType === "cash" ? "#F1FBF3" : "#EEF5FF";
 
@@ -2434,6 +2453,14 @@ function ApptCard({ appt, onClick, allAppointments }) {
     }
     const cavTip = Number(appt.tip||0);
     const cavTotal = r2(cavSvc + cavTip);
+    // The cav slot never carries its own giftCardUsed (only the parent/body appt does) — a gift
+    // card that covers the whole split visit (body + machine) still leaves the machine's own
+    // price/tip fields with no giftCardUsed of their own, so this figures out how much of the
+    // parent's gift card was left over after the body's own price+tip, and checks if that
+    // leftover covers the machine's share too — same rule as the body card's gcFullyCovers.
+    const gcAfterBody = Math.max(0, r2(Number(parent?.giftCardUsed || 0) - Number(parent?.price || 0) - Number(parent?.tip || 0)));
+    const cavGcFullyCovers = (cavSvc + cavTip) > 0 && gcAfterBody >= (cavSvc + cavTip);
+    const cavAmountColor = (!parent?.isGiftCard && !parent?.isPromo && !cavGcFullyCovers && !appt.isTicket) ? REVENUE_COLOR : NON_REVENUE_COLOR;
     const svcIcon = appt.paymentType === "card" ? "💳" : appt.paymentType === "cash" ? "💵" : "";
     const tipIcon = appt.tipPaymentType === "card" ? "💳" : appt.tipPaymentType === "cash" ? "💵" : "";
     return (

@@ -130,6 +130,25 @@ export function computeDayTotals(data) {
     const gcRetail = Math.min(r2(gc - gcSvc - gcTip), retail);
     return { gcSvc, gcTip, gcRetail };
   };
+  // A cav (machine) slot never carries its own giftCardUsed (only the parent/body appt does) —
+  // same fix as spa-daily-sheet.jsx's gcAllocCav: allocates whatever's left of the parent's gift
+  // card after covering the body's price+tip against the cav slot's own price+tip, so a gift
+  // card covering the whole split visit doesn't leave the machine's share counting as new revenue.
+  const apptByIdForGc = {};
+  (data.appointments || []).forEach(a => { if (a.id) apptByIdForGc[a.id] = a; });
+  const gcAllocCav = (cavAppt) => {
+    const parent = cavAppt.parentId ? apptByIdForGc[cavAppt.parentId] : null;
+    if (!parent) return { gcSvc: 0, gcTip: 0 };
+    const gc = Number(parent.giftCardUsed || 0);
+    const bodySvc = Number(parent.price || 0);
+    const bodyTip = Number(parent.tip || 0);
+    const remaining = Math.max(0, r2(gc - bodySvc - bodyTip));
+    const svc = Number(cavAppt.price || 0);
+    const tip = Number(cavAppt.tip || 0);
+    const gcSvc = Math.min(remaining, svc);
+    const gcTip = Math.min(r2(remaining - gcSvc), tip);
+    return { gcSvc, gcTip };
+  };
   // An add-on can also be paid from an existing gift card balance — same exclusion rule as
   // gcAlloc above, just against the add-on's own price/tip instead of the main service's.
   const addonGcAlloc = (ad) => {
@@ -182,7 +201,7 @@ export function computeDayTotals(data) {
     + sameDayTicketAppts.filter(a => a.extraPricePaymentType === "cash").reduce((s,a) => s + Number(a.extraPrice||0), 0)
     + revenueAppts.filter(a => a.extraPricePaymentType === "cash").reduce((s,a) => s + Number(a.extraPrice||0), 0)
     + revenueAddons.filter(ad => ad.paymentType === "cash").reduce((s,ad) => s + Number(ad.price||0) - addonGcAlloc(ad).gcSvc, 0)
-    + cavSlotAppts.filter(a => a.paymentType === "cash").reduce((s,a) => s + Number(a.price||0), 0)
+    + cavSlotAppts.filter(a => a.paymentType === "cash").reduce((s,a) => s + Math.max(0, Number(a.price||0) - gcAllocCav(a).gcSvc), 0)
     + depositCash
     + tpCash
     + inlineNTCash
@@ -196,7 +215,7 @@ export function computeDayTotals(data) {
     + sameDayTicketAppts.filter(a => a.extraTipPaymentType === "cash").reduce((s,a) => s + Number(a.extraTip||0), 0)
     + revenueAppts.filter(a => a.extraTipPaymentType === "cash").reduce((s,a) => s + Number(a.extraTip||0), 0)
     + revenueAddons.filter(ad => ad.tipPaymentType === "cash").reduce((s,ad) => s + Number(ad.tip||0) - addonGcAlloc(ad).gcTip, 0)
-    + cavSlotAppts.filter(a => a.tipPaymentType === "cash").reduce((s,a) => s + Number(a.tip||0), 0)
+    + cavSlotAppts.filter(a => a.tipPaymentType === "cash").reduce((s,a) => s + Math.max(0, Number(a.tip||0) - gcAllocCav(a).gcTip), 0)
     + tpTipCash
     + inlineNTTipCash
     + forgottenTipCash
@@ -209,7 +228,7 @@ export function computeDayTotals(data) {
     + sameDayTicketAppts.filter(a => a.extraPricePaymentType === "card").reduce((s,a) => s + Number(a.extraPrice||0), 0)
     + revenueAppts.filter(a => a.extraPricePaymentType === "card").reduce((s,a) => s + Number(a.extraPrice||0), 0)
     + revenueAddons.filter(ad => ad.paymentType !== "cash").reduce((s,ad) => s + Number(ad.price||0) - addonGcAlloc(ad).gcSvc, 0)
-    + cavSlotAppts.filter(a => a.paymentType !== "cash").reduce((s,a) => s + Number(a.price||0), 0)
+    + cavSlotAppts.filter(a => a.paymentType !== "cash").reduce((s,a) => s + Math.max(0, Number(a.price||0) - gcAllocCav(a).gcSvc), 0)
     + depositCard
     + tpCard
     + inlineNTCard
@@ -223,7 +242,7 @@ export function computeDayTotals(data) {
     + sameDayTicketAppts.filter(a => a.extraTipPaymentType === "card").reduce((s,a) => s + Number(a.extraTip||0), 0)
     + revenueAppts.filter(a => a.extraTipPaymentType === "card").reduce((s,a) => s + Number(a.extraTip||0), 0)
     + revenueAddons.filter(ad => ad.tipPaymentType !== "cash").reduce((s,ad) => s + Number(ad.tip||0) - addonGcAlloc(ad).gcTip, 0)
-    + cavSlotAppts.filter(a => a.tipPaymentType !== "cash").reduce((s,a) => s + Number(a.tip||0), 0)
+    + cavSlotAppts.filter(a => a.tipPaymentType !== "cash").reduce((s,a) => s + Math.max(0, Number(a.tip||0) - gcAllocCav(a).gcTip), 0)
     + tpTipCard
     + inlineNTTipCard
     + forgottenTipCard
@@ -234,7 +253,7 @@ export function computeDayTotals(data) {
     + sameDayTicketAppts.reduce((s,a) => s + Number(a.extraTip||0), 0)
     + revenueAppts.reduce((s,a) => s + Number(a.extraTip||0), 0)
     + revenueAddons.reduce((s,ad) => s + Number(ad.tip||0) - addonGcAlloc(ad).gcTip, 0)
-    + cavSlotAppts.reduce((s,a) => s + Number(a.tip||0), 0)
+    + cavSlotAppts.reduce((s,a) => s + Number(a.tip||0) - gcAllocCav(a).gcTip, 0)
     + tpTipCash + tpTipCard
     + inlineNTTipCash + inlineNTTipCard
     + forgottenTipCash + forgottenTipCard
