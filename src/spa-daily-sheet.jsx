@@ -1939,7 +1939,7 @@ export default function SpaDailySheet() {
           </table>
 
           {/* Retail */}
-          <SectionBox title="🛍️ Retail" color="#6A1B9A" onAdd={() => setEditingRetail({ ...EMPTY_RETAIL, id: Date.now() })} disabled={locked}>
+          <SectionBox title="🛍️ Retail (Phone/Walk-in)" color="#6A1B9A" onAdd={() => setEditingRetail({ ...EMPTY_RETAIL, id: Date.now() })} disabled={locked}>
             {retails.length === 0 && <p style={{ color: "#AAA", fontSize: 13 }}>None</p>}
             {retails.map(r => (
               <div key={r.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: "1px solid #F0F0F0", flexWrap: "wrap" }}>
@@ -4912,12 +4912,18 @@ function RetailModal({ retail, onSave, onClose }) {
   return (
     <Modal onClose={onClose}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-        <h2 style={{ margin: 0, fontSize: 18, color: "#6A1B9A" }}>🛍️ Retail</h2>
+        <h2 style={{ margin: 0, fontSize: 18, color: "#6A1B9A" }}>🛍️ Retail (Phone/Walk-in)</h2>
         <button onClick={onClose} style={{ border: "none", background: "none", fontSize: 22, cursor: "pointer" }}>✕</button>
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
         <Field label="Client Name (optional)">
-          <input value={form.clientName || ""} onChange={e => set("clientName", e.target.value)} style={inputStyle} placeholder="e.g. Mayumi" />
+          <div style={{ display: "flex", gap: 6 }}>
+            <input value={form.clientName || ""} onChange={e => set("clientName", e.target.value)} style={{ ...inputStyle, flex: 1 }} placeholder="e.g. Mayumi or Walk-in" />
+            <button onClick={() => set("clientName", "Walk-in")} type="button"
+              style={{ padding: "0 14px", borderRadius: 8, border: "2px solid #6A1B9A", background: form.clientName === "Walk-in" ? "#6A1B9A" : "#fff", color: form.clientName === "Walk-in" ? "#fff" : "#6A1B9A", fontWeight: 700, cursor: "pointer", fontSize: 13, whiteSpace: "nowrap" }}>
+              Walk-in
+            </button>
+          </div>
         </Field>
         <Field label="Product Name">
           <select value={RETAIL_PRODUCTS.find(p => p.name === form.item) ? form.item : (form.item ? "__other__" : "")}
