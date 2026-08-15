@@ -247,6 +247,10 @@ const SQUARE_SERVICES = [
   { name: "Prenatal Massage 60min", duration: 60 },
   { name: "Prenatal Massage 75min", duration: 75 },
   { name: "Couple Massage 90min", duration: 90 },
+  { name: "Lymphatic Drainage 60min", duration: 60 },
+  { name: "Lymphatic Drainage 75min", duration: 75 },
+  { name: "Lymphatic Drainage 90min", duration: 90 },
+  { name: "Lymphatic Drainage 120min", duration: 120 },
   // Add-ons
   { name: "Cavitation 10min", duration: 10 },
   { name: "Cavitation 20min", duration: 20 },
