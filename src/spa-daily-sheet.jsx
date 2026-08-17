@@ -6352,6 +6352,48 @@ function PayrollTab() {
     a.click();
   };
 
+  // Same numbers as downloadAllCSV, but laid out as one workbook with a separate sheet per
+  // therapist (with the retail commission rate stated in that sheet's own title row) \u2014 matches
+  // the layout the office (Yuki) hand-built from the CSV for July, which she found easier to
+  // read than one flat staff-by-staff CSV. Skips any therapist with zero rows for the period,
+  // same as downloadAllCSV, so an all-quiet staff member doesn't get an empty sheet.
+  const downloadAllXLSX = () => {
+    if (!payrollData) return;
+    const remarksForAll = (r) => [
+      r.isTicket && r.ticketInfo ? `\uD83C\uDF9F\uFE0F ${r.ticketInfo}` : "",
+      r.partner ? `with ${r.partner}` : "",
+      r.notes || "",
+    ].filter(Boolean).join("\u3000");
+    // Reference sheets show dates as "M/D/YYYY" with no leading zeros (e.g. "7/15/2026"), not
+    // the ISO "YYYY-MM-DD" the row data carries internally.
+    const fmtDate = (iso) => {
+      const [y, m, d] = iso.split("-").map(Number);
+      return `${m}/${d}/${y}`;
+    };
+    const wb = XLSX.utils.book_new();
+    THERAPISTS.forEach(t => {
+      const data = payrollData.byTherapist[t];
+      if (!data || data.rows.length === 0) return;
+      const rate = retailCommissionRate(t);
+      const totalRetailCommission = r2(data.rows.reduce((s, r) => s + (r.retail ? r2(r.retail * rate) : 0), 0));
+      const totalMinutes = t === "Maki" ? data.rows.reduce((s, r) => s + Number(r.duration || 0), 0) : "";
+      const wsData = [
+        [`${t}  (Retail commission rate: ${Math.round(rate * 100)}%)`, "", "", "", "", "", "", "", ""],
+        ["Date", "Client", "Minutes (Maki only)", "Treatment", "Tip", "Total", "Retail (tax-excl.)", "Retail Commission", "Remarks"],
+        ...data.rows.map(r => [
+          fmtDate(r.date), r.client, t === "Maki" ? (r.duration || "") : "",
+          r.service || "", r.tip || "", r2(r.service + r.tip), r.retail || "", r.retail ? r2(r.retail * rate) : "", remarksForAll(r)
+        ]),
+        ["", "Subtotal", totalMinutes, data.totalService, data.totalTip, r2(data.totalService + data.totalTip), data.totalRetail, totalRetailCommission, ""],
+      ];
+      const ws = XLSX.utils.aoa_to_sheet(wsData);
+      // Sheet names can't exceed 31 chars or contain []:*?/\ \u2014 therapist first names are all
+      // short and plain, so this is just a defensive trim, not expected to actually fire.
+      XLSX.utils.book_append_sheet(wb, ws, t.slice(0, 31));
+    });
+    XLSX.writeFile(wb, `AllStaffPayroll_${payrollData.start}_${payrollData.end}.xlsx`);
+  };
+
   const { start, end } = calcPeriodDates(month, period);
 
   return (
@@ -6403,6 +6445,12 @@ function PayrollTab() {
             <button onClick={downloadAllCSV}
               style={{ padding: "10px 20px", borderRadius: 10, border: "none", background: "#1565C0", color: "#fff", fontWeight: 700, cursor: "pointer", fontSize: 14 }}>
               ⬇️ All Staff CSV
+            </button>
+          )}
+          {payrollData && (
+            <button onClick={downloadAllXLSX}
+              style={{ padding: "10px 20px", borderRadius: 10, border: "none", background: "#2E7D32", color: "#fff", fontWeight: 700, cursor: "pointer", fontSize: 14 }}>
+              📗 All Staff Excel (by tab)
             </button>
           )}
         </div>
