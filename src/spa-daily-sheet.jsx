@@ -6436,6 +6436,23 @@ function PayrollTab() {
       const subtotalRow = ws.addRow(["", "Subtotal", totalMinutes, data.totalService, data.totalTip, r2(data.totalService + data.totalTip), data.totalRetail, totalRetailCommission, ""]);
       subtotalRow.font = { bold: true };
       subtotalRow.eachCell({ includeEmpty: true }, cell => { cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFFF2CC" } }; });
+
+      // Live SUM formulas instead of a static computed number — an office staffer occasionally
+      // adds a row by hand for something outside the app (a past-visit charge that predates the
+      // Daily Sheet), and a hardcoded subtotal silently stops matching the column above it the
+      // moment that happens. The cached `result` alongside each formula is what ExcelJS itself
+      // just computed, so anything reading the file without opening it in Excel first (this
+      // export, or a script) still sees the right number, not blank/zero until a recalc.
+      const firstDataRow = headerRow.number + 1;
+      const lastDataRow = subtotalRow.number - 1;
+      const colLetter = ["A", "B", "C", "D", "E", "F", "G", "H", "I"];
+      const sumFormula = (col) => `SUM(${colLetter[col - 1]}${firstDataRow}:${colLetter[col - 1]}${lastDataRow})`;
+      if (t === "Maki") subtotalRow.getCell(3).value = { formula: sumFormula(3), result: totalMinutes };
+      subtotalRow.getCell(4).value = { formula: sumFormula(4), result: data.totalService };
+      subtotalRow.getCell(5).value = { formula: sumFormula(5), result: data.totalTip };
+      subtotalRow.getCell(6).value = { formula: sumFormula(6), result: r2(data.totalService + data.totalTip) };
+      subtotalRow.getCell(7).value = { formula: sumFormula(7), result: data.totalRetail };
+      subtotalRow.getCell(8).value = { formula: sumFormula(8), result: totalRetailCommission };
       [4, 5, 6, 7, 8].forEach(col => { subtotalRow.getCell(col).numFmt = MONEY_FMT; });
 
       applyGridBorders(ws, titleRow.number, subtotalRow.number, 1, 9);
