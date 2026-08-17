@@ -1,6 +1,11 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { createPortal } from "react-dom";
 import * as XLSX from "xlsx";
+// The plain "xlsx" package (SheetJS Community Edition) above cannot write cell styles at all —
+// verified directly against a hand-formatted reference file, its borders/fills array came back
+// empty no matter what was set. ExcelJS is used only for the payroll export below, which needs
+// real borders/shading to match that reference.
+import ExcelJS from "exceljs";
 import { REFERRAL_SOURCES, getRetailItems, getStaffPurchaseItems, computeDayTotals } from "./lib/reportTotals.js";
 
 const THERAPISTS = ["Mami", "Aya", "Megumi", "Hiromi", "Maki", "Yuka", "Mai", "Betsy"];
@@ -6357,7 +6362,13 @@ function PayrollTab() {
   // the layout the office (Yuki) hand-built from the CSV for July, which she found easier to
   // read than one flat staff-by-staff CSV. Skips any therapist with zero rows for the period,
   // same as downloadAllCSV, so an all-quiet staff member doesn't get an empty sheet.
-  const downloadAllXLSX = () => {
+  //
+  // Rows are pushed above in category passes (all main-service rows, then all retail rows, then
+  // forgotten tips, then add-ons, then cav slots, then extra tips) \u2014 each pass is internally in
+  // date order, but the categories land one after another, so a retail sale on day 3 can appear
+  // after every treatment row through day 15. Sorted here by date before rendering so a sheet
+  // reads top-to-bottom in calendar order regardless of which category each row came from.
+  const downloadAllXLSX = async () => {
     if (!payrollData) return;
     const remarksForAll = (r) => [
       r.isTicket && r.ticketInfo ? `\uD83C\uDF9F\uFE0F ${r.ticketInfo}` : "",
@@ -6370,28 +6381,74 @@ function PayrollTab() {
       const [y, m, d] = iso.split("-").map(Number);
       return `${m}/${d}/${y}`;
     };
-    const wb = XLSX.utils.book_new();
+    const THIN = { style: "thin", color: { argb: "FF000000" } };
+    const MEDIUM = { style: "medium", color: { argb: "FF000000" } };
+    // Every cell in the table gets a thin border on all sides, then whichever sides sit on the
+    // outer edge of the whole block get upgraded to medium \u2014 matches the reference file's
+    // medium-outline-with-thin-grid look without hand-tracking which of its ~7 border variants
+    // applies to which specific cell.
+    const applyGridBorders = (ws, firstRow, lastRow, firstCol, lastCol) => {
+      for (let row = firstRow; row <= lastRow; row++) {
+        for (let col = firstCol; col <= lastCol; col++) {
+          const cell = ws.getCell(row, col);
+          cell.border = {
+            top: row === firstRow ? MEDIUM : THIN,
+            bottom: row === lastRow ? MEDIUM : THIN,
+            left: col === firstCol ? MEDIUM : THIN,
+            right: col === lastCol ? MEDIUM : THIN,
+          };
+        }
+      }
+    };
+    const MONEY_FMT = '"$"#,##0.00';
+
+    const wb = new ExcelJS.Workbook();
     THERAPISTS.forEach(t => {
       const data = payrollData.byTherapist[t];
       if (!data || data.rows.length === 0) return;
       const rate = retailCommissionRate(t);
-      const totalRetailCommission = r2(data.rows.reduce((s, r) => s + (r.retail ? r2(r.retail * rate) : 0), 0));
-      const totalMinutes = t === "Maki" ? data.rows.reduce((s, r) => s + Number(r.duration || 0), 0) : "";
-      const wsData = [
-        [`${t}  (Retail commission rate: ${Math.round(rate * 100)}%)`, "", "", "", "", "", "", "", ""],
-        ["Date", "Client", "Minutes (Maki only)", "Treatment", "Tip", "Total", "Retail (tax-excl.)", "Retail Commission", "Remarks"],
-        ...data.rows.map(r => [
+      const sortedRows = [...data.rows].sort((a, b) => a.date.localeCompare(b.date));
+      const totalRetailCommission = r2(sortedRows.reduce((s, r) => s + (r.retail ? r2(r.retail * rate) : 0), 0));
+      const totalMinutes = t === "Maki" ? sortedRows.reduce((s, r) => s + Number(r.duration || 0), 0) : "";
+
+      const ws = wb.addWorksheet(t.slice(0, 31));
+      ws.columns = [
+        { width: 12 }, { width: 22 }, { width: 12 }, { width: 11 },
+        { width: 9 }, { width: 11 }, { width: 14 }, { width: 14 }, { width: 44 },
+      ];
+
+      const titleRow = ws.addRow([`${t}  (Retail commission rate: ${Math.round(rate * 100)}%)`, "", "", "", "", "", "", "", ""]);
+      titleRow.font = { bold: true, size: 13 };
+      titleRow.eachCell({ includeEmpty: true }, cell => { cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF2F2F2" } }; });
+
+      const headerRow = ws.addRow(["Date", "Client", "Minutes (Maki only)", "Treatment", "Tip", "Total", "Retail (tax-excl.)", "Retail Commission", "Remarks"]);
+      headerRow.font = { bold: true };
+      headerRow.eachCell({ includeEmpty: true }, cell => { cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFD9D9D9" } }; });
+
+      sortedRows.forEach(r => {
+        const row = ws.addRow([
           fmtDate(r.date), r.client, t === "Maki" ? (r.duration || "") : "",
           r.service || "", r.tip || "", r2(r.service + r.tip), r.retail || "", r.retail ? r2(r.retail * rate) : "", remarksForAll(r)
-        ]),
-        ["", "Subtotal", totalMinutes, data.totalService, data.totalTip, r2(data.totalService + data.totalTip), data.totalRetail, totalRetailCommission, ""],
-      ];
-      const ws = XLSX.utils.aoa_to_sheet(wsData);
-      // Sheet names can't exceed 31 chars or contain []:*?/\ \u2014 therapist first names are all
-      // short and plain, so this is just a defensive trim, not expected to actually fire.
-      XLSX.utils.book_append_sheet(wb, ws, t.slice(0, 31));
+        ]);
+        [4, 5, 6, 7, 8].forEach(col => { row.getCell(col).numFmt = MONEY_FMT; });
+      });
+
+      const subtotalRow = ws.addRow(["", "Subtotal", totalMinutes, data.totalService, data.totalTip, r2(data.totalService + data.totalTip), data.totalRetail, totalRetailCommission, ""]);
+      subtotalRow.font = { bold: true };
+      subtotalRow.eachCell({ includeEmpty: true }, cell => { cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFFF2CC" } }; });
+      [4, 5, 6, 7, 8].forEach(col => { subtotalRow.getCell(col).numFmt = MONEY_FMT; });
+
+      applyGridBorders(ws, titleRow.number, subtotalRow.number, 1, 9);
     });
-    XLSX.writeFile(wb, `AllStaffPayroll_${payrollData.start}_${payrollData.end}.xlsx`);
+
+    const buf = await wb.xlsx.writeBuffer();
+    const blob = new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `AllStaffPayroll_${payrollData.start}_${payrollData.end}.xlsx`;
+    a.click();
+    URL.revokeObjectURL(url);
   };
 
   const { start, end } = calcPeriodDates(month, period);
