@@ -6039,10 +6039,15 @@ function PayrollTab() {
         const sellers = (item.sellers && item.sellers.length > 0)
           ? item.sellers
           : [{ therapist: a.therapist, amount: afterTaxAmount(item.amount) }];
-        sellers.filter(sel => sel.therapist && Number(sel.amount || 0) > 0).forEach(sel => {
+        // Sellers actually credited on this sale — used both to distribute the amount below and
+        // to note in Remarks who else split it with, so a per-therapist dollar amount (e.g. a 4%
+        // vs 10% commission split) isn't a mystery number with no way to trace it back.
+        const validSellers = sellers.filter(sel => sel.therapist && Number(sel.amount || 0) > 0);
+        validSellers.forEach(sel => {
           const t = sel.therapist;
           if (!t || !byTherapist[t]) return;
           const retail = Number(sel.amount);
+          const others = validSellers.filter(s => s.therapist !== t).map(s => s.therapist);
           byTherapist[t].rows.push({
             date: a.date,
             client: a.clientName,
@@ -6055,7 +6060,7 @@ function PayrollTab() {
             tipPaymentType: "",
             retail,
             retailProduct: item.productName || "",
-            notes: `🛍️ Retail${item.productName ? ` (${item.productName})` : ""}`,
+            notes: `🛍️ Retail${item.productName ? ` (${item.productName})` : ""}${item.quantity ? ` x${item.quantity}` : ""}${others.length > 0 ? ` — split with ${others.join(", ")}` : ""}`,
           });
           byTherapist[t].totalRetail += retail;
           if (isCard) byTherapist[t].totalRetailCard += retail;
@@ -6069,13 +6074,17 @@ function PayrollTab() {
     allRetails.forEach(r => {
       const sellers = r.sellers || (r.soldBy ? [{ therapist: r.soldBy, amount: afterTaxAmount(r.price) }] : []);
       const isCard = r.paymentType === "card";
-      sellers.filter(sel => sel.therapist && Number(sel.amount || 0) > 0).forEach(sel => {
+      // Same split-partner + quantity context as the inline-retail block above — clientName and
+      // quantity were already being saved on every phone/walk-in sale, just never surfaced here.
+      const validSellers = sellers.filter(sel => sel.therapist && Number(sel.amount || 0) > 0);
+      validSellers.forEach(sel => {
         const t = sel.therapist;
         if (!byTherapist[t]) return;
         const retail = Number(sel.amount);
+        const others = validSellers.filter(s => s.therapist !== t).map(s => s.therapist);
         byTherapist[t].rows.push({
           date: r.date,
-          client: "",
+          client: r.clientName || "",
           isTicket: false,
           ticketInfo: "",
           duration: 0,
@@ -6085,7 +6094,7 @@ function PayrollTab() {
           tipPaymentType: "",
           retail,
           retailProduct: r.item || "",
-          notes: `🛍️ Retail (phone/walk-in)${r.item ? ` (${r.item})` : ""}`,
+          notes: `🛍️ Retail (phone/walk-in)${r.item ? ` (${r.item})` : ""}${r.quantity ? ` x${r.quantity}` : ""}${others.length > 0 ? ` — split with ${others.join(", ")}` : ""}`,
         });
         byTherapist[t].totalRetail += retail;
         if (isCard) byTherapist[t].totalRetailCard += retail;
