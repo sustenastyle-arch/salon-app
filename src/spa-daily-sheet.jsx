@@ -2829,6 +2829,7 @@ const APPT_ERROR_LABELS = {
   newTicketTipPaymentType: "New Ticket Purchase Tip Payment Method",
   retailPurchasePaymentType: "Retail Purchase Payment Method",
   retailQuantity: "Retail Quantity",
+  retailSellersMismatch: "Retail Split Amount (doesn't add up to the tax-excluded total)",
   giftCardPurchasePaymentType: "Gift Card Purchase Payment Method",
   depositPaidDate: "Deposit Paid Date",
   packageDepositDate: "Deposit Paid Date",
@@ -2911,6 +2912,18 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
       if ((f.extraRetailItems || []).some(it => Number(it.amount || 0) > 0 && !it.paymentType)) errs.push("retailPurchasePaymentType");
       if (Number(f.retailPurchaseAmount || 0) > 0 && !Number(f.retailQuantity)) errs.push("retailQuantity");
       if ((f.extraRetailItems || []).some(it => Number(it.amount || 0) > 0 && !Number(it.quantity))) errs.push("retailQuantity");
+      // A seller's amount is a manually-typed dollar figure (the auto-fill button pre-fills it
+      // correctly, but staff can still type over it, e.g. the full tax-inclusive price by
+      // mistake) — block save rather than only showing the passive label warning below, since
+      // that warning alone was already being missed in practice (real case: a $99 Koso Drink
+      // sale saved with $99 credited instead of the $94.55 tax-excluded base).
+      const sellersMismatch = (item) => {
+        if (!item.sellers || item.sellers.length === 0) return false;
+        const total = r2(item.sellers.reduce((s, sel) => s + Number(sel.amount || 0), 0));
+        return Math.abs(total - afterTaxAmount(item.amount)) > 0.15;
+      };
+      if (Number(f.retailPurchaseAmount || 0) > 0 && sellersMismatch({ amount: f.retailPurchaseAmount, sellers: f.retailSellers })) errs.push("retailSellersMismatch");
+      if ((f.extraRetailItems || []).some(it => Number(it.amount || 0) > 0 && sellersMismatch(it))) errs.push("retailSellersMismatch");
     }
     if ((f.purchaseTags || []).includes("giftCard")) {
       if (Number(f.giftCardPurchaseAmount || 0) > 0 && !f.giftCardPurchasePaymentType) errs.push("giftCardPurchasePaymentType");
@@ -4808,9 +4821,10 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                             : [{ therapist: form.therapist, amount: afterTaxTotal }];
                           const sellersTotal = Math.round(sellers.reduce((s, sel) => s + Number(sel.amount || 0), 0) * 100) / 100;
                           const updSeller = (sidx, patch) => updateItem(idx, { sellers: sellers.map((sel, i) => i === sidx ? { ...sel, ...patch } : sel) });
+                          const sellersMismatch = errors.includes("retailSellersMismatch") && afterTaxTotal > 0 && Math.abs(sellersTotal - afterTaxTotal) > 0.15;
                           return (
                             <div>
-                              <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>
+                              <div style={{ fontSize: 10, color: sellersMismatch ? "#C62828" : "#888", marginBottom: 3, fontWeight: sellersMismatch ? 700 : 400 }}>
                                 Split between (up to 3 people, splitting the tax-excluded amount of ${afterTaxTotal}){afterTaxTotal > 0 && Math.abs(sellersTotal - afterTaxTotal) > 0.15 ? " ⚠️ The total is significantly off from the tax-excluded amount" : ""}
                               </div>
                               <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
@@ -4818,6 +4832,7 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                                   <button onClick={() => {
                                     const each = Math.round((afterTaxTotal / sellers.length) * 100) / 100;
                                     updateItem(idx, { sellers: sellers.map(sel => ({ ...sel, amount: each })) });
+                                    setErrors(errors.filter(x => x !== "retailSellersMismatch"));
                                   }} style={{ padding: "5px 10px", borderRadius: 8, border: "2px solid #6A1B9A", background: "#fff", color: "#6A1B9A", fontWeight: 700, cursor: "pointer", fontSize: 11, alignSelf: "flex-start" }}>
                                     ⚖️ {sellers.length > 1 ? `Split the tax-excluded amount evenly ${sellers.length} ways` : "Auto-fill the tax-excluded amount"}
                                   </button>
@@ -4828,7 +4843,7 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                                       <option value="">— Select —</option>
                                       {THERAPISTS.map(t => <option key={t} value={t}>{t}</option>)}
                                     </select>
-                                    <input type="number" value={sel.amount || ""} onChange={e => updSeller(sidx, { amount: e.target.value })}
+                                    <input type="number" value={sel.amount || ""} onChange={e => { setErrors(errors.filter(x => x !== "retailSellersMismatch")); updSeller(sidx, { amount: e.target.value }); }}
                                       style={{ ...inputStyle, flex: 1, borderColor: "#CE93D8" }} placeholder="Amount" />
                                     {sellers.length > 1 && (
                                       <button onClick={() => updateItem(idx, { sellers: sellers.filter((_, i) => i !== sidx) })}
@@ -4898,17 +4913,27 @@ function RetailModal({ retail, onSave, onClose }) {
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
   const [paymentError, setPaymentError] = useState(false);
   const [quantityError, setQuantityError] = useState(false);
-  const handleSave = () => {
-    if (!Number(form.quantity)) { setQuantityError(true); return; }
-    if (!form.paymentType) { setPaymentError(true); return; }
-    onSave(form);
-  };
+  const [sellersError, setSellersError] = useState(false);
   const sellers = form.sellers || [];
   const sellersTotal = Math.round(sellers.reduce((s, sel) => s + Number(sel.amount || 0), 0) * 100) / 100;
   // Seller amounts represent each person's share of the *tax-adjusted* commission-eligible base
   // (10% of this goes to staff as commission, 4% for Maki), not the raw sale price.
   const afterTaxTotal = afterTaxAmount(form.price);
-  const updSeller = (idx, patch) => set("sellers", sellers.map((sel, i) => i === idx ? { ...sel, ...patch } : sel));
+  const handleSave = () => {
+    if (!Number(form.quantity)) { setQuantityError(true); return; }
+    if (!form.paymentType) { setPaymentError(true); return; }
+    // Block save on a seller-split mismatch rather than only showing the passive label warning
+    // below — that warning alone was already being missed in practice (real case: a $99 Koso
+    // Drink sale saved with the full $99 credited instead of the $94.55 tax-excluded base).
+    // Only enforced once a therapist is actually picked, so the untouched default row (no
+    // therapist selected yet) doesn't block an otherwise-valid save.
+    if (sellers.some(sel => sel.therapist) && Number(form.price) > 0 && Math.abs(sellersTotal - afterTaxTotal) > 0.15) {
+      setSellersError(true);
+      return;
+    }
+    onSave(form);
+  };
+  const updSeller = (idx, patch) => { setSellersError(false); set("sellers", sellers.map((sel, i) => i === idx ? { ...sel, ...patch } : sel)); };
   return (
     <Modal onClose={onClose}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
@@ -4957,13 +4982,14 @@ function RetailModal({ retail, onSave, onClose }) {
           }} style={{ ...inputStyle, ...(quantityError ? { borderColor: "#C62828", borderWidth: 2 } : {}) }} placeholder="1" />
         </Field>
         <Field label="Amount ($)"><input type="number" value={form.price || ""} onChange={e => set("price", e.target.value)} style={inputStyle} /></Field>
-        <Field label={`Split between (up to 3 people, splitting the tax-excluded amount of $${afterTaxTotal})${Number(form.price) > 0 && Math.abs(sellersTotal - afterTaxTotal) > 0.15 ? " ⚠️ The total is significantly off from the tax-excluded amount" : ""}`}>
+        <Field label={`Split between (up to 3 people, splitting the tax-excluded amount of $${afterTaxTotal})${sellersError ? " ⚠️ Doesn't add up to the tax-excluded amount — fix before saving" : Number(form.price) > 0 && Math.abs(sellersTotal - afterTaxTotal) > 0.15 ? " ⚠️ The total is significantly off from the tax-excluded amount" : ""}`}>
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {Number(form.price) > 0 && (
               <button onClick={() => {
                 // Rounded to the nearest $0.10 — penny-level precision isn't needed for this split.
                 const each = Math.round((afterTaxTotal / sellers.length) * 100) / 100;
                 set("sellers", sellers.map(sel => ({ ...sel, amount: each })));
+                setSellersError(false);
               }} style={{ padding: "6px 12px", borderRadius: 8, border: "2px solid #6A1B9A", background: "#fff", color: "#6A1B9A", fontWeight: 700, cursor: "pointer", fontSize: 12, alignSelf: "flex-start" }}>
                 ⚖️ {sellers.length > 1 ? `Split the tax-excluded amount evenly ${sellers.length} ways` : "Auto-fill the tax-excluded amount"}
               </button>
