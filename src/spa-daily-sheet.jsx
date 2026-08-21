@@ -1,6 +1,11 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { createPortal } from "react-dom";
 import * as XLSX from "xlsx";
+// The plain "xlsx" package (SheetJS Community Edition) above cannot write cell styles at all —
+// verified directly against a hand-formatted reference file, its borders/fills array came back
+// empty no matter what was set. ExcelJS is used only for the payroll export below, which needs
+// real borders/shading to match that reference.
+import ExcelJS from "exceljs";
 import { REFERRAL_SOURCES, getRetailItems, getStaffPurchaseItems, computeDayTotals } from "./lib/reportTotals.js";
 
 const THERAPISTS = ["Mami", "Aya", "Megumi", "Hiromi", "Maki", "Yuka", "Mai", "Betsy"];
@@ -2829,6 +2834,7 @@ const APPT_ERROR_LABELS = {
   newTicketTipPaymentType: "New Ticket Purchase Tip Payment Method",
   retailPurchasePaymentType: "Retail Purchase Payment Method",
   retailQuantity: "Retail Quantity",
+  retailSellersMismatch: "Retail Split Amount (doesn't add up to the tax-excluded total)",
   giftCardPurchasePaymentType: "Gift Card Purchase Payment Method",
   depositPaidDate: "Deposit Paid Date",
   packageDepositDate: "Deposit Paid Date",
@@ -2911,6 +2917,18 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
       if ((f.extraRetailItems || []).some(it => Number(it.amount || 0) > 0 && !it.paymentType)) errs.push("retailPurchasePaymentType");
       if (Number(f.retailPurchaseAmount || 0) > 0 && !Number(f.retailQuantity)) errs.push("retailQuantity");
       if ((f.extraRetailItems || []).some(it => Number(it.amount || 0) > 0 && !Number(it.quantity))) errs.push("retailQuantity");
+      // A seller's amount is a manually-typed dollar figure (the auto-fill button pre-fills it
+      // correctly, but staff can still type over it, e.g. the full tax-inclusive price by
+      // mistake) — block save rather than only showing the passive label warning below, since
+      // that warning alone was already being missed in practice (real case: a $99 Koso Drink
+      // sale saved with $99 credited instead of the $94.55 tax-excluded base).
+      const sellersMismatch = (item) => {
+        if (!item.sellers || item.sellers.length === 0) return false;
+        const total = r2(item.sellers.reduce((s, sel) => s + Number(sel.amount || 0), 0));
+        return Math.abs(total - afterTaxAmount(item.amount)) > 0.15;
+      };
+      if (Number(f.retailPurchaseAmount || 0) > 0 && sellersMismatch({ amount: f.retailPurchaseAmount, sellers: f.retailSellers })) errs.push("retailSellersMismatch");
+      if ((f.extraRetailItems || []).some(it => Number(it.amount || 0) > 0 && sellersMismatch(it))) errs.push("retailSellersMismatch");
     }
     if ((f.purchaseTags || []).includes("giftCard")) {
       if (Number(f.giftCardPurchaseAmount || 0) > 0 && !f.giftCardPurchasePaymentType) errs.push("giftCardPurchasePaymentType");
@@ -4808,9 +4826,10 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                             : [{ therapist: form.therapist, amount: afterTaxTotal }];
                           const sellersTotal = Math.round(sellers.reduce((s, sel) => s + Number(sel.amount || 0), 0) * 100) / 100;
                           const updSeller = (sidx, patch) => updateItem(idx, { sellers: sellers.map((sel, i) => i === sidx ? { ...sel, ...patch } : sel) });
+                          const sellersMismatch = errors.includes("retailSellersMismatch") && afterTaxTotal > 0 && Math.abs(sellersTotal - afterTaxTotal) > 0.15;
                           return (
                             <div>
-                              <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>
+                              <div style={{ fontSize: 10, color: sellersMismatch ? "#C62828" : "#888", marginBottom: 3, fontWeight: sellersMismatch ? 700 : 400 }}>
                                 Split between (up to 3 people, splitting the tax-excluded amount of ${afterTaxTotal}){afterTaxTotal > 0 && Math.abs(sellersTotal - afterTaxTotal) > 0.15 ? " ⚠️ The total is significantly off from the tax-excluded amount" : ""}
                               </div>
                               <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
@@ -4818,6 +4837,7 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                                   <button onClick={() => {
                                     const each = Math.round((afterTaxTotal / sellers.length) * 100) / 100;
                                     updateItem(idx, { sellers: sellers.map(sel => ({ ...sel, amount: each })) });
+                                    setErrors(errors.filter(x => x !== "retailSellersMismatch"));
                                   }} style={{ padding: "5px 10px", borderRadius: 8, border: "2px solid #6A1B9A", background: "#fff", color: "#6A1B9A", fontWeight: 700, cursor: "pointer", fontSize: 11, alignSelf: "flex-start" }}>
                                     ⚖️ {sellers.length > 1 ? `Split the tax-excluded amount evenly ${sellers.length} ways` : "Auto-fill the tax-excluded amount"}
                                   </button>
@@ -4828,7 +4848,7 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                                       <option value="">— Select —</option>
                                       {THERAPISTS.map(t => <option key={t} value={t}>{t}</option>)}
                                     </select>
-                                    <input type="number" value={sel.amount || ""} onChange={e => updSeller(sidx, { amount: e.target.value })}
+                                    <input type="number" value={sel.amount || ""} onChange={e => { setErrors(errors.filter(x => x !== "retailSellersMismatch")); updSeller(sidx, { amount: e.target.value }); }}
                                       style={{ ...inputStyle, flex: 1, borderColor: "#CE93D8" }} placeholder="Amount" />
                                     {sellers.length > 1 && (
                                       <button onClick={() => updateItem(idx, { sellers: sellers.filter((_, i) => i !== sidx) })}
@@ -4898,17 +4918,27 @@ function RetailModal({ retail, onSave, onClose }) {
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
   const [paymentError, setPaymentError] = useState(false);
   const [quantityError, setQuantityError] = useState(false);
-  const handleSave = () => {
-    if (!Number(form.quantity)) { setQuantityError(true); return; }
-    if (!form.paymentType) { setPaymentError(true); return; }
-    onSave(form);
-  };
+  const [sellersError, setSellersError] = useState(false);
   const sellers = form.sellers || [];
   const sellersTotal = Math.round(sellers.reduce((s, sel) => s + Number(sel.amount || 0), 0) * 100) / 100;
   // Seller amounts represent each person's share of the *tax-adjusted* commission-eligible base
   // (10% of this goes to staff as commission, 4% for Maki), not the raw sale price.
   const afterTaxTotal = afterTaxAmount(form.price);
-  const updSeller = (idx, patch) => set("sellers", sellers.map((sel, i) => i === idx ? { ...sel, ...patch } : sel));
+  const handleSave = () => {
+    if (!Number(form.quantity)) { setQuantityError(true); return; }
+    if (!form.paymentType) { setPaymentError(true); return; }
+    // Block save on a seller-split mismatch rather than only showing the passive label warning
+    // below — that warning alone was already being missed in practice (real case: a $99 Koso
+    // Drink sale saved with the full $99 credited instead of the $94.55 tax-excluded base).
+    // Only enforced once a therapist is actually picked, so the untouched default row (no
+    // therapist selected yet) doesn't block an otherwise-valid save.
+    if (sellers.some(sel => sel.therapist) && Number(form.price) > 0 && Math.abs(sellersTotal - afterTaxTotal) > 0.15) {
+      setSellersError(true);
+      return;
+    }
+    onSave(form);
+  };
+  const updSeller = (idx, patch) => { setSellersError(false); set("sellers", sellers.map((sel, i) => i === idx ? { ...sel, ...patch } : sel)); };
   return (
     <Modal onClose={onClose}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
@@ -4957,13 +4987,14 @@ function RetailModal({ retail, onSave, onClose }) {
           }} style={{ ...inputStyle, ...(quantityError ? { borderColor: "#C62828", borderWidth: 2 } : {}) }} placeholder="1" />
         </Field>
         <Field label="Amount ($)"><input type="number" value={form.price || ""} onChange={e => set("price", e.target.value)} style={inputStyle} /></Field>
-        <Field label={`Split between (up to 3 people, splitting the tax-excluded amount of $${afterTaxTotal})${Number(form.price) > 0 && Math.abs(sellersTotal - afterTaxTotal) > 0.15 ? " ⚠️ The total is significantly off from the tax-excluded amount" : ""}`}>
+        <Field label={`Split between (up to 3 people, splitting the tax-excluded amount of $${afterTaxTotal})${sellersError ? " ⚠️ Doesn't add up to the tax-excluded amount — fix before saving" : Number(form.price) > 0 && Math.abs(sellersTotal - afterTaxTotal) > 0.15 ? " ⚠️ The total is significantly off from the tax-excluded amount" : ""}`}>
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {Number(form.price) > 0 && (
               <button onClick={() => {
                 // Rounded to the nearest $0.10 — penny-level precision isn't needed for this split.
                 const each = Math.round((afterTaxTotal / sellers.length) * 100) / 100;
                 set("sellers", sellers.map(sel => ({ ...sel, amount: each })));
+                setSellersError(false);
               }} style={{ padding: "6px 12px", borderRadius: 8, border: "2px solid #6A1B9A", background: "#fff", color: "#6A1B9A", fontWeight: 700, cursor: "pointer", fontSize: 12, alignSelf: "flex-start" }}>
                 ⚖️ {sellers.length > 1 ? `Split the tax-excluded amount evenly ${sellers.length} ways` : "Auto-fill the tax-excluded amount"}
               </button>
@@ -6039,10 +6070,15 @@ function PayrollTab() {
         const sellers = (item.sellers && item.sellers.length > 0)
           ? item.sellers
           : [{ therapist: a.therapist, amount: afterTaxAmount(item.amount) }];
-        sellers.filter(sel => sel.therapist && Number(sel.amount || 0) > 0).forEach(sel => {
+        // Sellers actually credited on this sale — used both to distribute the amount below and
+        // to note in Remarks who else split it with, so a per-therapist dollar amount (e.g. a 4%
+        // vs 10% commission split) isn't a mystery number with no way to trace it back.
+        const validSellers = sellers.filter(sel => sel.therapist && Number(sel.amount || 0) > 0);
+        validSellers.forEach(sel => {
           const t = sel.therapist;
           if (!t || !byTherapist[t]) return;
           const retail = Number(sel.amount);
+          const others = validSellers.filter(s => s.therapist !== t).map(s => s.therapist);
           byTherapist[t].rows.push({
             date: a.date,
             client: a.clientName,
@@ -6055,7 +6091,7 @@ function PayrollTab() {
             tipPaymentType: "",
             retail,
             retailProduct: item.productName || "",
-            notes: `🛍️ Retail${item.productName ? ` (${item.productName})` : ""}`,
+            notes: `🛍️ Retail${item.productName ? ` (${item.productName})` : ""}${item.quantity ? ` x${item.quantity}` : ""}${others.length > 0 ? ` — split with ${others.join(", ")}` : ""}`,
           });
           byTherapist[t].totalRetail += retail;
           if (isCard) byTherapist[t].totalRetailCard += retail;
@@ -6069,13 +6105,17 @@ function PayrollTab() {
     allRetails.forEach(r => {
       const sellers = r.sellers || (r.soldBy ? [{ therapist: r.soldBy, amount: afterTaxAmount(r.price) }] : []);
       const isCard = r.paymentType === "card";
-      sellers.filter(sel => sel.therapist && Number(sel.amount || 0) > 0).forEach(sel => {
+      // Same split-partner + quantity context as the inline-retail block above — clientName and
+      // quantity were already being saved on every phone/walk-in sale, just never surfaced here.
+      const validSellers = sellers.filter(sel => sel.therapist && Number(sel.amount || 0) > 0);
+      validSellers.forEach(sel => {
         const t = sel.therapist;
         if (!byTherapist[t]) return;
         const retail = Number(sel.amount);
+        const others = validSellers.filter(s => s.therapist !== t).map(s => s.therapist);
         byTherapist[t].rows.push({
           date: r.date,
-          client: "",
+          client: r.clientName || "",
           isTicket: false,
           ticketInfo: "",
           duration: 0,
@@ -6085,7 +6125,7 @@ function PayrollTab() {
           tipPaymentType: "",
           retail,
           retailProduct: r.item || "",
-          notes: `🛍️ Retail (phone/walk-in)${r.item ? ` (${r.item})` : ""}`,
+          notes: `🛍️ Retail (phone/walk-in)${r.item ? ` (${r.item})` : ""}${r.quantity ? ` x${r.quantity}` : ""}${others.length > 0 ? ` — split with ${others.join(", ")}` : ""}`,
         });
         byTherapist[t].totalRetail += retail;
         if (isCard) byTherapist[t].totalRetailCard += retail;
@@ -6317,6 +6357,117 @@ function PayrollTab() {
     a.click();
   };
 
+  // Same numbers as downloadAllCSV, but laid out as one workbook with a separate sheet per
+  // therapist (with the retail commission rate stated in that sheet's own title row) \u2014 matches
+  // the layout the office (Yuki) hand-built from the CSV for July, which she found easier to
+  // read than one flat staff-by-staff CSV. Skips any therapist with zero rows for the period,
+  // same as downloadAllCSV, so an all-quiet staff member doesn't get an empty sheet.
+  //
+  // Rows are pushed above in category passes (all main-service rows, then all retail rows, then
+  // forgotten tips, then add-ons, then cav slots, then extra tips) \u2014 each pass is internally in
+  // date order, but the categories land one after another, so a retail sale on day 3 can appear
+  // after every treatment row through day 15. Sorted here by date before rendering so a sheet
+  // reads top-to-bottom in calendar order regardless of which category each row came from.
+  const downloadAllXLSX = async () => {
+    if (!payrollData) return;
+    const remarksForAll = (r) => [
+      r.isTicket && r.ticketInfo ? `\uD83C\uDF9F\uFE0F ${r.ticketInfo}` : "",
+      r.partner ? `with ${r.partner}` : "",
+      r.notes || "",
+    ].filter(Boolean).join("\u3000");
+    // Reference sheets show dates as "M/D/YYYY" with no leading zeros (e.g. "7/15/2026"), not
+    // the ISO "YYYY-MM-DD" the row data carries internally.
+    const fmtDate = (iso) => {
+      const [y, m, d] = iso.split("-").map(Number);
+      return `${m}/${d}/${y}`;
+    };
+    const THIN = { style: "thin", color: { argb: "FF000000" } };
+    const MEDIUM = { style: "medium", color: { argb: "FF000000" } };
+    // Every cell in the table gets a thin border on all sides, then whichever sides sit on the
+    // outer edge of the whole block get upgraded to medium \u2014 matches the reference file's
+    // medium-outline-with-thin-grid look without hand-tracking which of its ~7 border variants
+    // applies to which specific cell.
+    const applyGridBorders = (ws, firstRow, lastRow, firstCol, lastCol) => {
+      for (let row = firstRow; row <= lastRow; row++) {
+        for (let col = firstCol; col <= lastCol; col++) {
+          const cell = ws.getCell(row, col);
+          cell.border = {
+            top: row === firstRow ? MEDIUM : THIN,
+            bottom: row === lastRow ? MEDIUM : THIN,
+            left: col === firstCol ? MEDIUM : THIN,
+            right: col === lastCol ? MEDIUM : THIN,
+          };
+        }
+      }
+    };
+    const MONEY_FMT = '"$"#,##0.00';
+
+    const wb = new ExcelJS.Workbook();
+    THERAPISTS.forEach(t => {
+      const data = payrollData.byTherapist[t];
+      if (!data || data.rows.length === 0) return;
+      const rate = retailCommissionRate(t);
+      const sortedRows = [...data.rows].sort((a, b) => a.date.localeCompare(b.date));
+      const totalRetailCommission = r2(sortedRows.reduce((s, r) => s + (r.retail ? r2(r.retail * rate) : 0), 0));
+      const totalMinutes = t === "Maki" ? sortedRows.reduce((s, r) => s + Number(r.duration || 0), 0) : "";
+
+      const ws = wb.addWorksheet(t.slice(0, 31));
+      ws.columns = [
+        { width: 12 }, { width: 22 }, { width: 12 }, { width: 11 },
+        { width: 9 }, { width: 11 }, { width: 14 }, { width: 14 }, { width: 44 },
+      ];
+
+      const titleRow = ws.addRow([`${t}  (Retail commission rate: ${Math.round(rate * 100)}%)`, "", "", "", "", "", "", "", ""]);
+      titleRow.font = { bold: true, size: 13 };
+      titleRow.eachCell({ includeEmpty: true }, cell => { cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF2F2F2" } }; });
+
+      const headerRow = ws.addRow(["Date", "Client", "Minutes (Maki only)", "Treatment", "Tip", "Total", "Retail (tax-excl.)", "Retail Commission", "Remarks"]);
+      headerRow.font = { bold: true };
+      headerRow.eachCell({ includeEmpty: true }, cell => { cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFD9D9D9" } }; });
+
+      sortedRows.forEach(r => {
+        const row = ws.addRow([
+          fmtDate(r.date), r.client, t === "Maki" ? (r.duration || "") : "",
+          r.service || "", r.tip || "", r2(r.service + r.tip), r.retail || "", r.retail ? r2(r.retail * rate) : "", remarksForAll(r)
+        ]);
+        [4, 5, 6, 7, 8].forEach(col => { row.getCell(col).numFmt = MONEY_FMT; });
+      });
+
+      const subtotalRow = ws.addRow(["", "Subtotal", totalMinutes, data.totalService, data.totalTip, r2(data.totalService + data.totalTip), data.totalRetail, totalRetailCommission, ""]);
+      subtotalRow.font = { bold: true };
+      subtotalRow.eachCell({ includeEmpty: true }, cell => { cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFFF2CC" } }; });
+
+      // Live SUM formulas instead of a static computed number — an office staffer occasionally
+      // adds a row by hand for something outside the app (a past-visit charge that predates the
+      // Daily Sheet), and a hardcoded subtotal silently stops matching the column above it the
+      // moment that happens. The cached `result` alongside each formula is what ExcelJS itself
+      // just computed, so anything reading the file without opening it in Excel first (this
+      // export, or a script) still sees the right number, not blank/zero until a recalc.
+      const firstDataRow = headerRow.number + 1;
+      const lastDataRow = subtotalRow.number - 1;
+      const colLetter = ["A", "B", "C", "D", "E", "F", "G", "H", "I"];
+      const sumFormula = (col) => `SUM(${colLetter[col - 1]}${firstDataRow}:${colLetter[col - 1]}${lastDataRow})`;
+      if (t === "Maki") subtotalRow.getCell(3).value = { formula: sumFormula(3), result: totalMinutes };
+      subtotalRow.getCell(4).value = { formula: sumFormula(4), result: data.totalService };
+      subtotalRow.getCell(5).value = { formula: sumFormula(5), result: data.totalTip };
+      subtotalRow.getCell(6).value = { formula: sumFormula(6), result: r2(data.totalService + data.totalTip) };
+      subtotalRow.getCell(7).value = { formula: sumFormula(7), result: data.totalRetail };
+      subtotalRow.getCell(8).value = { formula: sumFormula(8), result: totalRetailCommission };
+      [4, 5, 6, 7, 8].forEach(col => { subtotalRow.getCell(col).numFmt = MONEY_FMT; });
+
+      applyGridBorders(ws, titleRow.number, subtotalRow.number, 1, 9);
+    });
+
+    const buf = await wb.xlsx.writeBuffer();
+    const blob = new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `AllStaffPayroll_${payrollData.start}_${payrollData.end}.xlsx`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   const { start, end } = calcPeriodDates(month, period);
 
   return (
@@ -6368,6 +6519,12 @@ function PayrollTab() {
             <button onClick={downloadAllCSV}
               style={{ padding: "10px 20px", borderRadius: 10, border: "none", background: "#1565C0", color: "#fff", fontWeight: 700, cursor: "pointer", fontSize: 14 }}>
               ⬇️ All Staff CSV
+            </button>
+          )}
+          {payrollData && (
+            <button onClick={downloadAllXLSX}
+              style={{ padding: "10px 20px", borderRadius: 10, border: "none", background: "#2E7D32", color: "#fff", fontWeight: 700, cursor: "pointer", fontSize: 14 }}>
+              📗 All Staff Excel (by tab)
             </button>
           )}
         </div>
