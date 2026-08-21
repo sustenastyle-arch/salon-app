@@ -168,7 +168,7 @@ const ADDON_TICKET_MENU_OPTIONS = MENU_OPTIONS.flatMap(({ group, prefix, duratio
 ).filter(Boolean);
 
 // Staff capabilities
-const CAV_CAPABLE = ["Mami", "Betsy", "Megumi", "Yuka"]; // can operate machine
+const CAV_CAPABLE = ["Mami", "Betsy", "Megumi", "Yuka", "Mai"]; // can operate machine
 const BODY_CAPABLE = ["Mami", "Betsy", "Megumi", "Aya", "Hiromi", "Mai", "Maki"]; // can do body massage
 const DUAL_LICENSE = ["Mami", "Betsy", "Megumi"]; // body + machine (handles both themselves)
 // Yuka: machine/facial only (no body massage)
