@@ -3,8 +3,8 @@ import { createPortal } from "react-dom";
 import * as XLSX from "xlsx";
 // The plain "xlsx" package (SheetJS Community Edition) above cannot write cell styles at all —
 // verified directly against a hand-formatted reference file, its borders/fills array came back
-// empty no matter what was set. ExcelJS is used only for the payroll export below, which needs
-// real borders/shading to match that reference.
+// empty no matter what was set. ExcelJS is used for the payroll and monthly sales report
+// exports below, which need real borders/shading to match the owner's hand-formatted files.
 import ExcelJS from "exceljs";
 import { REFERRAL_SOURCES, getRetailItems, getStaffPurchaseItems, computeDayTotals } from "./lib/reportTotals.js";
 
@@ -5785,66 +5785,111 @@ async function exportSalesReportXlsx(monthStr) {
     }
   }
 
-  const wb = XLSX.utils.book_new();
-  const wsData = [
-    [`Dr.Body,Inc. Sales Report in ${monthName} ${y}`, "", "", "", "", "", "", "", "", "Please fill in the blue cells"],
-    [],
-    ["Date", "Total Sales", "Clients", "Cash", "", "", "", "Card", "", "", "", "Total tip", "Total sales and Tip"],
-    ["", "", "", "Treatment", "Product", "Total Cash", "Tip", "Treatment", "Product", "Total Card", "Tip", "", ""],
-  ];
+  // The main sheet is filled into public/sales-report-template.xlsx — a blank copy of the
+  // owner's hand-formatted Desktop "Sales Report2026 NEW.xlsx" month sheet — instead of being
+  // built from scratch, so the download looks exactly like the Desktop file (blue input cells,
+  // borders, column widths, theme colors). Rebuilding that styling in code would drift: the
+  // reference file's colors are theme-relative, which ExcelJS only reproduces faithfully when
+  // it loads the original theme along with the sheet.
+  const tplRes = await fetch("/sales-report-template.xlsx");
+  if (!tplRes.ok) throw new Error(`Couldn't load the sales report template (${tplRes.status})`);
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.load(await tplRes.arrayBuffer());
+  const ws = wb.worksheets[0];
+  ws.name = `${monthName} ${y}`;
+  ws.getCell("A1").value = `Dr.Body,Inc. Sales Report in ${monthName} ${y}`;
 
-  dailyData.forEach(row => {
-    wsData.push([
-      row.date,
-      row.totalSales || 0,
-      row.clients || "",
-      row.cashTreatment,
-      row.cashProduct,
-      row.totalCash,
-      row.cashTip,
-      row.cardTreatment,
-      row.cardProduct,
-      row.totalCard,
-      row.cardTip,
-      row.totalTip,
-      row.grandTotal || 0,
-    ]);
-  });
+  // Row = 4 + day-of-month, same fixed layout as the Desktop file (and sync-day-to-report.mjs).
+  // B/F/J/L/M stay live formulas so a hand-typed correction in the blue cells still re-totals;
+  // the cached `result` keeps the numbers visible in viewers that don't recalculate.
+  const blankZero = (v) => (Number(v || 0) === 0 ? null : r2(Number(v)));
+  for (let d = 1; d <= 31; d++) {
+    const r = 4 + d;
+    const row = dailyData[d - 1];
+    if (!row) {
+      ws.getCell(`A${r}`).value = null; // e.g. the 31st row in a 30-day month
+      continue;
+    }
+    const cash = Number(row.cashTreatment || 0) + Number(row.cashProduct || 0);
+    const card = Number(row.cardTreatment || 0) + Number(row.cardProduct || 0);
+    const tip = Number(row.cashTip || 0) + Number(row.cardTip || 0);
+    ws.getCell(`C${r}`).value = blankZero(row.clients);
+    ws.getCell(`D${r}`).value = blankZero(row.cashTreatment);
+    ws.getCell(`E${r}`).value = blankZero(row.cashProduct);
+    ws.getCell(`G${r}`).value = blankZero(row.cashTip);
+    ws.getCell(`H${r}`).value = blankZero(row.cardTreatment);
+    ws.getCell(`I${r}`).value = blankZero(row.cardProduct);
+    ws.getCell(`K${r}`).value = blankZero(row.cardTip);
+    ws.getCell(`F${r}`).value = { formula: `D${r}+E${r}`, result: r2(cash) };
+    ws.getCell(`J${r}`).value = { formula: `H${r}+I${r}`, result: r2(card) };
+    ws.getCell(`B${r}`).value = { formula: `F${r}+J${r}`, result: r2(cash + card) };
+    ws.getCell(`L${r}`).value = { formula: `G${r}+K${r}`, result: r2(tip) };
+    ws.getCell(`M${r}`).value = { formula: `B${r}+L${r}`, result: r2(cash + card + tip) };
+  }
+  const sumField = (field) => r2(dailyData.reduce((s, row) => s + Number(row[field] || 0), 0));
+  const totalCash = sumField("cashTreatment") + sumField("cashProduct");
+  const totalCard = sumField("cardTreatment") + sumField("cardProduct");
+  const totalTip = sumField("cashTip") + sumField("cardTip");
+  [["C", "clients"], ["D", "cashTreatment"], ["E", "cashProduct"], ["G", "cashTip"], ["H", "cardTreatment"], ["I", "cardProduct"], ["K", "cardTip"]]
+    .forEach(([col, field]) => { ws.getCell(`${col}36`).value = { formula: `SUM(${col}5:${col}35)`, result: sumField(field) }; });
+  ws.getCell("F36").value = { formula: "D36+E36", result: r2(totalCash) };
+  ws.getCell("J36").value = { formula: "H36+I36", result: r2(totalCard) };
+  ws.getCell("B36").value = { formula: "F36+J36", result: r2(totalCash + totalCard) };
+  ws.getCell("L36").value = { formula: "G36+K36", result: r2(totalTip) };
+  ws.getCell("M36").value = { formula: "B36+L36", result: r2(totalCash + totalCard + totalTip) };
 
-  // Total row — computed values, not Excel formulas, so the total is visible in viewers
-  // that don't (re)calculate formulas (e.g. a quick-look preview on the home PC).
-  const sumField = (field) => Math.round(dailyData.reduce((s, row) => s + Number(row[field] || 0), 0) * 100) / 100;
-  wsData.push([
-    "Total",
-    sumField("totalSales"),
-    sumField("clients"),
-    sumField("cashTreatment"),
-    sumField("cashProduct"),
-    sumField("totalCash"),
-    sumField("cashTip"),
-    sumField("cardTreatment"),
-    sumField("cardProduct"),
-    sumField("totalCard"),
-    sumField("cardTip"),
-    sumField("totalTip"),
-    sumField("grandTotal"),
-  ]);
-
-  const ws = XLSX.utils.aoa_to_sheet(wsData);
-
-  // Column widths
-  ws["!cols"] = [
-    {wch:6},{wch:12},{wch:6},{wch:12},{wch:10},{wch:12},{wch:8},
-    {wch:12},{wch:10},{wch:12},{wch:8},{wch:10},{wch:16}
-  ];
-
-  // Merge header cells
-  ws["!merges"] = [
-    { s:{r:2,c:3}, e:{r:2,c:6} },  // Cash
-    { s:{r:2,c:7}, e:{r:2,c:10} }, // Card
-  ];
-
-  XLSX.utils.book_append_sheet(wb, ws, `${monthName} ${y}`);
+  // Secondary sheets: styled like the main sheet — same font (游ゴシック), a medium outline
+  // around each table with a thin inner grid, the main sheet's peach fill on header/Total rows,
+  // and "#,##0.00" on money columns. Each run of consecutive non-empty rows after the title is
+  // one table (the Ticket Sales sheet stacks several, separated by blank rows).
+  const FONT = "游ゴシック";
+  const THIN = { style: "thin", color: { argb: "FF000000" } };
+  const MEDIUM = { style: "medium", color: { argb: "FF000000" } };
+  const PEACH = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFCE4D6" } };
+  const addTableSheet = (name, aoa, widths, isHeader) => {
+    const sheet = wb.addWorksheet(name);
+    sheet.columns = widths.map(width => ({ width }));
+    aoa.forEach(r => sheet.addRow(r));
+    sheet.getRow(1).font = { name: FONT, bold: true, size: 14 };
+    sheet.getRow(1).height = 18.6;
+    let i = 1;
+    while (i < aoa.length) {
+      if (aoa[i].length === 0) { i++; continue; }
+      const first = i;
+      while (i < aoa.length && aoa[i].length > 0) i++;
+      const last = i - 1;
+      const width = Math.max(...aoa.slice(first, last + 1).map(r => r.length));
+      // Money columns are the ones whose header says Amount / $ / Value.
+      const header = aoa.slice(first, last + 1).find(r => isHeader(r)) || [];
+      const moneyCols = header.map((h, c) => (/Amount|\$|Value/.test(String(h)) ? c + 1 : null)).filter(Boolean);
+      for (let r = first; r <= last; r++) {
+        const row = sheet.getRow(r + 1);
+        const headerRow = isHeader(aoa[r]);
+        // Header labels can be much longer than their column (e.g. "New customers by referral
+        // source — regular (non-ticket) visit revenue"), so they wrap and the row grows to fit
+        // instead of being cut off at the cell edge. ~1.1 chars per width unit for bold text.
+        const lines = headerRow
+          ? Math.max(1, ...aoa[r].map((v, c) => Math.ceil(String(v ?? "").length * 1.1 / (widths[c] || 10))))
+          : 1;
+        row.height = 18.6 * lines;
+        const emphasized = headerRow || aoa[r][0] === "Total";
+        for (let c = 1; c <= width; c++) {
+          const cell = row.getCell(c);
+          cell.font = { name: FONT, size: 11, bold: emphasized };
+          cell.alignment = headerRow ? { vertical: "middle", wrapText: true } : { vertical: "middle" };
+          cell.border = {
+            top: r === first ? MEDIUM : THIN,
+            bottom: r === last ? MEDIUM : THIN,
+            left: c === 1 ? MEDIUM : THIN,
+            right: c === width ? MEDIUM : THIN,
+          };
+          if (emphasized) cell.fill = PEACH;
+          if (!isHeader(aoa[r]) && moneyCols.includes(c) && typeof cell.value === "number") cell.numFmt = "#,##0.00";
+        }
+      }
+    }
+    return sheet;
+  };
 
   // Customer type (RL/RT/NL/NT) + new-customer referral source monthly tally
   const ctData = [
@@ -5860,9 +5905,7 @@ async function exportSalesReportXlsx(monthStr) {
   const ctColCount = 5 + REFERRAL_SOURCES.length;
   const ctTotals = Array.from({ length: ctColCount }, (_, i) => ctDailyRows.reduce((s, row) => s + Number(row[i] || 0), 0));
   ctData.push(["Total", ...ctTotals]);
-  const ctWs = XLSX.utils.aoa_to_sheet(ctData);
-  ctWs["!cols"] = [{wch:6},{wch:8},{wch:8},{wch:8},{wch:8},{wch:8}, ...REFERRAL_SOURCES.map(() => ({wch:14}))];
-  XLSX.utils.book_append_sheet(wb, ctWs, "Customer Type");
+  addTableSheet("Customer Type", ctData, [6, 8, 8, 8, 8, 8, ...REFERRAL_SOURCES.map(() => 14)], r => r[0] === "Date");
 
   // Ticket sales summary — overall, new vs repeat, new-customer referral source, and per-staff
   const isNewCustomer = ct => ct === "NL" || ct === "NT";
@@ -5910,9 +5953,7 @@ async function exportSalesReportXlsx(monthStr) {
   const staffTotalConverted = byStaffRows.reduce((s, row) => s + row[6], 0);
   const staffTotalConversionPct = staffTotalLocalVisits > 0 ? `${Math.round(staffTotalConverted / staffTotalLocalVisits * 1000) / 10}%` : "";
   tsData.push(["Total", staffTotalCount, staffTotalAmt, staffTotalNewAmt, staffTotalRepeatAmt, staffTotalLocalVisits, staffTotalConverted, staffTotalConversionPct]);
-  const tsWs = XLSX.utils.aoa_to_sheet(tsData);
-  tsWs["!cols"] = [{wch:26},{wch:12},{wch:14},{wch:14},{wch:16},{wch:14},{wch:16},{wch:12}];
-  XLSX.utils.book_append_sheet(wb, tsWs, "Ticket Sales");
+  addTableSheet("Ticket Sales", tsData, [36, 10, 14, 16, 18, 16, 16, 14], r => r[1] === "Count");
 
   // Ticket/package redemption (消化) tally — count + reference value, informational only. This
   // money was already counted as revenue on the (earlier) day the package itself was purchased,
@@ -5924,11 +5965,16 @@ async function exportSalesReportXlsx(monthStr) {
     ["Count", "Reference Value ($ — not counted as revenue)"],
     [ticketRedemptionEvents.length, Math.round(ticketRedemptionEvents.reduce((s, r) => s + r.amount, 0) * 100) / 100],
   ];
-  const trWs = XLSX.utils.aoa_to_sheet(trData);
-  trWs["!cols"] = [{wch:10},{wch:38}];
-  XLSX.utils.book_append_sheet(wb, trWs, "Ticket Redemptions");
+  addTableSheet("Ticket Redemptions", trData, [10, 38], r => r[0] === "Count");
 
-  XLSX.writeFile(wb, `SalesReport_${monthStr}.xlsx`);
+  const buf = await wb.xlsx.writeBuffer();
+  const blob = new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `SalesReport_${monthStr}.xlsx`;
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
 // ============================================================
