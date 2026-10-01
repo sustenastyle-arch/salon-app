@@ -5877,11 +5877,13 @@ async function exportSalesReportXlsx(monthStr) {
           const cell = row.getCell(c);
           cell.font = { name: FONT, size: 11, bold: emphasized };
           cell.alignment = headerRow ? { vertical: "middle", wrapText: true } : { vertical: "middle" };
+          // Same look as the main sheet: every column separated by a medium vertical line,
+          // rows by thin horizontal lines, and a medium line under the header and around the table.
           cell.border = {
             top: r === first ? MEDIUM : THIN,
-            bottom: r === last ? MEDIUM : THIN,
-            left: c === 1 ? MEDIUM : THIN,
-            right: c === width ? MEDIUM : THIN,
+            bottom: r === last || headerRow ? MEDIUM : THIN,
+            left: MEDIUM,
+            right: MEDIUM,
           };
           if (emphasized) cell.fill = PEACH;
           if (!isHeader(aoa[r]) && moneyCols.includes(c) && typeof cell.value === "number") cell.numFmt = "#,##0.00";
