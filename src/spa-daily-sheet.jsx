@@ -5040,7 +5040,6 @@ function DepositModal({ deposit, onSave, onDelete, onClose }) {
   const handleSave = () => {
     const errs = [];
     if (!form.paymentType) errs.push("paymentType");
-    if (Number(form.tip) > 0 && !form.tipPaymentType) errs.push("tipPaymentType");
     if (errs.length > 0) { setErrors(errs); return; }
     onSave(form);
   };
@@ -5076,7 +5075,7 @@ function DepositModal({ deposit, onSave, onDelete, onClose }) {
         )}
         <Field label={isCancellation ? "Cancellation Fee ($)" : "Amount ($)"}><input type="number" value={form.amount || ""} onChange={e => set("amount", e.target.value)} style={inputStyle} /></Field>
         <div style={{ background: "#F0F4FF", borderRadius: 10, padding: "10px 12px" }}>
-          <div style={{ fontWeight: 700, fontSize: 12, color: "#1565C0", marginBottom: 8 }}>💳 Payment Method (treatment and tip can be set separately)</div>
+          <div style={{ fontWeight: 700, fontSize: 12, color: "#1565C0", marginBottom: 8 }}>💳 Payment Method</div>
           <Field label={isCancellation ? "Cancellation Fee Payment Method" : isDeposit ? "Deposit Payment Method" : "Amount Payment Method"} error={errors.includes("paymentType")}>
             <div style={{ display: "flex", gap: 6 }}>
               {payTypes.map(([val, label]) => (
@@ -5087,25 +5086,6 @@ function DepositModal({ deposit, onSave, onDelete, onClose }) {
               ))}
             </div>
           </Field>
-          <div style={{ marginTop: 8 }}>
-            <Field label="Tip ($) (optional)">
-              <input type="number" value={form.tip || ""} onChange={e => set("tip", e.target.value)} style={inputStyle} placeholder="Leave blank if no tip" />
-            </Field>
-          </div>
-          {Number(form.tip) > 0 && (
-            <div style={{ marginTop: 8 }}>
-              <Field label="Tip Payment Method" error={errors.includes("tipPaymentType")}>
-                <div style={{ display: "flex", gap: 6 }}>
-                  {payTypes.map(([val, label]) => (
-                    <button key={val} onClick={() => { set("tipPaymentType", val); setErrors(errors.filter(e => e !== "tipPaymentType")); }}
-                      style={{ flex: 1, padding: "9px 4px", borderRadius: 8, border: `2px solid ${form.tipPaymentType===val?"#E65100":"#DDD"}`, background: form.tipPaymentType===val?"#FFF3E0":"#fff", cursor: "pointer", fontWeight: 700, fontSize: 12, color: form.tipPaymentType===val?"#E65100":"#888" }}>
-                      {label}
-                    </button>
-                  ))}
-                </div>
-              </Field>
-            </div>
-          )}
         </div>
         <Field label="Memo"><input value={form.notes} onChange={e => set("notes", e.target.value)} style={inputStyle} /></Field>
       </div>
