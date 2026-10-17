@@ -69,6 +69,20 @@ export default async function handler(req, res) {
         .filter(li => (li.name || '').trim().toLowerCase() === 'tip')
         .map(li => (Number(li.gross_sales_money?.amount || 0)) / 100);
     };
+    // An order paid in several tenders (e.g. gift card + the client's own card) comes back as
+    // one payment per tender, all pointing at the same order — adding the order's "Tip" line to
+    // each one double-counted it (a $91 tip read as $182). Count it on exactly one payment: the
+    // first non-gift-card tender if there is one (that's where the real money came in), else the
+    // first tender; first-seen payment if the order lists no tenders.
+    const tipLineCountedOrders = new Set();
+    const ownsOrderTipLine = async (p) => {
+      if (!p.order_id || tipLineCountedOrders.has(p.order_id)) return false;
+      const tenders = (await getOrder(p.order_id))?.tenders || [];
+      const owner = tenders.find(t => t.type !== 'SQUARE_GIFT_CARD') || tenders[0];
+      if (owner && owner.id !== p.id) return false;
+      tipLineCountedOrders.add(p.order_id);
+      return true;
+    };
     const getOrderItemLabel = async (orderId) => {
       const order = await getOrder(orderId);
       const lineItems = order?.line_items || [];
@@ -121,7 +135,7 @@ export default async function handler(req, res) {
         const refunded = (p.refunded_money?.amount || 0) / 100;
         const netTotal = Math.max(0, total - refunded);
         const tipMoney = (p.tip_money?.amount || 0) / 100;
-        const orderTipLineItems = p.order_id ? await getOrderTipLineItems(p.order_id) : [];
+        const orderTipLineItems = (await ownsOrderTipLine(p)) ? await getOrderTipLineItems(p.order_id) : [];
         const tip = tipMoney + orderTipLineItems.reduce((s, t) => s + t, 0);
         // A fully refunded payment kept no money at all, tip included.
         const netTip = netTotal > 0 ? tip : 0;
