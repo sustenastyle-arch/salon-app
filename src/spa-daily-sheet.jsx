@@ -2436,7 +2436,12 @@ function ApptCard({ appt, onClick, allAppointments }) {
   // A regular appointment can also be fully paid off an existing gift card balance
   // (giftCardUsed) rather than the isGiftCard type toggle — that money came in whenever the
   // gift card was originally purchased, not today, so it should read as non-revenue too.
-  const totalOwed = Number(appt.price||0) + Number(appt.cavPrice||0) + Number(appt.tip||0) + Number(appt.cavTip||0);
+  // A same-day ticket purchase's gift card covers the package price/tip (what was actually
+  // charged), not the per-session staff-split price/tip — comparing against the smaller split
+  // amount flagged e.g. a $200 GC on a $452+$91 package as "fully covered" and turned it all blue.
+  const totalOwed = (isTicket && appt.isSameDayTicket)
+    ? Number(appt.packagePrice||0) + Number(appt.packageTip ?? appt.tip ?? 0)
+    : Number(appt.price||0) + Number(appt.cavPrice||0) + Number(appt.tip||0) + Number(appt.cavTip||0);
   const gcFullyCovers = !isGiftCard && !isPromo && totalOwed > 0 && Number(appt.giftCardUsed||0) >= totalOwed;
   // Revenue today: regular walk-in visits, and same-day ticket purchases. Not revenue: redeeming
   // a previously-bought ticket or gift card (the money already came in on the day it was sold),
