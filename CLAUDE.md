@@ -27,6 +27,7 @@ Copy `.env.example` to `.env` and set:
 - `VITE_MANAGER_PIN` — PIN required to unlock a "確定済み" (locked/submitted) day's sheet
 - `VITE_APP_PASSWORD` — optional shared password gate (`src/App.jsx`) for when the app is hosted publicly; skipped entirely if unset (local dev). Doubles as the shared-secret header for the cloud data API (see below) — also skipped if unset.
 - `KV_REST_API_URL` / `KV_REST_API_TOKEN` — Upstash Redis REST credentials (Vercel Storage integration); copy these by hand from the Vercel dashboard, since Vercel only auto-injects them into deployed environments, not local `.env`
+- `GMAIL_USER` / `GMAIL_APP_PASSWORD` — salon Gmail account + Google App Password used to save the automatic sales-report draft (see "Sales-report Gmail draft on lock"); also set in Vercel's env vars (Production). `REPORT_EMAIL_TO` optionally overrides the recipients.
 
 ## Architecture
 
@@ -65,13 +66,11 @@ router:
   to scan every day ever saved — `/api/deposits` (`mode=date|client`) does this server-side via
   Redis `SCAN`, deliberately unbounded (data volume is tiny for a single small spa; a lookback
   window would silently drop older deposits with no error).
-- `📤 Backup Data` / `📥 Restore Data` export/import the full store as one JSON file
-  (`/api/export-all` / `/api/import-all`); `☁️ Migrate This Device's Data to Cloud` is a one-time
-  button that reads whatever's still in a browser's local `localStorage` (pre-migration data) and
-  bulk-uploads it via the same `import-all` endpoint — the only place the app still reads
-  `localStorage` on purpose.
-- `🕐 Restore from Auto-Backup` restores from an automatic daily snapshot instead of a manually
-  downloaded file — see "Automatic daily backup" below.
+- `📤 Backup Data` downloads the full store as one JSON file (`/api/export-all`). Restoring
+  (from that file via `/api/import-all`, or from an automatic snapshot via
+  `/api/auto-backup-restore`) is deliberately **not** a button anymore — a full-store restore
+  overwrites everything, so it's done by calling those endpoints directly. They have no UI
+  caller but are the emergency recovery path, so don't delete them as "unused".
 - Every `/api/*` day-data endpoint checks a shared-secret header against `VITE_APP_PASSWORD`
   (`checkAuth` in `dayDataStore.js`) — skipped if unset, same as the client-side password gate.
 - Excel export uses `xlsx` (SheetJS).
@@ -86,17 +85,39 @@ backup) and prunes anything older than the most recent 30 snapshots. This exists
 can be recovered even if nobody remembered to click the manual backup button. `/api/auto-backup`
 optionally checks a `CRON_SECRET` bearer token (set in Vercel's env vars; skipped if unset) to
 confirm the request actually came from Vercel's scheduler — Cron jobs don't run under `vite dev`,
-so `saveAutoBackup()` must be triggered manually in local dev. `/api/auto-backup-list` and
-`/api/auto-backup-restore` back the `🕐 Restore from Auto-Backup` button, which lists available
-snapshot dates and restores the full store to one via `setDays()` — the same bulk-upsert helper
-`import-all` uses.
+so `saveAutoBackup()` must be triggered manually in local dev. `/api/auto-backup-list` lists
+available snapshot dates and `/api/auto-backup-restore` restores the full store to one via
+`setDays()` — the same bulk-upsert helper `import-all` uses (no UI for either; see above).
+
+### Sales-report Gmail draft on lock
+
+Locking a day (`handleLockToggle` → `createSalesReportDraft` in `spa-daily-sheet.jsx`) builds
+that day's 売上報告 email in the browser (`src/lib/salesReportEmail.js`: day breakdown,
+month-to-date 累計, gift-card ※ notes — numbers from `computeDayTotals`, same as the Excel
+export) plus the monthly Excel (`buildSalesReportXlsx`, the same file as ⬇️ Download Excel), and
+POSTs both to `/api/sales-report-draft`. The server saves it to the salon Gmail's **Drafts**
+via IMAP + App Password (`api/_lib/gmailDraft.js`) — it is never sent; the owner reviews and
+presses Send. Re-locking only drafts again if the day's numbers changed: a fingerprint of the
+day's figures is kept under its own Redis key (`report-draft-YYYY-MM-DD`, outside the
+`spa-sheet-*` prefix so export/backup scans never see it). A draft failure only shows a toast;
+it never undoes the lock.
+
+### Vercel Hobby plan: 12-function cap
+
+Vercel's Hobby plan allows at most **12 serverless functions** per deployment, and `api/`
+already has exactly 12 route files — adding a 13th fails the deploy. New endpoints must not be
+new `api/*.js` files: put the handler under `api/_lib/` and route to it through an existing
+function with a `vercel.json` rewrite + `action` query param. `/api/sales-report-draft` works this
+way (rewritten to `/api/import-all?action=sales-report-draft` → `api/_lib/salesReportDraftHandler.js`);
+the Vite dev middleware still registers the plain path. Production deploys from the `master` branch.
 
 ### Cloud data API (dual implementation, shared logic)
 
 Like the Square proxy below, the day-data API exists once as Vite dev middleware
 (`vite.config.js`'s `dayDataApi`) and once as Vercel serverless functions (`api/day-data.js`,
 `api/day-data-range.js`, `api/deposits.js`, `api/export-all.js`, `api/import-all.js`,
-`api/auto-backup.js`, `api/auto-backup-list.js`, `api/auto-backup-restore.js`) — but
+`api/auto-backup.js`, `api/auto-backup-list.js`, `api/auto-backup-restore.js`, plus
+`/api/sales-report-draft` via rewrite) — but
 unlike Square, the actual Redis logic isn't duplicated: both import the same
 `api/_lib/dayDataStore.js` (files under `api/_lib/` are helpers, not routes — Vercel's
 zero-config routing skips `_`-prefixed paths). Only the request/response plumbing differs
