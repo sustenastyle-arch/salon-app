@@ -5,7 +5,7 @@
 // Uses IMAP APPEND with a Gmail App Password (GMAIL_USER / GMAIL_APP_PASSWORD) instead of the
 // Gmail API, since the API would need a Google Cloud OAuth app whose refresh tokens expire
 // every 7 days while it's in "testing" mode. Shared by the Vite dev middleware
-// (vite.config.js) and the Vercel function (api/sales-report-draft.js), same pattern as
+// (vite.config.js) and the Vercel function (api/_lib/salesReportDraftHandler.js), same pattern as
 // dayDataStore.js.
 
 import nodemailer from "nodemailer";

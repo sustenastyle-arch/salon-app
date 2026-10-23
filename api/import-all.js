@@ -2,10 +2,17 @@
 // in vite.config.js. Backs both the 📥 データ復元 button and the one-time "migrate this
 // device's local data to the cloud" button — bulk-upserts many days in one request.
 import { setDays, checkAuth } from "./_lib/dayDataStore.js";
+import { salesReportDraftHandler } from "./_lib/salesReportDraftHandler.js";
 
 export default async function handler(req, res) {
   if (!checkAuth(req)) {
     res.status(401).json({ error: "unauthorized" });
+    return;
+  }
+
+  // /api/sales-report-draft is rewritten here (vercel.json) — see salesReportDraftHandler.js.
+  if (req.query.action === "sales-report-draft") {
+    await salesReportDraftHandler(req, res);
     return;
   }
 

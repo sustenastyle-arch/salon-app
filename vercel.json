@@ -1,5 +1,8 @@
 {
   "crons": [
     { "path": "/api/auto-backup", "schedule": "0 13 * * *" }
+  ],
+  "rewrites": [
+    { "source": "/api/sales-report-draft", "destination": "/api/import-all?action=sales-report-draft" }
   ]
 }

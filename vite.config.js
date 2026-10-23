@@ -564,7 +564,7 @@ function squareBookingsApi(env) {
 }
 
 // Dev-only middleware — production equivalent is api/day-data.js, api/day-data-range.js,
-// api/deposits.js, api/export-all.js, api/import-all.js, api/sales-report-draft.js. All of them (dev and prod alike)
+// api/deposits.js, api/export-all.js, api/import-all.js (which also serves /api/sales-report-draft). All of them (dev and prod alike)
 // share the same Redis logic via api/_lib/dayDataStore.js, so only the request/response
 // plumbing below is duplicated, not the actual store logic.
 function dayDataApi(env) {
