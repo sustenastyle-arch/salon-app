@@ -1,6 +1,7 @@
 import { defineConfig, loadEnv } from 'vite'
 import react from '@vitejs/plugin-react'
 import { getDay, setDay, getDaysInRange, getAllDayBlobs, setDays, checkAuth, saveAutoBackup, listAutoBackups, restoreAutoBackup } from './api/_lib/dayDataStore.js'
+import { createSalesReportDraftIfChanged } from './api/_lib/gmailDraft.js'
 
 function readJsonBody(req) {
   return new Promise((resolve, reject) => {
@@ -563,7 +564,7 @@ function squareBookingsApi(env) {
 }
 
 // Dev-only middleware — production equivalent is api/day-data.js, api/day-data-range.js,
-// api/deposits.js, api/export-all.js, api/import-all.js. All of them (dev and prod alike)
+// api/deposits.js, api/export-all.js, api/import-all.js, api/sales-report-draft.js. All of them (dev and prod alike)
 // share the same Redis logic via api/_lib/dayDataStore.js, so only the request/response
 // plumbing below is duplicated, not the actual store logic.
 function dayDataApi(env) {
@@ -579,6 +580,9 @@ function dayDataApi(env) {
       if (env.KV_REST_API_URL) process.env.KV_REST_API_URL = env.KV_REST_API_URL
       if (env.KV_REST_API_TOKEN) process.env.KV_REST_API_TOKEN = env.KV_REST_API_TOKEN
       if (env.VITE_APP_PASSWORD) process.env.VITE_APP_PASSWORD = env.VITE_APP_PASSWORD
+      if (env.GMAIL_USER) process.env.GMAIL_USER = env.GMAIL_USER
+      if (env.GMAIL_APP_PASSWORD) process.env.GMAIL_APP_PASSWORD = env.GMAIL_APP_PASSWORD
+      if (env.REPORT_EMAIL_TO) process.env.REPORT_EMAIL_TO = env.REPORT_EMAIL_TO
 
       const authed = (req, res) => {
         if (!checkAuth(req)) {
@@ -741,6 +745,32 @@ function dayDataApi(env) {
           const count = await setDays(days)
           res.setHeader('Content-Type', 'application/json')
           res.end(JSON.stringify({ count }))
+        } catch (e) {
+          res.statusCode = 500
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify({ error: String(e) }))
+        }
+      })
+
+      server.middlewares.use('/api/sales-report-draft', async (req, res) => {
+        if (!authed(req, res)) return
+        if (req.method !== 'POST') {
+          res.statusCode = 405
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify({ error: 'method not allowed' }))
+          return
+        }
+        try {
+          const { date, fingerprint, subject, body, attachments } = await readJsonBody(req)
+          if (!subject || !body) {
+            res.statusCode = 400
+            res.setHeader('Content-Type', 'application/json')
+            res.end(JSON.stringify({ error: 'subject and body required' }))
+            return
+          }
+          const result = await createSalesReportDraftIfChanged({ date, fingerprint, subject, body, attachments: attachments || [] })
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify(result))
         } catch (e) {
           res.statusCode = 500
           res.setHeader('Content-Type', 'application/json')

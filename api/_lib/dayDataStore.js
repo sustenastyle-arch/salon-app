@@ -131,6 +131,22 @@ export async function restoreAutoBackup(dateKey) {
   return setDays(days);
 }
 
+// The day's numbers as of the last sales-report Gmail draft (see gmailDraft.js), so unlocking
+// a day and re-locking it without changing any money doesn't create a duplicate draft. Own key
+// prefix, so the spa-sheet-* scans (export/backup/deposit lookups) never pick these up.
+const REPORT_DRAFT_PREFIX = "report-draft-";
+
+// Stored wrapped in an object: @upstash/redis auto-parses a JSON-looking string on read, so a
+// bare fingerprint string would come back as an object and never compare equal.
+export async function getReportFingerprint(date) {
+  const stored = await getRedis().get(`${REPORT_DRAFT_PREFIX}${date}`);
+  return stored?.fingerprint ?? null;
+}
+
+export async function setReportFingerprint(date, fingerprint) {
+  await getRedis().set(`${REPORT_DRAFT_PREFIX}${date}`, { fingerprint });
+}
+
 // Shared-secret check reused across every endpoint below — the app already ships
 // VITE_APP_PASSWORD to the browser bundle for the client-side PasswordGate, so sending
 // it again as a header adds no new exposure. If it's unset (e.g. local dev without the

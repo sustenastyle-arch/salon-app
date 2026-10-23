@@ -7,6 +7,7 @@ import * as XLSX from "xlsx";
 // exports below, which need real borders/shading to match the owner's hand-formatted files.
 import ExcelJS from "exceljs";
 import { REFERRAL_SOURCES, getRetailItems, getStaffPurchaseItems, computeDayTotals } from "./lib/reportTotals.js";
+import { buildSalesReportEmail } from "./lib/salesReportEmail.js";
 
 const THERAPISTS = ["Mami", "Aya", "Megumi", "Hiromi", "Maki", "Yuka", "Mai", "Betsy"];
 const CUSTOMER_TYPES = ["RL", "RT", "NL", "NT"];
@@ -410,9 +411,9 @@ const API_PASSWORD = import.meta.env.VITE_APP_PASSWORD || "";
 // shows the just-typed value (state was already updated optimistically before this awaited), so
 // it *looks* saved until a reload proves otherwise. Aborting after 15s guarantees save()'s catch
 // block actually runs and surfaces a real error instead of hanging silently.
-async function apiFetch(path, options = {}) {
+async function apiFetch(path, { timeoutMs = 15000, ...options } = {}) {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 15000);
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
   let res;
   try {
     res = await fetch(path, {
@@ -765,7 +766,18 @@ export default function SpaDailySheet() {
   const handleLockToggle = async () => {
     if (!locked) {
       if (window.confirm(`Finalize and lock ${date}?\nOnce locked, no edits or deletions can be made until it's unlocked.`)) {
-        if (await setDayLocked(true)) showToast("🔒 This day has been finalized");
+        if (await setDayLocked(true)) {
+          showToast("🔒 This day has been finalized — creating the sales report draft in Gmail...");
+          // The lock itself already succeeded — a draft failure only gets reported, never undoes it.
+          createSalesReportDraft(date)
+            .then((result) => showToast(result?.skipped
+              ? "📧 Sales numbers unchanged since the last report — no new Gmail draft created"
+              : "📧 Sales report draft saved in Gmail — please check it and press Send"))
+            .catch((e) => {
+              console.error("Sales report draft error:", e);
+              showToast("⚠️ Locked, but the Gmail sales report draft could not be created", "error");
+            });
+        }
       }
       return;
     }
@@ -5698,7 +5710,10 @@ const iconBtn = { border: "none", background: "none", cursor: "pointer", fontSiz
 // ============================================================
 // SALES REPORT EXCEL EXPORT
 // ============================================================
-async function exportSalesReportXlsx(monthStr) {
+// Builds the monthly sales report workbook and returns its bytes — used both by the ⬇️ Download
+// Excel button (exportSalesReportXlsx below) and as the attachment on the Gmail draft created
+// when a day is locked (createSalesReportDraft), so the two are always the same file.
+async function buildSalesReportXlsx(monthStr) {
   const [y, m] = monthStr.split("-").map(Number);
   const lastDay = new Date(y, m, 0).getDate();
   const monthNames = ["January","February","March","April","May","June","July","August","September","October","November","December"];
@@ -5954,7 +5969,11 @@ async function exportSalesReportXlsx(monthStr) {
   ];
   addTableSheet("Ticket Redemptions", trData, [10, 38], r => r[0] === "Count");
 
-  const buf = await wb.xlsx.writeBuffer();
+  return wb.xlsx.writeBuffer();
+}
+
+async function exportSalesReportXlsx(monthStr) {
+  const buf = await buildSalesReportXlsx(monthStr);
   const blob = new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
@@ -5962,6 +5981,26 @@ async function exportSalesReportXlsx(monthStr) {
   a.download = `SalesReport_${monthStr}.xlsx`;
   a.click();
   URL.revokeObjectURL(url);
+}
+
+// Called right after a day is locked: builds that day's 売上報告 email (day + month-to-date) and
+// saves it as a Gmail draft with this month's Excel attached — never sends it; the owner reviews
+// the draft in Gmail and presses Send. Re-locking a day only drafts again if the day's numbers
+// changed since the last draft (the old draft stays in Drafts to be deleted by hand). Resolves
+// to { skipped: true } when nothing changed.
+async function createSalesReportDraft(date) {
+  const monthStr = date.slice(0, 7);
+  const { days } = await apiFetch(`/api/day-data-range?start=${monthStr}-01&end=${date}`);
+  if (!days?.[date]) throw new Error(`No data saved for ${date}`);
+  const { subject, body, fingerprint } = buildSalesReportEmail(date, days);
+  const bytes = new Uint8Array(await buildSalesReportXlsx(monthStr));
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return apiFetch("/api/sales-report-draft", {
+    method: "POST",
+    timeoutMs: 45000, // IMAP login + upload to Gmail can take longer than a normal save
+    body: JSON.stringify({ date, fingerprint, subject, body, attachments: [{ filename: `SalesReport_${monthStr}.xlsx`, contentBase64: btoa(binary) }] }),
+  });
 }
 
 // ============================================================
