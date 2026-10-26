@@ -515,7 +515,14 @@ export default function SpaDailySheet() {
   // than only when someone happens to navigate back to that specific date.
   const [unlockedPastDays, setUnlockedPastDays] = useState([]);
 
-  const showToast = (msg, type = "success") => { setToast({ msg, type }); setTimeout(() => setToast(null), 3000); };
+  // A newer toast cancels the older one's hide timer — otherwise a toast shown right after another
+  // (e.g. "locked" then the Gmail draft result a second later) vanished on the first one's timer.
+  const toastTimerRef = useRef(null);
+  const showToast = (msg, type = "success", durationMs = 3000) => {
+    setToast({ msg, type });
+    clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = setTimeout(() => setToast(null), durationMs);
+  };
 
   // <input type="number"> silently increments/decrements by 1 when the mouse wheel scrolls
   // over it while it's focused — easy to trigger by accident while scrolling a long form, and
@@ -772,10 +779,10 @@ export default function SpaDailySheet() {
           createSalesReportDraft(date)
             .then((result) => showToast(result?.skipped
               ? "📧 Sales numbers unchanged since the last report — no new Gmail draft created"
-              : "📧 Sales report draft saved in Gmail — please check it and press Send"))
+              : "📧 Sales report draft saved in Gmail — please check it and press Send", "success", 8000))
             .catch((e) => {
               console.error("Sales report draft error:", e);
-              showToast("⚠️ Locked, but the Gmail sales report draft could not be created", "error");
+              showToast("⚠️ Locked, but the Gmail sales report draft could not be created", "error", 8000);
             });
         }
       }
@@ -5712,8 +5719,10 @@ const iconBtn = { border: "none", background: "none", cursor: "pointer", fontSiz
 // ============================================================
 // Builds the monthly sales report workbook and returns its bytes — used both by the ⬇️ Download
 // Excel button (exportSalesReportXlsx below) and as the attachment on the Gmail draft created
-// when a day is locked (createSalesReportDraft), so the two are always the same file.
-async function buildSalesReportXlsx(monthStr) {
+// when a day is locked (createSalesReportDraft), so the two are always the same file. The draft
+// passes `throughDate` (the locked day) so later days already entered — today's sheet, still
+// open — don't leak into an earlier day's report; they come out as empty rows like future days.
+async function buildSalesReportXlsx(monthStr, throughDate) {
   const [y, m] = monthStr.split("-").map(Number);
   const lastDay = new Date(y, m, 0).getDate();
   const monthNames = ["January","February","March","April","May","June","July","August","September","October","November","December"];
@@ -5721,7 +5730,7 @@ async function buildSalesReportXlsx(monthStr) {
 
   // One round trip for every day in the month instead of a per-day localStorage read.
   const startDate = `${monthStr}-01`;
-  const endDate = `${monthStr}-${String(lastDay).padStart(2, "0")}`;
+  const endDate = throughDate || `${monthStr}-${String(lastDay).padStart(2, "0")}`;
   const { days } = await apiFetch(`/api/day-data-range?start=${startDate}&end=${endDate}`);
 
   // Collect all daily data for the month
@@ -5993,7 +6002,7 @@ async function createSalesReportDraft(date) {
   const { days } = await apiFetch(`/api/day-data-range?start=${monthStr}-01&end=${date}`);
   if (!days?.[date]) throw new Error(`No data saved for ${date}`);
   const { subject, body, fingerprint } = buildSalesReportEmail(date, days);
-  const bytes = new Uint8Array(await buildSalesReportXlsx(monthStr));
+  const bytes = new Uint8Array(await buildSalesReportXlsx(monthStr, date));
   let binary = "";
   for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
   return apiFetch("/api/sales-report-draft", {
