@@ -567,9 +567,23 @@ export default function SpaDailySheet() {
   // prior state" and waves through the next save, which then writes the (now-wiped) local state
   // over the real data on the server. This actually happened (July 31 entries vanishing).
   const saveGenRef = useRef(0);
+  // Which date the bump above was for — a save started on the previous day that lands while
+  // this day is loading must not make the load below discard this day's data.
+  const lastSaveDateRef = useRef(null);
+  // The date whose data is actually in state right now (null while a day is loading), and the
+  // date currently open. On a date switch the previous day's appointments stay in state until
+  // the new day's GET returns; a save in that window wrote them under the new date. Real case:
+  // 7/27's Hiromi cards ended up in 7/28 — the visible ones were deleted, but Hiromi was off on
+  // 7/28 so her column wasn't shown and two cards stayed hidden, paid twice in payroll.
+  // save()/setDayLocked() refuse unless loadedDateRef matches, and a save that finishes after
+  // the date changed leaves the new day's state alone.
+  const loadedDateRef = useRef(null);
+  const currentDateRef = useRef(date);
 
   useEffect(() => {
     let cancelled = false;
+    currentDateRef.current = date;
+    loadedDateRef.current = null;
     const genAtLoadStart = saveGenRef.current;
     setReconcileResult(null);
     setDayLoading(true);
@@ -577,10 +591,11 @@ export default function SpaDailySheet() {
       try {
         const { data: d } = await apiFetch(`/api/day-data?date=${date}`);
         if (cancelled) return;
-        if (saveGenRef.current !== genAtLoadStart) {
+        if (saveGenRef.current !== genAtLoadStart && lastSaveDateRef.current === date) {
           // A save completed for this date while this GET was still in flight — that save's
           // outcome is newer than what we just fetched, so applying this stale result would
           // erase real data. Just stop the loading spinner and leave the (already-current) state.
+          loadedDateRef.current = date;
           setDayLoading(false);
           return;
         }
@@ -612,6 +627,7 @@ export default function SpaDailySheet() {
           setWorkingStaff(THERAPISTS);
         }
         lastServerDataRef.current = canonicalDay(d);
+        loadedDateRef.current = date;
       } catch (e) {
         if (!cancelled) {
           console.error("Day load error:", e);
@@ -692,6 +708,8 @@ export default function SpaDailySheet() {
   // when a concurrent-edit conflict is detected, and (see save()'s catch block) after a failed
   // save, so the screen never keeps showing an optimistic edit that didn't actually persist.
   const applyServerSnapshot = (serverNow) => {
+    // From a save that started before the date was switched — this snapshot is the old day's.
+    if (currentDateRef.current !== date) return;
     setAppointments(serverNow?.appointments || []);
     setRetails(serverNow?.retails || []);
     setDeposits(serverNow?.deposits || []);
@@ -706,6 +724,21 @@ export default function SpaDailySheet() {
     // Invalidates any initial per-date load still in flight — see saveGenRef above — so that
     // GET can't land afterward and clobber this snapshot with an even staler one.
     saveGenRef.current++;
+    lastSaveDateRef.current = date;
+  };
+  // Shared guard for save()/setDayLocked() — see loadedDateRef.
+  const dayNotLoadedYet = () => {
+    if (loadedDateRef.current === date) return false;
+    showToast("⏳ This day is still loading — please wait a moment and try again", "error");
+    return true;
+  };
+  // After a successful write: only touch this browser's view of the day if it's still the open one.
+  const markSaved = (payload) => {
+    saveGenRef.current++;
+    lastSaveDateRef.current = date;
+    if (currentDateRef.current !== date) return false;
+    lastServerDataRef.current = canonicalDay(payload);
+    return true;
   };
 
   // A day that has never been saved before legitimately has serverNow === null (no conflict,
@@ -724,6 +757,7 @@ export default function SpaDailySheet() {
   };
 
   const save = useCallback(async (appts, rets, deps, tps, sps, refs, fts, ws, dismissed) => {
+    if (dayNotLoadedYet()) return false;
     try {
       if (await checkNoConcurrentChange() === CONCURRENT_CONFLICT) return false;
       const payload = { appointments: appts, retails: rets, deposits: deps, ticketPurchases: tps || [], staffPurchases: sps || [], refunds: refs || [], forgottenTips: fts || [], locked, workingStaff: ws || workingStaff, dismissedApptIds: dismissed || dismissedApptIds };
@@ -731,8 +765,7 @@ export default function SpaDailySheet() {
         method: "POST",
         body: JSON.stringify({ date, data: payload }),
       });
-      lastServerDataRef.current = canonicalDay(payload);
-      saveGenRef.current++;
+      markSaved(payload);
       return true;
     } catch (e) {
       console.error("Save error:", e);
@@ -755,6 +788,7 @@ export default function SpaDailySheet() {
   // Only flips the UI state after the cloud write actually succeeds, so "locked" shown on
   // screen can't diverge from what the server recorded.
   const setDayLocked = async (newLocked) => {
+    if (dayNotLoadedYet()) return false;
     try {
       if (await checkNoConcurrentChange() === CONCURRENT_CONFLICT) return false;
       const payload = { appointments, retails, deposits, ticketPurchases, staffPurchases, refunds, forgottenTips, locked: newLocked, workingStaff, dismissedApptIds };
@@ -762,9 +796,7 @@ export default function SpaDailySheet() {
         method: "POST",
         body: JSON.stringify({ date, data: payload }),
       });
-      lastServerDataRef.current = canonicalDay(payload);
-      saveGenRef.current++;
-      setLocked(newLocked);
+      if (markSaved(payload)) setLocked(newLocked);
       checkUnlockedPastDays();
       return true;
     } catch (e) {
@@ -1599,9 +1631,15 @@ export default function SpaDailySheet() {
     return { therapist: t, revenue, tips, tipCash, tipCard, cavRevenue, ticketRevenue, ticketCavRevenue, ticketTips, gcRevenue, gcTips, clients, ticketClients: ticketAppts2.length, gcClients: gcAppts2.length, byType, newTicketCount: newTicket.count, newTicketAmount: newTicket.amount };
   });
 
+  // Anyone with a card on this day gets a column even if they aren't marked as working —
+  // otherwise their cards are invisible yet still counted in payroll (the 7/28 case, see
+  // loadedDateRef).
+  const offShiftWithCards = THERAPISTS.filter(t => !workingStaff.includes(t) && appointments.some(a =>
+    a.therapist === t || (a.addons || []).some(ad => ad.therapist === t || (ad.hasCav === true && ad.cavTherapist === t))));
+  const scheduleStaff = [...workingStaff, ...offShiftWithCards];
   const visibleTherapists = selectedTherapist === "All"
-    ? workingStaff
-    : workingStaff.filter(t => t === selectedTherapist);
+    ? scheduleStaff
+    : scheduleStaff.filter(t => t === selectedTherapist);
 
   return (
     <div style={{ fontFamily: "'Inter','Helvetica Neue',sans-serif", background: "#F7F4EE", minHeight: "100vh", color: "#1a1a1a" }}>
@@ -1938,8 +1976,8 @@ export default function SpaDailySheet() {
               <tr>
                 <th style={{ width: 70, padding: "8px 4px", fontSize: 11, color: "#888", textAlign: "left", borderBottom: "2px solid #0D4F4F" }}>Time</th>
                 {visibleTherapists.map(t => (
-                  <th key={t} style={{ padding: "8px 6px", fontSize: 13, fontWeight: 700, color: "#0D4F4F", textAlign: "center", borderBottom: "2px solid #0D4F4F", minWidth: 190 }}>
-                    {t}
+                  <th key={t} style={{ padding: "8px 6px", fontSize: 13, fontWeight: 700, color: offShiftWithCards.includes(t) ? "#C62828" : "#0D4F4F", textAlign: "center", borderBottom: "2px solid #0D4F4F", minWidth: 190 }}>
+                    {t}{offShiftWithCards.includes(t) && <div style={{ fontSize: 11, fontWeight: 700 }}>⚠️ Not on shift — check these cards</div>}
                   </th>
                 ))}
               </tr>
