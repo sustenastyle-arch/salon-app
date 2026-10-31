@@ -102,6 +102,18 @@ day's figures is kept under its own Redis key (`report-draft-YYYY-MM-DD`, outsid
 `spa-sheet-*` prefix so export/backup scans never see it). A draft failure only shows a toast;
 it never undoes the lock.
 
+### Square check before lock
+
+A day can only be locked once it matches Square (`checkSquareBeforeLock` in
+`spa-daily-sheet.jsx`): locking first calls `/api/square-payments` and requires all of
+`squareReconcileRows` (cash total, card total, cash tip, card tip) to match. The 🔍 Square
+Reconcile panel shows the same rows. Square gift card redemptions count as card payments on
+Square's side but are never revenue on the sheet (`giftCardUsed`), so the API also returns
+`giftCardTotal`/`giftCardTip` (card brand `SQUARE_GIFT_CARD`), and these are subtracted from
+Square's card figures before comparing. A genuine exception can still be locked with the manager
+PIN: for example, a refund of an earlier day's sale, which Square nets against the original day,
+or Square being unreachable.
+
 ### Vercel Hobby plan: 12-function cap
 
 Vercel's Hobby plan allows at most **12 serverless functions** per deployment, and `api/`

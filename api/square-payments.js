@@ -102,6 +102,11 @@ export default async function handler(req, res) {
     };
 
     let cashTotal = 0, cardTotal = 0, cashTip = 0, cardTip = 0;
+    // Square gift card redemptions come back as card payments (source_type CARD, brand
+    // SQUARE_GIFT_CARD) and stay inside cardTotal/cardTip, but the sheet deliberately leaves
+    // that money out of today's revenue (giftCardUsed — it was counted when the card was sold).
+    // Totalled separately so the client can take them back out before comparing.
+    let giftCardTotal = 0, giftCardTip = 0;
     const refunds = [];
     // Every individual completed payment (net of any refund), so the client can try to match
     // each one against a sheet entry with the same tender + total — narrowing a reconciliation
@@ -153,6 +158,11 @@ export default async function handler(req, res) {
           cardTotal += netTotal;
           cardTip += netTip;
         }
+        const isGiftCard = p.card_details?.card?.card_brand === 'SQUARE_GIFT_CARD';
+        if (isGiftCard) {
+          giftCardTotal += netTotal;
+          giftCardTip += netTip;
+        }
         if (refunded > 0) {
           refunds.push({
             amount: Math.round(refunded * 100) / 100,
@@ -167,6 +177,7 @@ export default async function handler(req, res) {
             tip: Math.round(netTip * 100) / 100,
             tipBreakdown: tipBreakdown.length > 1 ? tipBreakdown : undefined,
             tender,
+            giftCard: isGiftCard || undefined,
             time: formatHawaiiTime(p.created_at),
             label: p.order_id ? await getOrderItemLabel(p.order_id) : '',
           });
@@ -182,6 +193,8 @@ export default async function handler(req, res) {
       payments,
       cashTip: Math.round(cashTip * 100) / 100,
       cardTip: Math.round(cardTip * 100) / 100,
+      giftCardTotal: Math.round(giftCardTotal * 100) / 100,
+      giftCardTip: Math.round(giftCardTip * 100) / 100,
     });
   } catch (e) {
     res.status(500).json({ error: String(e) });

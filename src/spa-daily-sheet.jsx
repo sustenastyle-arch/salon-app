@@ -770,8 +770,37 @@ export default function SpaDailySheet() {
     if (locked) { showToast("🔒 This day is finalized. Unlock it before editing", "error"); return true; }
     return false;
   };
+  // A day only locks once the sheet matches Square (gift card payments excluded — see
+  // squareReconcileRows), so a typo is caught at closing instead of in the month-end audit.
+  // Returns true if locking may go ahead. A real exception (a refund of an earlier day's sale,
+  // which Square nets against the original day; Square unreachable) can be pushed through with
+  // the manager PIN.
+  const checkSquareBeforeLock = async () => {
+    let problem;
+    showToast("🔍 Checking this day against Square before locking...", "info", 15000);
+    try {
+      const res = await fetch(`/api/square-payments?date=${date}`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      setReconcileResult(data);
+      const mismatches = squareReconcileRows(data).filter(r => Math.abs(r2(r.sheet - r.square)) > 0.01);
+      if (mismatches.length === 0) return true;
+      problem = "The sheet doesn't match Square:\n" + mismatches.map(r => {
+        const diff = r2(r.sheet - r.square);
+        return `・${r.label}: sheet ${formatCurrency(r.sheet)} / Square ${formatCurrency(r.square)} (${diff > 0 ? "+" : ""}${formatCurrency(diff)})`;
+      }).join("\n") + "\n\nSee the Square Reconciliation panel for the transactions that don't line up.";
+    } catch (e) {
+      console.error("Square check before lock failed:", e);
+      problem = `Couldn't check this day against Square (${e.message}).`;
+    }
+    const pin = window.prompt(`${problem}\n\nThis day can't be locked until it matches. To lock it anyway (e.g. a refund of an earlier day's sale), enter the manager PIN:`);
+    if (pin === null) return false;
+    if (pin !== MANAGER_PIN) { showToast("Incorrect PIN — not locked", "error"); return false; }
+    return true;
+  };
   const handleLockToggle = async () => {
     if (!locked) {
+      if (!(await checkSquareBeforeLock())) return;
       if (window.confirm(`Finalize and lock ${date}?\nOnce locked, no edits or deletions can be made until it's unlocked.`)) {
         if (await setDayLocked(true)) {
           showToast("🔒 This day has been finalized — creating the sales report draft in Gmail...");
@@ -1407,6 +1436,25 @@ export default function SpaDailySheet() {
   const sheetCardTotal = r2(cardTreatmentAll + cardProductStd + tipCardAllSources);
   const sheetCashTip = r2(tipCashAllSources);
   const sheetCardTip = r2(tipCardAllSources);
+  // The sheet-vs-Square rows the Square照合 panel shows, and that locking a day requires to all
+  // match. Square gift card redemptions sit inside Square's card figures but never in the
+  // sheet's (giftCardUsed was revenue on the day the card was sold), so they're taken back out
+  // of Square's side first — otherwise every gift-card visit would show a false card shortfall
+  // (e.g. 10/28: Square card $1,200.20 incl. a $500 gift card payment vs. sheet $700.20).
+  const squareReconcileRows = (sq) => {
+    const squareCard = r2(sq.cardTotal - Number(sq.giftCardTotal || 0));
+    return [
+      // The day's overall Sales Report total (matches the Excel export's grandTotal) shown
+      // first so it's the one glance-check against Square's actual total for the day — the
+      // 4 breakdown rows below are for narrowing down which side (cash/card/tip) a mismatch
+      // is coming from once this one doesn't match.
+      { label: "Sales Report Total (Cash + Card, tip included)", sheet: r2(sheetCashTotal + sheetCardTotal), square: r2(sq.cashTotal + squareCard) },
+      { label: "Cash Total (Treatment + Retail + Tip)", sheet: sheetCashTotal, square: sq.cashTotal },
+      { label: "Card Total (Treatment + Retail + Tip)", sheet: sheetCardTotal, square: squareCard },
+      { label: "Cash Tip", sheet: sheetCashTip, square: sq.cashTip },
+      { label: "Card Tip", sheet: sheetCardTip, square: r2(sq.cardTip - Number(sq.giftCardTip || 0)) },
+    ];
+  };
 
   // Individual money-in events for the Square照合 payment-matching table below — each one
   // should correspond to exactly one real Square payment (tender + amount combined), so a
@@ -1615,17 +1663,8 @@ export default function SpaDailySheet() {
         // inside a cash order, so cash tips are comparable too as long as that's how they were
         // entered in Square. A cash tip paid with no "Tip" line item at all still won't show up
         // here (there's nothing in Square to recover it from).
-        const rows = [
-          // The day's overall Sales Report total (matches the Excel export's grandTotal) shown
-          // first so it's the one glance-check against Square's actual total for the day — the
-          // 4 breakdown rows below are for narrowing down which side (cash/card/tip) a mismatch
-          // is coming from once this one doesn't match.
-          { label: "Sales Report Total (Cash + Card, tip included)", sheet: r2(sheetCashTotal + sheetCardTotal), square: r2(reconcileResult.cashTotal + reconcileResult.cardTotal) },
-          { label: "Cash Total (Treatment + Retail + Tip)", sheet: sheetCashTotal, square: reconcileResult.cashTotal },
-          { label: "Card Total (Treatment + Retail + Tip)", sheet: sheetCardTotal, square: reconcileResult.cardTotal },
-          { label: "Cash Tip", sheet: sheetCashTip, square: reconcileResult.cashTip },
-          { label: "Card Tip", sheet: sheetCardTip, square: reconcileResult.cardTip },
-        ];
+        const rows = squareReconcileRows(reconcileResult);
+        const squareGiftCardTotal = Number(reconcileResult.giftCardTotal || 0);
         // When the totals above don't match, try to pin down exactly which transaction(s) are
         // responsible instead of leaving it as "the total is off by $X" — match each real Square
         // payment against a sheet entry with the same tender + amount (best-effort; two entries
@@ -1634,6 +1673,8 @@ export default function SpaDailySheet() {
         const usedEventIdx = new Set();
         const unmatchedPayments = [];
         (reconcileResult.payments || []).forEach(p => {
+          // Gift card redemptions have no sheet money event to match (see squareReconcileRows).
+          if (p.giftCard) return;
           const idx = moneyEvents.findIndex((e, i) => !usedEventIdx.has(i) && e.tender === p.tender && Math.abs(e.amount - p.amount) < 0.01);
           if (idx === -1) unmatchedPayments.push(p); else usedEventIdx.add(idx);
         });
@@ -1703,7 +1744,7 @@ export default function SpaDailySheet() {
                         : `Tip ${formatCurrency(p.tip)}`;
                       return (
                         <div key={i} style={{ fontSize: 12, color: "#3E2723", display: "flex", justifyContent: "space-between", gap: 10, borderBottom: "1px solid #EEE8DD", paddingBottom: 3 }}>
-                          <span>{p.tender === "cash" ? "💵" : "💳"} {p.time}{p.label ? ` — ${p.label}` : ""}</span>
+                          <span>{p.tender === "cash" ? "💵" : p.giftCard ? "🎁" : "💳"} {p.time}{p.giftCard ? " (gift card)" : ""}{p.label ? ` — ${p.label}` : ""}</span>
                           <span style={{ whiteSpace: "nowrap", fontWeight: 600 }}>
                             Treatment {formatCurrency(treatment)} + {tipText} = {formatCurrency(p.amount)}
                           </span>
@@ -1730,7 +1771,12 @@ export default function SpaDailySheet() {
                 the day the card was originally sold). This is the single most common source of
                 a Card Total mismatch, so it's called out explicitly rather than left for staff
                 to work out each time from the raw payment list above. */}
-            {totalGCUsed > 0 && (
+            {squareGiftCardTotal > 0 && (
+              <div style={{ fontSize: 11, color: "#5D4037", marginTop: 4, background: "#FFF8E1", borderRadius: 6, padding: "6px 10px" }}>
+                🎁 {formatCurrency(squareGiftCardTotal)} was paid with Square gift cards today. It's left out of Square's card figures above, since that money was already counted when the gift card was sold.
+              </div>
+            )}
+            {r2(totalGCUsed - squareGiftCardTotal) > 0.01 && (
               <div style={{ fontSize: 11, color: "#5D4037", marginTop: 4, background: "#FFF8E1", borderRadius: 6, padding: "6px 10px" }}>
                 🎁 ${r2(totalGCUsed)} in gift cards was used today. If the client's card was charged the full visit total (with the gift-card portion tracked separately here rather than redeemed as a Square gift-card payment), Square's total will include that amount too — that alone can fully explain a Card Total difference close to ${r2(totalGCUsed)}.
               </div>

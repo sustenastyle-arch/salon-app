@@ -321,6 +321,8 @@ function squarePaymentsApi(env) {
           }
 
           let cashTotal = 0, cardTotal = 0, cashTip = 0, cardTip = 0
+          // Square gift card redemptions are card payments here — see api/square-payments.js.
+          let giftCardTotal = 0, giftCardTip = 0
           const refunds = []
           // Every individual completed payment (net of any refund), so the client can try to
           // match each one against a sheet entry with the same tender + total — narrowing a
@@ -367,6 +369,11 @@ function squarePaymentsApi(env) {
                 cardTotal += netTotal
                 cardTip += netTip
               }
+              const isGiftCard = p.card_details?.card?.card_brand === 'SQUARE_GIFT_CARD'
+              if (isGiftCard) {
+                giftCardTotal += netTotal
+                giftCardTip += netTip
+              }
               if (refunded > 0) {
                 refunds.push({
                   amount: Math.round(refunded * 100) / 100,
@@ -380,6 +387,7 @@ function squarePaymentsApi(env) {
                   amount: Math.round(netTotal * 100) / 100,
                   tip: Math.round(netTip * 100) / 100,
                   tender,
+                  giftCard: isGiftCard || undefined,
                   time: formatHawaiiTime(p.created_at),
                   label: p.order_id ? await getOrderItemLabel(p.order_id) : '',
                 })
@@ -396,6 +404,8 @@ function squarePaymentsApi(env) {
             payments,
             cashTip: Math.round(cashTip * 100) / 100,
             cardTip: Math.round(cardTip * 100) / 100,
+            giftCardTotal: Math.round(giftCardTotal * 100) / 100,
+            giftCardTip: Math.round(giftCardTip * 100) / 100,
           }))
         } catch (e) {
           res.statusCode = 500
