@@ -841,6 +841,17 @@ export default function SpaDailySheet() {
   };
   const handleLockToggle = async () => {
     if (!locked) {
+      // A Square-synced card nobody filled in is either a visit someone forgot to enter or a
+      // cancellation left on the sheet — either way it still counts as a client (and was found
+      // hiding outside the visible hours more than once), so it has to be filled in or deleted.
+      const emptyCards = appointments.filter(a => !a.isCavSlot && !Number(a.price || 0) && !Number(a.tip || 0)
+        && !Number(a.packagePrice || 0) && !Number(a.newTicketAmount || 0));
+      if (emptyCards.length > 0) {
+        window.alert(`This day can't be locked yet — ${emptyCards.length} card${emptyCards.length > 1 ? "s have" : " has"} no amounts entered:\n\n`
+          + emptyCards.map(a => `・${a.startTime || "?"} ${a.therapist || "(no therapist)"} — ${a.clientName || "(no name)"}`).join("\n")
+          + "\n\nEnter the treatment/tip, or delete the card if the booking was cancelled or a no-show.");
+        return;
+      }
       if (!(await checkSquareBeforeLock())) return;
       if (window.confirm(`Finalize and lock ${date}?\nOnce locked, no edits or deletions can be made until it's unlocked.`)) {
         if (await setDayLocked(true)) {
