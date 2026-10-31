@@ -15,6 +15,15 @@ const CUSTOMER_TYPES = ["RL", "RT", "NL", "NT"];
 // in reporting) — this only translates it for display, same pattern as CUSTOMER_TYPE_LABELS below.
 const REFERRAL_LABELS = { "紹介": "Referral" };
 const HOURS = Array.from({ length: 11 }, (_, i) => i + 9);
+// The schedule grid's rows: the usual 9am–7pm, stretched to cover any booking outside it. A card
+// outside the fixed rows used to be invisible yet still counted as a client (real case: a
+// mistaken 7:30am Square booking on 10/11 that nobody could find to delete).
+const scheduleHours = (appointments) => {
+  const hours = appointments.map(a => parseInt((a.startTime || "").split(":")[0], 10)).filter(h => !isNaN(h));
+  const first = Math.min(HOURS[0], ...hours);
+  const last = Math.max(HOURS[HOURS.length - 1], ...hours);
+  return Array.from({ length: last - first + 1 }, (_, i) => first + i);
+};
 // Weight Loss (regular, non-ticket): machine/cavitation allocation is a fixed $116 regardless
 // of duration or total price — the rest goes to the body therapist.
 const REGULAR_WL_CAV_PRICE = 116;
@@ -1936,7 +1945,7 @@ export default function SpaDailySheet() {
               </tr>
             </thead>
             <tbody>
-              {HOURS.map(hour => (
+              {scheduleHours(appointments).map(hour => (
                 <tr key={hour} style={{ borderBottom: "1px solid #EEE" }}>
                   <td style={{ padding: "6px 4px", fontSize: 11, color: "#999", verticalAlign: "top", whiteSpace: "nowrap" }}>{formatTime(hour)}</td>
                   {visibleTherapists.map(t => {
