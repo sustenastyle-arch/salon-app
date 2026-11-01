@@ -1132,8 +1132,16 @@ export default function SpaDailySheet() {
     // Machine (cav) portion duration: use the minutes the staff actually entered
     // (needed e.g. for Weight Loss, where machine=40min / body=75min), falling back
     // to the old default of 15min for quick facial add-ons where it wasn't entered.
-    const cavDuration = Number(appt.cavMins) || 15;
-    const bodyDuration = appt.bodyMins ? Number(appt.bodyMins) : Number(appt.duration) - cavDuration;
+    // Weight Loss is always 40min of machine (WL-90 = 50 body + 40, WL-115 = 75 + 40), ticket or
+    // not. The 40min default below in ApptModal only ever ran for non-ticket visits, so a Weight
+    // Loss ticket with a separate machine therapist fell back to 15 here and over-credited the
+    // body therapist's minutes (10/09 Vickie Miao: Maki 75min instead of 50) — which is exactly
+    // what Maki, paid by the minute, is paid on.
+    const isWeightLoss = isWeightLossService(appt.serviceName) || (appt.isTicket && /^WL-/.test(appt.ticketMenu || ""));
+    const cavDuration = isWeightLoss ? 40 : (Number(appt.cavMins) || 15);
+    const bodyDuration = isWeightLoss && Number(appt.duration) > 40
+      ? Number(appt.duration) - 40
+      : appt.bodyMins ? Number(appt.bodyMins) : Number(appt.duration) - cavDuration;
 
     const cavSlot = needsCavSlot ? {
       id: cavSlotId,
