@@ -157,6 +157,30 @@ are the ones most likely to need edits when the business changes menu/pricing/st
 - `THERAPISTS` is the canonical staff list; keep it in sync with `TEAM_MEMBER_MAP` in
   `vite.config.js`/`api/square-bookings.js` when staff change
 
+### Treatment minutes (Maki is paid by the minute)
+
+Maki is on call and is paid by the minutes she actually treated, so a body therapist's saved
+`duration` is real money for her. Other staff are paid by the service/tip amounts, so their
+minutes don't change their pay. The payroll CSV shows a Minutes column only for Maki.
+
+When a separate therapist runs the machine (cav), the body therapist's minutes are the course
+length minus the machine time:
+
+| Course | Machine | Body therapist's minutes |
+|---|---|---|
+| Weight Loss 75 | 40 | **35** |
+| Weight Loss 90 | 40 | **50** |
+| Weight Loss 115 | 40 | **75** |
+| Improving Posture 60 / 75 | (none) | 60 / 75 |
+| Improving Posture 90 | 15 | **75** (90 when the same therapist also runs the machine) |
+| Improving Posture 120 | 15 | **105** |
+
+Weight Loss always uses 40 minutes of machine time, whether or not the visit is a ticket.
+`saveAppt` forces this rule. A Weight Loss ticket once fell back to the 15-minute default:
+10/09/2026 Vickie Miao was saved as Maki 75min instead of 50, and Maki was overpaid 25 minutes.
+Any change to how `duration`, `bodyMins` or `cavMins` are saved must keep these numbers. Check
+Maki's minutes against this table in every payroll audit.
+
 ### UI structure
 
 `SpaDailySheet` (default export of `spa-daily-sheet.jsx`) is the top-level component with all
