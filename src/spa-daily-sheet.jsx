@@ -3538,8 +3538,13 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                                 {["new", "old"].map(v => {
                                   const entry = PRICE_TABLE[v]?.[addon.ticketMenu];
                                   if (!entry) return null;
-                                  const svc = entry.body.service + (entry.cav ? entry.cav.service : 0);
-                                  const tip = entry.body.tip + (entry.cav ? entry.cav.tip : 0);
+                                  // Same fixed one-therapist rate a main ticket card fills in (e.g.
+                                  // SF-60-5 = $151 + $29), not body + machine summed ($150) — the
+                                  // add-on picker used the sum, so a facial ticket entered as an
+                                  // add-on (10/27 Douglas Wong) paid $1 less than the same session
+                                  // entered as its own card.
+                                  const svc = entry.combined?.service ?? (entry.body.service + (entry.cav ? entry.cav.service : 0));
+                                  const tip = entry.combined?.tip ?? (entry.body.tip + (entry.cav ? entry.cav.tip : 0));
                                   const [prefix, durStr] = addon.ticketMenu.split("-");
                                   return (
                                     <button key={v} onClick={() => upd({
