@@ -213,8 +213,12 @@ into account:
   Instagram ad spend on purpose. Fewer new customers or lower ad spend can be a deliberate choice,
   not a problem.
 - The owner wants each staff member to build their own regulars, so that their bookings don't
-  depend on ads or the season, and eventually every staff member can charge a nomination fee
-  (指名料). Staff comments name one strength and one goal each and never blame anyone.
+  depend on ads or the season. The concrete goal is 2–3 new regulars a month each: clients who ask
+  for them, rebook on the spot, or keep coming back. Charging a nomination fee (指名料) is each
+  staff member's own choice; some don't want to, and that's fine. Staff comments name one
+  strength and one goal each and never blame anyone.
+- Travelers almost never come back, so return rates (overall, by staff, by source) count new
+  locals only. Target: 40% of new locals come back (4 of 10).
 - Aya is the model the owner wants everyone to aim for: she already charges a $10 nomination fee
   and most of her clients ask for her by name. Her new-customer numbers are low because her book is
   filled by her own regulars, so that is a strength, not a gap.
