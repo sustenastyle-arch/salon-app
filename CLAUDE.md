@@ -192,3 +192,32 @@ what calls `save()` (an async `POST /api/day-data`).
 
 `App.jsx` wraps everything in `PasswordGate`, a client-side-only check against
 `VITE_APP_PASSWORD` (a soft deterrent, not real auth — the password ships in the bundle).
+
+## Business facts for sales analysis
+
+The monthly statistics workbook (Desktop `Dr.Body 月次統計.xlsx`, built outside this repo by
+`C:\Users\suste\koguchi-auto\monthly-stats.mjs`) ends each month with a written analysis the owner
+uses in staff 1-on-1s. Any analysis of this salon's numbers has to take these facts from the owner
+into account:
+- Every new customer, local or traveler, gets $20 off the first visit. No first visit is at list
+  price, so a shift between new travelers and new locals doesn't explain a change in sales.
+- Travelers come mostly from the US mainland. Only about 3–5 Japanese customers come a month, so
+  Japanese holidays don't explain anything; US holidays (Thanksgiving, Christmas–New Year, spring
+  break, summer) do.
+- About 40% of visits are ticket sessions (Sep 2026: 102 of 237, Oct 2026: 98 of 235). A ticket
+  session fills a slot but its revenue was booked when the ticket was sold, so the month's sales
+  depend heavily on how many tickets are *sold* that month (`ticketPurchases`, `newTicket`,
+  same-day tickets), and on retail. Oct 2026 fell $5,183 from Sep almost entirely from fewer
+  ticket sales (−$3,690) and less retail (−$1,180); the owner confirmed that reading.
+- When ticket holders fill the book there is no room for new customers, so the owner lowers the
+  Instagram ad spend on purpose. Fewer new customers or lower ad spend can be a deliberate choice,
+  not a problem.
+- The owner wants each staff member to build their own regulars, so that their bookings don't
+  depend on ads or the season, and eventually every staff member can charge a nomination fee
+  (指名料). Staff comments name one strength and one goal each and never blame anyone.
+- Aya is the model the owner wants everyone to aim for: she already charges a $10 nomination fee
+  and most of her clients ask for her by name. Her new-customer numbers are low because her book is
+  filled by her own regulars, so that is a strength, not a gap.
+- Whether a weak month comes from the season or from staff skill/service is often unclear; say so
+  rather than pick one.
+- Sales goal: $50,000 a month, tip-included.
