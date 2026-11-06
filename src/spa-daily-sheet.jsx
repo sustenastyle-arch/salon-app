@@ -9,7 +9,7 @@ import ExcelJS from "exceljs";
 import { REFERRAL_SOURCES, getRetailItems, getStaffPurchaseItems, computeDayTotals } from "./lib/reportTotals.js";
 import { buildSalesReportEmail } from "./lib/salesReportEmail.js";
 
-const THERAPISTS = ["Mami", "Aya", "Megumi", "Hiromi", "Maki", "Yuka", "Mai", "Betsy"];
+const THERAPISTS = ["Mami", "Aya", "Megumi", "Hiromi", "Maki", "Yuka", "Mai", "Betsy", "Mikiko"];
 const CUSTOMER_TYPES = ["RL", "RT", "NL", "NT"];
 // Stored value stays "紹介" (already-saved appointments are matched against it by exact equality
 // in reporting) — this only translates it for display, same pattern as CUSTOMER_TYPE_LABELS below.
@@ -183,9 +183,9 @@ const ADDON_TICKET_MENU_OPTIONS = MENU_OPTIONS.flatMap(({ group, prefix, duratio
 ).filter(Boolean);
 
 // Staff capabilities
-const CAV_CAPABLE = ["Mami", "Betsy", "Megumi", "Yuka", "Mai"]; // can operate machine
-const BODY_CAPABLE = ["Mami", "Betsy", "Megumi", "Aya", "Hiromi", "Mai", "Maki"]; // can do body massage
-const DUAL_LICENSE = ["Mami", "Betsy", "Megumi", "Mai"]; // body + machine (handles both themselves)
+const CAV_CAPABLE = ["Mami", "Betsy", "Megumi", "Yuka", "Mai", "Mikiko"]; // can operate machine
+const BODY_CAPABLE = ["Mami", "Betsy", "Megumi", "Aya", "Hiromi", "Mai", "Maki", "Mikiko"]; // can do body massage
+const DUAL_LICENSE = ["Mami", "Betsy", "Megumi", "Mai", "Mikiko"]; // body + machine (handles both themselves)
 // Yuka: machine/facial only (no body massage)
 const isCavCapable = (name) => CAV_CAPABLE.includes(name);
 const isDualLicense = (name) => DUAL_LICENSE.includes(name);
@@ -5474,7 +5474,7 @@ function StaffPurchaseModal({ sp, onSave, onDelete, onClose }) {
         <Field label="Staff Name">
           <select value={form.staffName} onChange={e => set("staffName", e.target.value)} style={inputStyle}>
             <option value="">— Select —</option>
-            {["Mami","Aya","Megumi","Hiromi","Maki","Yuka","Mai","Betsy"].map(t => (
+            {THERAPISTS.map(t => (
               <option key={t} value={t}>{t}</option>
             ))}
           </select>

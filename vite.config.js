@@ -430,6 +430,7 @@ function squareBookingsApi(env) {
     'TMu1v7kb0cgbl5mn': 'Mai',
     'TMwBMik2I8Xpyog2': 'Maki',
     'TMW8eccMtM4pdMiM': 'Hiromi',
+    'TMHk1qR9eC5ww6WP': 'Mikiko',
   }
   return {
     name: 'square-bookings-api',
