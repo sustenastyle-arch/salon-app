@@ -407,6 +407,20 @@ const STAFF_PURCHASE_PRODUCTS = [
 
 const formatCurrency = (n) => `$${Number(n || 0).toLocaleString("en-US", { minimumFractionDigits: 0 })}`;
 const r2 = (n) => Math.round(n * 100) / 100;
+
+// A cash/card split is entered against the whole visit (body + machine), i.e. what the client
+// really paid in each tender, as Square shows it. Splitting against the body price alone left the
+// machine share with no tender, and the totals counted it as card: 11/10 Tamalyn Hasegawa and Tina
+// Brady each paid $100 cash + $58 card, and $52.66 of cash showed up as card.
+const splitSvcBase = (f) => Number(f.price || 0) + (f.cavTherapist ? Number(f.cavPrice || 0) : 0);
+const splitTipBase = (f) => Number(f.tip || 0) + (f.cavTherapist ? Number(f.cavTip || 0) : 0);
+// The machine slot carries one tender, so it goes on whichever side covers it and the body card
+// keeps the rest. Either way the day's cash and card totals match what was paid.
+const splitOffCavSlot = (cash, card, cavAmt) => {
+  const cashN = Number(cash || 0), cardN = Number(card || 0);
+  if (cashN >= cavAmt) return { cavTender: "cash", cash: r2(cashN - cavAmt), card: cardN };
+  return { cavTender: "card", cash: cashN, card: r2(Math.max(0, cardN - cavAmt)) };
+};
 const formatTime = (hour) => { const h = hour % 12 || 12; return `${h}:00 ${hour < 12 ? "AM" : "PM"}`; };
 
 // All day data now lives in a shared cloud store (see api/_lib/dayDataStore.js) instead of
@@ -1143,6 +1157,9 @@ export default function SpaDailySheet() {
       ? Number(appt.duration) - 40
       : appt.bodyMins ? Number(appt.bodyMins) : Number(appt.duration) - cavDuration;
 
+    const svcSplit = needsCavSlot && appt.svcSplitPayment ? splitOffCavSlot(appt.svcCashPortion, appt.svcCardPortion, Number(appt.cavPrice || 0)) : null;
+    const tipSplit = needsCavSlot && appt.tipSplitPayment ? splitOffCavSlot(appt.tipCashPortion, appt.tipCardPortion, Number(appt.cavTip || 0)) : null;
+
     const cavSlot = needsCavSlot ? {
       id: cavSlotId,
       isCavSlot: true,
@@ -1162,8 +1179,8 @@ export default function SpaDailySheet() {
       priceVersion: appt.priceVersion,
       price: Number(appt.cavPrice),   // machine service fee shows HERE
       tip: Number(appt.cavTip),       // machine tip shows HERE
-      paymentType: appt.paymentType,
-      tipPaymentType: appt.tipPaymentType,
+      paymentType: svcSplit ? svcSplit.cavTender : appt.paymentType,
+      tipPaymentType: tipSplit ? tipSplit.cavTender : appt.tipPaymentType,
       cavPrice: 0,
       cavTip: 0,
       cavTherapist: "",
@@ -1178,7 +1195,11 @@ export default function SpaDailySheet() {
     // Main appt: cav amounts stay on mainAppt for dual-license (they keep it all),
     // but are stripped when there's a separate cav slot
     const mainAppt = needsCavSlot
-      ? { ...appt, cavPrice: 0, cavTip: 0, duration: bodyDuration }  // body only — machine goes to cav slot
+      ? {
+          ...appt, cavPrice: 0, cavTip: 0, duration: bodyDuration,  // body only — machine goes to cav slot
+          ...(svcSplit && { svcCashPortion: svcSplit.cash, svcCardPortion: svcSplit.card }),
+          ...(tipSplit && { tipCashPortion: tipSplit.cash, tipCardPortion: tipSplit.card }),
+        }
       : appt;
 
     next = [...next, mainAppt];
@@ -1245,6 +1266,16 @@ export default function SpaDailySheet() {
           cavMins,
           totalServiceInput: blankTotals ? "" : bodyPrice + restoredCavPrice,
           totalTipInput: blankTotals ? "" : Number(appt.tip || 0) + restoredCavTip,
+          // The split is edited against the whole visit (see splitSvcBase), so put the machine
+          // slot's share back on the side the totals counted it on.
+          ...(appt.svcSplitPayment && {
+            svcCashPortion: r2(Number(appt.svcCashPortion || 0) + (cavSlot.paymentType === "cash" ? restoredCavPrice : 0)),
+            svcCardPortion: r2(Number(appt.svcCardPortion || 0) + (cavSlot.paymentType === "cash" ? 0 : restoredCavPrice)),
+          }),
+          ...(appt.tipSplitPayment && {
+            tipCashPortion: r2(Number(appt.tipCashPortion || 0) + (cavSlot.tipPaymentType === "cash" ? restoredCavTip : 0)),
+            tipCardPortion: r2(Number(appt.tipCardPortion || 0) + (cavSlot.tipPaymentType === "cash" ? 0 : restoredCavTip)),
+          }),
         });
         return;
       }
@@ -4514,14 +4545,14 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                                 <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>💵 Cash ($)</div>
                                 <input type="number" value={form.svcCashPortion || ""} onChange={e => {
                                   const raw = e.target.value;
-                                  setForm(f => ({ ...f, svcCashPortion: raw, svcCardPortion: Math.max(0, Number(f.price || 0) - (Number(raw) || 0)) }));
+                                  setForm(f => ({ ...f, svcCashPortion: raw, svcCardPortion: r2(Math.max(0, splitSvcBase(f) - (Number(raw) || 0))) }));
                                 }} style={inputStyle} placeholder="e.g. 50" />
                               </div>
                               <div>
                                 <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>💳 Card ($)</div>
                                 <input type="number" value={form.svcCardPortion || ""} onChange={e => {
                                   const raw = e.target.value;
-                                  setForm(f => ({ ...f, svcCardPortion: raw, svcCashPortion: Math.max(0, Number(f.price || 0) - (Number(raw) || 0)) }));
+                                  setForm(f => ({ ...f, svcCardPortion: raw, svcCashPortion: r2(Math.max(0, splitSvcBase(f) - (Number(raw) || 0))) }));
                                 }} style={inputStyle} placeholder="e.g. 50" />
                               </div>
                             </div>
@@ -4560,14 +4591,14 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
                                 <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>💵 Cash ($)</div>
                                 <input type="number" value={form.tipCashPortion || ""} onChange={e => {
                                   const raw = e.target.value;
-                                  setForm(f => ({ ...f, tipCashPortion: raw, tipCardPortion: Math.max(0, Number(f.tip || 0) - (Number(raw) || 0)) }));
+                                  setForm(f => ({ ...f, tipCashPortion: raw, tipCardPortion: r2(Math.max(0, splitTipBase(f) - (Number(raw) || 0))) }));
                                 }} style={inputStyle} placeholder="e.g. 10" />
                               </div>
                               <div>
                                 <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>💳 Card ($)</div>
                                 <input type="number" value={form.tipCardPortion || ""} onChange={e => {
                                   const raw = e.target.value;
-                                  setForm(f => ({ ...f, tipCardPortion: raw, tipCashPortion: Math.max(0, Number(f.tip || 0) - (Number(raw) || 0)) }));
+                                  setForm(f => ({ ...f, tipCardPortion: raw, tipCashPortion: r2(Math.max(0, splitTipBase(f) - (Number(raw) || 0))) }));
                                 }} style={inputStyle} placeholder="e.g. 20" />
                               </div>
                             </div>
