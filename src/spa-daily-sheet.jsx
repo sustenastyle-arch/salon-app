@@ -945,9 +945,20 @@ export default function SpaDailySheet() {
           // one as a dup of the first and silently dropping it.
           const exists = merged.find(a =>
             (a.fromSquare && a.id === na.id) ||
-            (a.clientName === na.clientName && a.startTime === na.startTime && a.therapist === na.therapist)
+            (a.clientName === na.clientName && a.startTime === na.startTime && a.therapist === na.therapist) ||
+            // Same booking saved earlier with a blank therapist (see below) — its id can differ
+            // if the day's booking list order changed, so match it by client + time as well.
+            (a.fromSquare && !a.therapist && a.clientName === na.clientName && a.startTime === na.startTime)
           );
-          if (!exists) merged.push(na);
+          if (!exists) { merged.push(na); return; }
+          // A booking synced while its therapist wasn't recognized yet (e.g. a new hire before
+          // she was added to the staff list) was saved with a blank therapist. Re-syncing never
+          // touched existing cards, so it stayed blank forever and her column never appeared —
+          // fill the therapist in from Square, but only when the card's therapist is still empty
+          // (never overwrite one that staff picked by hand).
+          if (exists.fromSquare && !exists.therapist && na.therapist) {
+            merged[merged.indexOf(exists)] = { ...exists, therapist: na.therapist };
+          }
         });
         merged.sort((a, b) => (a.startTime || "").localeCompare(b.startTime || ""));
         setAppointments(merged);
