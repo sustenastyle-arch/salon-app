@@ -11,6 +11,10 @@ const TEAM_MEMBER_MAP = {
   'TMW8eccMtM4pdMiM': 'Hiromi',
   'TMHk1qR9eC5ww6WP': 'Mikiko',
 };
+// Staff whose Square team member ID isn't in TEAM_MEMBER_MAP yet (e.g. a new hire) are
+// matched by their Square first name instead, so their bookings still sync with a therapist.
+// Keep in sync with THERAPISTS in src/spa-daily-sheet.jsx.
+const KNOWN_STAFF = [...Object.values(TEAM_MEMBER_MAP), 'Saori'];
 
 export default async function handler(req, res) {
   const token = process.env.SQUARE_ACCESS_TOKEN;
@@ -110,12 +114,28 @@ export default async function handler(req, res) {
       }
     };
 
+    const teamMemberCache = {};
+    const getTherapist = async (id) => {
+      if (!id) return '';
+      if (TEAM_MEMBER_MAP[id]) return TEAM_MEMBER_MAP[id];
+      if (teamMemberCache[id] !== undefined) return teamMemberCache[id];
+      let name = '';
+      try {
+        const r = await fetch(`https://connect.squareup.com/v2/team-members/${id}`, { headers });
+        const d = await r.json();
+        const given = r.ok ? (d.team_member?.given_name || '').trim().toLowerCase() : '';
+        name = KNOWN_STAFF.find(s => s.toLowerCase() === given) || '';
+      } catch { /* leave blank — staff can pick the therapist by hand */ }
+      teamMemberCache[id] = name;
+      return name;
+    };
+
     const results = [];
     for (const b of bookings) {
       const seg = (b.appointment_segments || [])[0] || {};
       const clientName = await getCustomerName(b.customer_id);
       const serviceName = await getServiceName(seg.service_variation_id);
-      const therapist = TEAM_MEMBER_MAP[seg.team_member_id] || '';
+      const therapist = await getTherapist(seg.team_member_id);
       const startAt = new Date(b.start_at);
       const hi = new Date(startAt.getTime() - 10 * 3600 * 1000);
       const hh = String(hi.getUTCHours()).padStart(2, '0');

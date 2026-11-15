@@ -9,7 +9,7 @@ import ExcelJS from "exceljs";
 import { REFERRAL_SOURCES, getRetailItems, getStaffPurchaseItems, computeDayTotals } from "./lib/reportTotals.js";
 import { buildSalesReportEmail } from "./lib/salesReportEmail.js";
 
-const THERAPISTS = ["Mami", "Aya", "Megumi", "Hiromi", "Maki", "Yuka", "Mai", "Betsy", "Mikiko"];
+const THERAPISTS = ["Mami", "Aya", "Megumi", "Hiromi", "Maki", "Yuka", "Mai", "Betsy", "Mikiko", "Saori"];
 const CUSTOMER_TYPES = ["RL", "RT", "NL", "NT"];
 // Stored value stays "紹介" (already-saved appointments are matched against it by exact equality
 // in reporting) — this only translates it for display, same pattern as CUSTOMER_TYPE_LABELS below.
@@ -184,9 +184,10 @@ const ADDON_TICKET_MENU_OPTIONS = MENU_OPTIONS.flatMap(({ group, prefix, duratio
 
 // Staff capabilities
 const CAV_CAPABLE = ["Mami", "Betsy", "Megumi", "Yuka", "Mai", "Mikiko"]; // can operate machine
-const BODY_CAPABLE = ["Mami", "Betsy", "Megumi", "Aya", "Hiromi", "Mai", "Maki", "Mikiko"]; // can do body massage
+const BODY_CAPABLE = ["Mami", "Betsy", "Megumi", "Aya", "Hiromi", "Mai", "Maki", "Mikiko", "Saori"]; // can do body massage
 const DUAL_LICENSE = ["Mami", "Betsy", "Megumi", "Mai", "Mikiko"]; // body + machine (handles both themselves)
 // Yuka: machine/facial only (no body massage)
+// Saori (joined 2026-11-14): massage license only, no facials yet.
 const isCavCapable = (name) => CAV_CAPABLE.includes(name);
 const isDualLicense = (name) => DUAL_LICENSE.includes(name);
 const isBodyOnly = (name) => BODY_CAPABLE.includes(name) && !DUAL_LICENSE.includes(name) && name !== "Yuka";
