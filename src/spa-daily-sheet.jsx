@@ -403,7 +403,10 @@ const STAFF_PURCHASE_PRODUCTS = [
   { name: "Lipid Recovery Mask for Eyes", price: 105 },
   { name: "Lipid Recovery Mask for Neck+Décolleté", price: 140 },
   { name: "Luxury Set", price: 100 },
-  { name: "ProCell Staff", price: 100 },
+  // A staff member treating themselves or practicing with the ProCell products pays for the
+  // product only; the customer treatment is "ProCell Microchanneling 60min" in SQUARE_SERVICES.
+  // Was "ProCell Staff" until 2026-11-15; days saved before then keep that name.
+  { name: "ProCell Microchanneling Practice", price: 100 },
 ];
 
 const formatCurrency = (n) => `$${Number(n || 0).toLocaleString("en-US", { minimumFractionDigits: 0 })}`;

@@ -181,6 +181,45 @@ Weight Loss always uses 40 minutes of machine time, whether or not the visit is 
 Any change to how `duration`, `bodyMins` or `cavMins` are saved must keep these numbers. Check
 Maki's minutes against this table in every payroll audit.
 
+### Payroll audit (15th and month-end, automatic)
+
+Staff are paid on the 15th and at month-end from the day sheets. Windows Task Scheduler on the
+owner's PC (task "DrBody Payroll Audit") runs `payroll-audit.bat` → `scripts/payroll-audit.mjs` at
+21:00 on the 15th and on the last day of the month, so the owner can do payroll right after. If
+the PC was off, it runs at the next start-up and still picks the period just ended. A day not
+locked by 21:00 shows up as unlocked; re-run the .bat after locking it. It is read-only and writes `給料チェック_<start>_<end>.txt` to the
+Desktop, then opens it in Notepad. To run it by hand: `node scripts/payroll-audit.mjs 2026-11-01 2026-11-15`.
+
+Staff are paid their **tips**, not the service amount, so a tip error is a pay error. Maki is
+paid by the minute (see "Treatment minutes"). Each check exists because of a real past mistake:
+
+| Check | Real case it came from |
+|---|---|
+| Sheet vs Square (cash, card, cash tip, card tip) per day | 11/10/2026: a machine slot's cash/card was swapped, off by $52.66 |
+| Card for a therapist not ticked in `workingStaff` | 7/28/2026: 7/27's Hiromi cards were copied in, so $53 in tips was paid twice |
+| Same card id on two days | the same 7/28 copy (date-switch save race, fixed in ea97b02) |
+| Same client + ticket + session number twice | Audrey Sugai IP-90-5 5/5 machine on 9/27 and 10/05 paid Yuka twice |
+| Maki's minutes against the "Treatment minutes" table | 7/26 Nozomi Hennessey saved as 100 min (should be 75); 9/27 Jodie Emerson as 90 (should be 60); 10/09 Vickie Miao as 75 (should be 50) |
+| Maki's minutes against her Square booking minutes, and Maki bookings with no Maki card | she's paid by the minute, so every minute is checked twice. 11/6/2026 Sandra Ngo was booked 75 and charged 90 (fine, but checked) |
+| Weight Loss by a massage-only therapist with no machine therapist | the machine therapist then gets no machine tip |
+| `cavTherapist` set but no machine slot, or a $0 machine slot | the machine therapist isn't paid |
+| Square retail line items vs sheet retail + 社販 per day | a sale missing from the sheet gives nobody the commission; one rung on the keypad or a non-product item leaves Square stock wrong |
+| Retail during a two-therapist visit credited to one person | should it be split? (owner's call) |
+| Empty $0 card, oversized tip, forgotten tip with no client or date | inflates 客数, or can't be traced later |
+
+Business rules the checks assume (from the owner):
+- Weight Loss machine time is always 40 min. A dual-license therapist does the whole course alone.
+- IP / Lymphatic 90 and 120 have 15 min of machine time when someone else runs the machine.
+- A card with only one staff member on it (no `cavTherapist`) means that person did the whole
+  course alone. This holds for every staff member, including massage-only staff (Maki, Hiromi, Aya) on IP / Lymphatic 90 and 120.
+  Don't ask about these. Square bookings never show the machine therapist, so the sheet is the only source.
+- Real use (and app-based payroll) started 2026-07-01. June's days are test data.
+
+Already-paid periods are reported and not corrected unless the owner asks. Don't edit locked
+days without an explicit go-ahead. When a new kind of payroll mistake is found, add a check to
+`payroll-audit.mjs` and a row to the table above. Keep the staff/license arrays at the top of
+the script in sync with `THERAPISTS` / `CAV_CAPABLE` / `BODY_CAPABLE` / `DUAL_LICENSE`.
+
 ### UI structure
 
 `SpaDailySheet` (default export of `spa-daily-sheet.jsx`) is the top-level component with all
