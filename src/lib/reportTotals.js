@@ -261,7 +261,10 @@ export function computeDayTotals(data) {
   const totalSales = cashTreatment + cashProduct + cardTreatment + cardProduct;
   const totalCash = cashTreatment + cashProduct;
   const totalCard = cardTreatment + cardProduct;
-  const clients = appts.filter(a => !a.isTicket).length + appts.filter(a => a.isTicket).length;
+  // A 🧪 Staff Practice card is treatment sales but not a client (it has no customer type either,
+  // so it's already out of rl/rt/nl/nt and the referral counts below).
+  const clientAppts = appts.filter(a => !a.isStaffPractice);
+  const clients = clientAppts.filter(a => !a.isTicket).length + clientAppts.filter(a => a.isTicket).length;
 
   return {
     totalSales,

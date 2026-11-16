@@ -9,6 +9,7 @@ import ExcelJS from "exceljs";
 import { REFERRAL_SOURCES, getRetailItems, getStaffPurchaseItems, computeDayTotals } from "./lib/reportTotals.js";
 import { buildSalesReportEmail } from "./lib/salesReportEmail.js";
 import { computeTicketIncentives, describeSplit, periodHasCampaign } from "./lib/ticketIncentive.js";
+import { TICKET_PACKAGE_PRICES } from "./lib/ticketPrices.js";
 
 const THERAPISTS = ["Mami", "Aya", "Megumi", "Hiromi", "Maki", "Yuka", "Mai", "Betsy", "Mikiko", "Saori"];
 const CUSTOMER_TYPES = ["RL", "RT", "NL", "NT"];
@@ -129,30 +130,6 @@ const PRICE_TABLE = {
 // Full-package (ticket bundle) prices — from "施術振り分け表" (2026 new pricing).
 // These are the total price for the whole 3- or 5-session ticket, used when a customer
 // buys a new ticket (not the per-visit price used above for redeeming one session).
-const TICKET_PACKAGE_PRICES = {
-  "IP-60-3":  { service: 335,  tip: 67 },
-  "IP-60-5":  { service: 542,  tip: 108 },
-  "IP-75-3":  { service: 375,  tip: 75 },
-  "IP-75-5":  { service: 608,  tip: 122 },
-  "IP-90-3":  { service: 452,  tip: 91 },
-  "IP-90-5":  { service: 729,  tip: 146 },
-  "IP-120-3": { service: 612,  tip: 123 },
-  "IP-120-5": { service: 1000, tip: 200 },
-  "WL-75-3":  { service: 565,  tip: 113 },
-  "WL-75-5":  { service: 917,  tip: 183 },
-  "WL-90-3":  { service: 605,  tip: 121 },
-  "WL-90-5":  { service: 967,  tip: 193 },
-  "WL-115-3": { service: 703,  tip: 140 },
-  "WL-115-5": { service: 1121, tip: 224 },
-  "MC-60-3":  { service: 839,  tip: 161 },
-  "MC-60-5":  { service: 1259, tip: 241 },
-  // Sculpted Facial — same package price as the equivalent-length Improving Posture course
-  "SF-45-3":  { service: 375,  tip: 75 },
-  "SF-45-5":  { service: 608,  tip: 122 },
-  "SF-60-3":  { service: 452,  tip: 91 },
-  "SF-60-5":  { service: 729,  tip: 146 },
-};
-
 const MENU_OPTIONS = [
   { group: "Improving Posture", prefix: "IP", durations: [60, 75, 90, 120] },
   { group: "Weight Loss", prefix: "WL", durations: [75, 90, 115] },
@@ -253,6 +230,9 @@ const SQUARE_SERVICES = [
   { name: "HIFU Double Chin 30min", duration: 30 },
   // Microchanneling
   { name: "ProCell Microchanneling 60min", duration: 60 },
+  // Staff practicing with the ProCell products ($100, Square: Facial category). Tick 🧪 Staff
+  // Practice on the card so it counts as treatment sales but not as a client.
+  { name: "ProCell Microchanneling Practice", duration: 60 },
   // Bridal
   { name: "Bridal Treatment 60min", duration: 60 },
   { name: "Bridal Treatment 90min", duration: 90 },
@@ -404,10 +384,9 @@ const STAFF_PURCHASE_PRODUCTS = [
   { name: "Lipid Recovery Mask for Eyes", price: 105 },
   { name: "Lipid Recovery Mask for Neck+Décolleté", price: 140 },
   { name: "Luxury Set", price: 100 },
-  // A staff member treating themselves or practicing with the ProCell products pays for the
-  // product only; the customer treatment is "ProCell Microchanneling 60min" in SQUARE_SERVICES.
-  // Was "ProCell Staff" until 2026-11-15; days saved before then keep that name.
-  { name: "ProCell Microchanneling Practice", price: 100 },
+  // "ProCell Staff" ($100, staff practicing with the ProCell products) was here until
+  // 2026-11-16. It's now a treatment card with 🧪 Staff Practice ticked (treatment sales, not a
+  // client); days saved before then keep it as a 社販 entry.
 ];
 
 const formatCurrency = (n) => `$${Number(n || 0).toLocaleString("en-US", { minimumFractionDigits: 0 })}`;
@@ -1691,7 +1670,8 @@ export default function SpaDailySheet() {
     const byType = {}; CUSTOMER_TYPES.forEach(ct => { byType[ct] = appointments.filter(a => a.therapist === t && a.customerType === ct).length; });
     // 人数: 機械担当が別にいる場合は、ボディ・機械それぞれ0.5人分として数える（1visitを二人で分ける）
     // 通常施術・チケット消化どちらも同じルールで数える
-    const clients = appts.reduce((s, a) => s + (a.cavTherapist ? 0.5 : 1), 0) + cavAppts.length * 0.5
+    // 🧪 Staff Practice cards are treatment sales but not clients.
+    const clients = appts.filter(a => !a.isStaffPractice).reduce((s, a) => s + (a.cavTherapist ? 0.5 : 1), 0) + cavAppts.filter(a => !a.isStaffPractice).length * 0.5
       + ticketAppts2.reduce((s, a) => s + (a.cavTherapist ? 0.5 : 1), 0) + ticketCavAppts.length * 0.5;
     const newTicket = newTicketByTherapist[t];
     return { therapist: t, revenue, tips, tipCash, tipCard, cavRevenue, ticketRevenue, ticketCavRevenue, ticketTips, gcRevenue, gcTips, clients, ticketClients: ticketAppts2.length, gcClients: gcAppts2.length, byType, newTicketCount: newTicket.count, newTicketAmount: newTicket.amount };
@@ -2712,8 +2692,8 @@ function ApptCard({ appt, onClick, allAppointments }) {
     <div onClick={onClick} style={{ background: bg, border: `2px solid ${borderColor}`, borderRadius: 8, padding: "6px 8px", marginBottom: 3, cursor: "pointer" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
         <span style={{ fontSize: 18, fontWeight: 700, lineHeight: 1.3 }}>{appt.clientName || "(not set)"}</span>
-        <span style={{ fontSize: 13, fontWeight: 700, color: "#fff", background: typeColors[appt.customerType]||"#888", padding: "1px 5px", borderRadius: 8, marginLeft: 4, whiteSpace: "nowrap" }}>
-          {appt.customerType}
+        <span style={{ fontSize: 13, fontWeight: 700, color: "#fff", background: appt.isStaffPractice ? "#6D4C41" : (typeColors[appt.customerType]||"#888"), padding: "1px 5px", borderRadius: 8, marginLeft: 4, whiteSpace: "nowrap" }}>
+          {appt.isStaffPractice ? "🧪 Practice" : appt.customerType}
         </span>
       </div>
       {(() => {
@@ -3058,7 +3038,7 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
     if (!f.serviceName?.trim() && !f.ticketMenu) errs.push("serviceName");
     if (!f.therapist) errs.push("therapist");
     if (!f.startTime) errs.push("startTime");
-    if (!f.customerType) errs.push("customerType");
+    if (!f.customerType && !f.isStaffPractice) errs.push("customerType");
     if ((f.customerType === "NL" || f.customerType === "NT") && !f.referralSource) errs.push("referralSource");
     if (f.isTicket) {
       if (!f.ticketMenu) errs.push("ticketMenu");
@@ -3360,7 +3340,15 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
       <ErrorBanner />
 
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-        <Field label="Customer Type" error={errors.includes("customerType")}>
+        {/* Staff practice: a staff member practicing on / treating another staff member and paying
+            for the products (e.g. ProCell Microchanneling Practice $100). The money is treatment
+            sales, but it isn't a client: no customer type, not in 客数 or any customer stats,
+            and its minutes never count toward Maki's paid minutes. */}
+        <button onClick={() => setForm(f => ({ ...f, isStaffPractice: !f.isStaffPractice, ...(!f.isStaffPractice ? { customerType: "", referralSource: "" } : {}) }))}
+          style={{ padding: "8px 10px", borderRadius: 8, border: `2px solid ${form.isStaffPractice ? "#6D4C41" : "#DDD"}`, background: form.isStaffPractice ? "#EFEBE9" : "#fff", cursor: "pointer", fontWeight: 700, fontSize: 12, color: form.isStaffPractice ? "#6D4C41" : "#888", textAlign: "left" }}>
+          {form.isStaffPractice ? "☑" : "☐"} 🧪 Staff Practice (staff treatment / practice — counts as treatment sales, not as a client)
+        </button>
+        {!form.isStaffPractice && <Field label="Customer Type" error={errors.includes("customerType")}>
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
             {CUSTOMER_TYPES.map(ct => {
               const colors = { RL:"#4CAF50", RT:"#2196F3", NL:"#FF9800", NT:"#9C27B0" };
@@ -3373,7 +3361,7 @@ function ApptModal({ appt, onSave, onDelete, onClose, clientDeposits = [] }) {
               );
             })}
           </div>
-        </Field>
+        </Field>}
 
         {/* How they found us — shown for NT and NL */}
         {(form.customerType === "NT" || form.customerType === "NL") && (
@@ -6295,12 +6283,13 @@ function PayrollTab() {
         isPromo: a.isPromo,
         ticketInfo: a.isTicket ? `${a.ticketMenu} ${a.ticketCurrent}/${a.ticketTotal}` : "",
         partner: a.cavTherapist || "",
-        duration: a.duration,
+        // Practice time isn't paid time (owner, 2026-11-16), so it never adds to Maki's minutes.
+        duration: a.isStaffPractice ? 0 : a.duration,
         service: svc,
         tip,
         paymentType: a.isGiftCard || a.isPromo ? "gc" : a.paymentType,
         tipPaymentType: a.isGiftCard || a.isPromo ? "gc" : a.tipPaymentType,
-        notes: [a.notes || "", moneyNote(a), a.isPromo ? "📸Complimentary PR" : ""].filter(Boolean).join("　"),
+        notes: [a.isStaffPractice ? `🧪 Staff practice (${a.duration || 0}min, not paid time)` : "", a.notes || "", moneyNote(a), a.isPromo ? "📸Complimentary PR" : ""].filter(Boolean).join("　"),
       });
       byTherapist[t].totalService += svc;
       byTherapist[t].totalTip += tip;
@@ -6431,7 +6420,7 @@ function PayrollTab() {
             isTicket: false,
             isGiftCard: a.isGiftCard,
             ticketInfo: "",
-            duration: dur,
+            duration: a.isStaffPractice ? 0 : dur,
             service: svc,
             tip,
             paymentType: a.isGiftCard ? "gc" : (addon.paymentType || "cash"),

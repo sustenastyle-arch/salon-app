@@ -150,7 +150,10 @@ Near the top of `spa-daily-sheet.jsx` are the tables that drive validation and p
 are the ones most likely to need edits when the business changes menu/pricing/staff:
 - `PRICE_TABLE` — per-service `{ body_service, body_tip, cav_service, cav_tip }` (cav = the
   body-contouring machine; `cav_*` is `null` if the service has no machine option)
-- `TICKET_PACKAGE_PRICES`, `MENU_OPTIONS`, `SQUARE_SERVICES`, `RETAIL_PRODUCTS`
+- `MENU_OPTIONS`, `SQUARE_SERVICES`, `RETAIL_PRODUCTS`
+- `TICKET_PACKAGE_PRICES` (ticket package list prices) and `NEW_CLIENT_DISCOUNT` ($20) live in
+  `src/lib/ticketPrices.js`, because the incentive script also uses them (reference table, and
+  the check that a new client's ticket got the $20 off)
 - `CAV_CAPABLE` / `BODY_CAPABLE` / `DUAL_LICENSE` — which therapists can run the cav machine,
   do body massage, or both; used to validate appointment assignments (e.g. a cav service needs
   either a dual-license therapist or a body therapist + a separate cav therapist)
@@ -232,6 +235,20 @@ facial, add-ons). The rule and the math live once in `src/lib/ticketIncentive.js
   period that overlaps a campaign, so other months keep the layout the office is used to.
 - `scripts/ticket-incentive.mjs <start> <end>` writes the summary Excel for the payroll
   office (ゆきさん) to the Desktop.
+
+### Staff practice cards (🧪, `isStaffPractice`)
+
+When staff practice on each other with the ProCell products, they pay $100 for the products.
+That money is treatment sales: Square's "ProCell Microchanneling Practice" item is in the Facial
+category, and on the sheet it's a treatment card with 🧪 Staff Practice ticked. Such a card is
+**not a client**:
+- it has no customer type;
+- it's left out of 客数 (`computeDayTotals`, the in-app summary), the customer stats, the ticket
+  incentive, and `monthly-stats.mjs` visits;
+- its minutes are never paid time, so Maki's payroll minutes are 0 for it (owner, 2026-11-16).
+
+Any new place that counts clients or visits must skip `isStaffPractice` too. Before
+2026-11-16 this was a 社販 entry ("ProCell Staff"); days saved earlier keep it that way.
 
 ### UI structure
 

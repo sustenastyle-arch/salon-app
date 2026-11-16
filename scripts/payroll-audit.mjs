@@ -205,7 +205,9 @@ for (const d of periodDays) {
       continue;
     }
 
-    // Body card
+    // Body card. A 🧪 Staff Practice card isn't a client and its minutes aren't paid, so the
+    // minutes / machine / empty-card checks don't apply.
+    if (a.isStaffPractice) continue;
     const svc = a.serviceName || "";
     const nameAll = `${svc} ${a.ticketMenu || ""}`;
     const isWL = /weight\s*loss|\bWL-/i.test(nameAll), isIP = /posture|\bIP-/i.test(nameAll), isLy = /lymph/i.test(nameAll);

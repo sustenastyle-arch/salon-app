@@ -25,7 +25,7 @@ export const periodHasCampaign = (start, end) => TICKET_INCENTIVE_CAMPAIGNS.some
 // on the spot) and/or a new ticket bought for later visits.
 export function ticketSalesOf(a) {
   const out = [];
-  if (a.isCavSlot) return out;
+  if (a.isCavSlot || a.isStaffPractice) return out;
   if (a.isSameDayTicket && n(a.packagePrice) > 0) out.push({ ticket: a.ticketMenu || "", amount: n(a.packagePrice), tip: n(a.packageTip ?? a.tip) });
   if ((a.purchaseTags || []).includes("newTicket") && n(a.newTicketAmount) > 0) out.push({ ticket: a.newTicketMenu || "", amount: n(a.newTicketAmount), tip: n(a.newTicketTip) });
   return out;
