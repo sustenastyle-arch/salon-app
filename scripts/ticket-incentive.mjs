@@ -1,16 +1,16 @@
-// November 2026 campaign: staff who sell a ticket package to a NEW client (customerType NL/NT)
-// get 5% of the package price (after discounts, tip excluded), split between everyone who
-// treated that client that day by their minutes (body / machine / facial / add-ons). One
-// person doing body + machine alone gets 100%. Rules agreed with the owner on 2026-11-15.
+// New-client ticket sale incentive Excel for the payroll office (ゆきさん). The rule and the
+// math live in src/lib/ticketIncentive.js, shared with the app's Payroll tab (which shows the
+// same amounts on each staff member's own sheet), so the two always agree.
 //
 //   node scripts/ticket-incentive.mjs 2026-11-01 2026-11-15
 //
-// Writes an Excel for the payroll office (ゆきさん) to the Desktop: one sheet with the staff
-// totals and every sale's split, plus one sheet per staff member with only their lines.
+// Writes to the Desktop: one sheet with the staff totals, every sale's split and the repeat
+// clients' sales that didn't count, plus one sheet per staff member with only their lines.
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import ExcelJS from "exceljs";
+import { computeTicketIncentives } from "../src/lib/ticketIncentive.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "..");
@@ -18,15 +18,13 @@ const env = Object.fromEntries(fs.readFileSync(path.join(REPO_ROOT, ".env"), "ut
   .filter(l => l.includes("=") && !l.trim().startsWith("#"))
   .map(l => { const i = l.indexOf("="); return [l.slice(0, i).trim(), l.slice(i + 1).trim().replace(/^"|"$/g, "")]; }));
 
-const RATE = 0.05;
 const [start, end] = process.argv.slice(2);
 if (!start || !end) { console.error("usage: node scripts/ticket-incentive.mjs YYYY-MM-DD YYYY-MM-DD"); process.exit(1); }
-const n = (x) => Number(x || 0);
-const r2 = (x) => Math.round(x * 100) / 100;
 const ymd = (d) => d.toISOString().slice(0, 10);
+const r2 = (x) => Math.round(x * 100) / 100;
 const norm = (s) => (s || "").toLowerCase().trim().replace(/\s+/g, " ");
 
-// History from 2026-07-01 (start of real use) to flag repeat-typed buyers with no earlier visit.
+// History from 2026-07-01 (start of real use), to say when a repeat client first came.
 const dates = [];
 for (let d = new Date("2026-07-01T12:00:00Z"); d <= new Date(end + "T12:00:00Z"); d.setUTCDate(d.getUTCDate() + 1)) dates.push(ymd(d));
 const res = await (await fetch(env.KV_REST_API_URL, { method: "POST", headers: { Authorization: `Bearer ${env.KV_REST_API_TOKEN}` }, body: JSON.stringify(["MGET", ...dates.map(d => "spa-sheet-" + d)]) })).json();
@@ -36,60 +34,17 @@ const firstVisit = {};
 for (const d of dates) for (const a of days[d]?.appointments || []) if (!a.isCavSlot && a.clientName) firstVisit[norm(a.clientName)] ??= d;
 
 const fmtDate = (d) => `${+d.slice(5, 7)}/${+d.slice(8, 10)}`;
-const isWL = (s) => /weight\s*loss/i.test(s || "");
+const partJa = (p) => ({ body: `ボディ(${p.name})`, machine: "マシン", service: p.name, addon: `追加 ${p.name}`, addonMachine: `追加 ${p.name} マシン` }[p.kind]) + ` ${p.mins}分`;
 
-// Minutes each staff member spent on this client on this day, across all of the client's cards.
-function minutesFor(day, client) {
-  const appts = day.appointments || [];
-  const byId = Object.fromEntries(appts.map(a => [a.id, a]));
-  const mins = {}, what = {};
-  const addM = (t, m, label) => { if (!t || !(m > 0)) return; mins[t] = (mins[t] || 0) + m; (what[t] ||= []).push(`${label} ${m}分`); };
-  for (const a of appts) {
-    if (norm(a.clientName) !== client) continue;
-    if (a.isCavSlot) {
-      const p = byId[a.parentId];
-      addM(a.therapist, p && isWL(p.serviceName) ? 40 : n(a.duration) || 15, "マシン");
-      continue;
-    }
-    const svc = (a.serviceName || "").replace(/\s*\(.*$/, "");
-    addM(a.therapist, n(a.duration), a.cavTherapist ? `ボディ(${svc})` : svc);
-    for (const x of a.addons || []) {
-      const t = x.therapist || a.therapist;
-      if (x.hasCav && x.cavTherapist) { addM(t, n(x.duration) - n(x.cavMins), `追加 ${x.serviceName}`); addM(x.cavTherapist, n(x.cavMins), `追加 ${x.serviceName} マシン`); }
-      else addM(t, n(x.duration), `追加 ${x.serviceName}`);
-    }
-  }
-  return { mins, what };
-}
-
-const sales = [], excluded = [];
-for (const d of dates.filter(d => d >= start && d <= end)) {
-  const day = days[d]; if (!day) continue;
-  for (const a of day.appointments || []) {
-    if (a.isCavSlot) continue;
-    const events = [];
-    if (a.isSameDayTicket && n(a.packagePrice) > 0) events.push({ ticket: a.ticketMenu, amount: n(a.packagePrice), tip: n(a.packageTip ?? a.tip) });
-    if ((a.purchaseTags || []).includes("newTicket") && n(a.newTicketAmount) > 0) events.push({ ticket: a.newTicketMenu, amount: n(a.newTicketAmount), tip: n(a.newTicketTip) });
-    for (const ev of events) {
-      const client = norm(a.clientName);
-      const base = { date: d, client: a.clientName.trim(), type: a.customerType, ...ev };
-      if (!["NL", "NT"].includes(a.customerType)) {
-        const fv = firstVisit[client];
-        excluded.push({ ...base, note: fv === d ? "⚠️ 7月以降の記録ではこの日が初来店。本当にリピーターか確認(新規なら対象)" : `リピーター(初来店 ${fmtDate(fv)})` });
-        continue;
-      }
-      const { mins, what } = minutesFor(day, client);
-      const total = Object.values(mins).reduce((s, m) => s + m, 0);
-      const pot = r2(ev.amount * RATE);
-      const staff = Object.entries(mins).map(([t, m]) => ({ t, m, share: m / total, amount: r2(pot * m / total), what: what[t].join(" + ") }));
-      // Make the shares add up to the exact 5% by putting any rounding cent on the largest share.
-      const diff = r2(pot - staff.reduce((s, x) => s + x.amount, 0));
-      if (diff) staff.sort((x, y) => y.m - x.m)[0].amount = r2(staff[0].amount + diff);
-      sales.push({ ...base, pot, total, staff });
-    }
-  }
-}
-
+const result = computeTicketIncentives(days, start, end);
+const sales = result.sales.map(s => ({
+  date: s.date, client: s.client, type: s.customerType, ticket: s.ticket, amount: s.amount, pot: s.pot, total: s.totalMins,
+  staff: s.staff.map(x => ({ t: x.t, m: x.mins, share: x.share, amount: x.amount, what: x.parts.map(partJa).join(" + ") })),
+}));
+const excluded = result.excluded.map(e => {
+  const fv = firstVisit[norm(e.client)];
+  return { ...e, type: e.customerType, note: fv === e.date ? "リピーター(7月以降の記録ではこの日が初来店。オーナー確認済みならこのまま)" : `リピーター(初来店 ${fmtDate(fv)})` };
+});
 // ---- Excel ----
 const wb = new ExcelJS.Workbook();
 const money = '"$"#,##0.00';

@@ -220,6 +220,19 @@ days without an explicit go-ahead. When a new kind of payroll mistake is found, 
 `payroll-audit.mjs` and a row to the table above. Keep the staff/license arrays at the top of
 the script in sync with `THERAPISTS` / `CAV_CAPABLE` / `BODY_CAPABLE` / `DUAL_LICENSE`.
 
+### New-client ticket incentive (November 2026 campaign)
+
+When a new client (`customerType` NL or NT) buys a ticket package, the staff get 5% of the
+package price after discounts, tips excluded. If several staff treated that client that day, the
+5% is split by each one's minutes across all of that client's cards that day (body, machine,
+facial, add-ons). The rule and the math live once in `src/lib/ticketIncentive.js`
+(`TICKET_INCENTIVE_CAMPAIGNS` turns it on per date range). Two places use it:
+- `PayrollTab` adds one 🎫 row per sale to each staff member's payroll, with the split in
+  Remarks, plus a Ticket Incentive column in the CSV and Excel. The column only appears for a
+  period that overlaps a campaign, so other months keep the layout the office is used to.
+- `scripts/ticket-incentive.mjs <start> <end>` writes the summary Excel for the payroll
+  office (ゆきさん) to the Desktop.
+
 ### UI structure
 
 `SpaDailySheet` (default export of `spa-daily-sheet.jsx`) is the top-level component with all

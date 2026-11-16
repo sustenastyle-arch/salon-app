@@ -8,6 +8,7 @@ import * as XLSX from "xlsx";
 import ExcelJS from "exceljs";
 import { REFERRAL_SOURCES, getRetailItems, getStaffPurchaseItems, computeDayTotals } from "./lib/reportTotals.js";
 import { buildSalesReportEmail } from "./lib/salesReportEmail.js";
+import { computeTicketIncentives, describeSplit, periodHasCampaign } from "./lib/ticketIncentive.js";
 
 const THERAPISTS = ["Mami", "Aya", "Megumi", "Hiromi", "Maki", "Yuka", "Mai", "Betsy", "Mikiko", "Saori"];
 const CUSTOMER_TYPES = ["RL", "RT", "NL", "NT"];
@@ -6235,7 +6236,7 @@ function PayrollTab() {
     // Aggregate per therapist
     const byTherapist = {};
     THERAPISTS.forEach(t => {
-      byTherapist[t] = { therapist: t, rows: [], totalService: 0, totalTip: 0, totalServiceCard: 0, totalTipCard: 0, totalRetail: 0, totalRetailCard: 0 };
+      byTherapist[t] = { therapist: t, rows: [], totalService: 0, totalTip: 0, totalServiceCard: 0, totalTipCard: 0, totalRetail: 0, totalRetailCard: 0, totalIncentive: 0 };
     });
 
     // Index by id for cav slot → parent lookup
@@ -6527,7 +6528,34 @@ function PayrollTab() {
       if (isTipCard) byTherapist[t].totalTipCard += tip;
     });
 
-    setPayrollData({ byTherapist, start, end });
+    // New-client ticket sale incentive (src/lib/ticketIncentive.js): one row per sale per staff
+    // member who treated that client that day, with the split spelled out in Remarks so each
+    // staff member can check their own share from their own sheet.
+    const hasIncentive = periodHasCampaign(start, end);
+    if (hasIncentive) {
+      const periodDays = Object.fromEntries(Object.entries(days).filter(([d]) => d >= start && d <= end));
+      computeTicketIncentives(periodDays, start, end).sales.forEach(sale => {
+        sale.staff.forEach(x => {
+          if (!byTherapist[x.t]) return;
+          byTherapist[x.t].rows.push({
+            date: sale.date,
+            client: sale.client,
+            isTicket: false,
+            ticketInfo: "",
+            duration: 0,
+            service: 0,
+            tip: 0,
+            paymentType: "",
+            tipPaymentType: "",
+            incentive: x.amount,
+            notes: `🎫 New-client ticket ${sale.ticket} $${sale.amount} (tip not included) × ${Math.round(sale.rate * 100)}% = $${sale.pot.toFixed(2)} — ${describeSplit(sale)}${sale.staff.length > 1 ? ` → ${x.t} ${(x.share * 100).toFixed(1)}%` : ""}`,
+          });
+          byTherapist[x.t].totalIncentive = r2(byTherapist[x.t].totalIncentive + x.amount);
+        });
+      });
+    }
+
+    setPayrollData({ byTherapist, start, end, hasIncentive });
     } catch (e) {
       console.error("Payroll load error:", e);
       setLoadError("Failed to load. Please check your internet connection and try again");
@@ -6550,16 +6578,18 @@ function PayrollTab() {
     // made the Total row not match a hand-add of the column above it (real case: 4 rows of
     // $0.10/$0.10/$0.10/$0.19 = $0.49 by hand, but rate*totalRetail rounded to $0.48).
     const totalRetailCommission = r2(data.rows.reduce((s, r) => s + (r.retail ? r2(r.retail * rate) : 0), 0));
+    const inc = payrollData.hasIncentive;
     const rows = [
-      ["Date", "Client", ...(therapist === "Maki" ? ["Minutes"] : []), "Treatment", "Tip", "Total", "Retail", `Retail Commission (${Math.round(rate * 100)}%)`, "Remarks"],
-      ...data.rows.map(r => [
+      ["Date", "Client", ...(therapist === "Maki" ? ["Minutes"] : []), "Treatment", "Tip", "Total", "Retail", `Retail Commission (${Math.round(rate * 100)}%)`, ...(inc ? ["Ticket Incentive"] : []), "Remarks"],
+      ...[...data.rows].sort((a, b) => a.date.localeCompare(b.date)).map(r => [
         r.date, r.client, ...(therapist === "Maki" ? [r.duration || ""] : []), r.service || "",
-        r.tip || "", r2(r.service + r.tip), r.retail || "", r.retail ? r2(r.retail * rate) : "", remarksFor(r)
+        r.tip || "", r2(r.service + r.tip), r.retail || "", r.retail ? r2(r.retail * rate) : "", ...(inc ? [r.incentive || ""] : []), remarksFor(r)
       ]),
       [],
-      ["", "Total", ...(therapist === "Maki" ? [""] : []), data.totalService, data.totalTip, r2(data.totalService + data.totalTip), data.totalRetail, totalRetailCommission, ""],
+      ["", "Total", ...(therapist === "Maki" ? [""] : []), data.totalService, data.totalTip, r2(data.totalService + data.totalTip), data.totalRetail, totalRetailCommission, ...(inc ? [data.totalIncentive] : []), ""],
     ];
-    const csv = rows.map(r => r.join(",")).join("\n");
+    // Quote every cell: Remarks can contain commas (the incentive split, client names).
+    const csv = rows.map(r => r.map(v => `"${String(v ?? "").replace(/"/g, '""')}"`).join(",")).join("\n");
     const bom = "\uFEFF";
     const blob = new Blob([bom + csv], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
@@ -6576,24 +6606,25 @@ function PayrollTab() {
       r.partner ? `with ${r.partner}` : "",
       r.notes || "",
     ].filter(Boolean).join("　");
-    const allRows = [["Therapist", "Date", "Client", "Minutes (Maki only)", "Treatment", "Tip", "Total", "Retail", "Retail Commission (10%/4%)", "Remarks"]];
+    const inc = payrollData.hasIncentive;
+    const allRows = [["Therapist", "Date", "Client", "Minutes (Maki only)", "Treatment", "Tip", "Total", "Retail", "Retail Commission (10%/4%)", ...(inc ? ["Ticket Incentive"] : []), "Remarks"]];
     THERAPISTS.forEach(t => {
       const data = payrollData.byTherapist[t];
       if (!data || data.rows.length === 0) return;
       const rate = retailCommissionRate(t);
-      data.rows.forEach(r => {
+      [...data.rows].sort((a, b) => a.date.localeCompare(b.date)).forEach(r => {
         allRows.push([
           t, r.date, r.client, t === "Maki" ? (r.duration || "") : "",
-          r.service || "", r.tip || "", r2(r.service + r.tip), r.retail || "", r.retail ? r2(r.retail * rate) : "", remarksForAll(r)
+          r.service || "", r.tip || "", r2(r.service + r.tip), r.retail || "", r.retail ? r2(r.retail * rate) : "", ...(inc ? [r.incentive || ""] : []), remarksForAll(r)
         ]);
       });
       // Sum of each row's own rounded commission — see comment in downloadCSV for why this
       // can't just be rate * data.totalRetail rounded once.
       const totalRetailCommission = r2(data.rows.reduce((s, r) => s + (r.retail ? r2(r.retail * rate) : 0), 0));
-      allRows.push([t, "", "Subtotal", "", data.totalService, data.totalTip, r2(data.totalService + data.totalTip), data.totalRetail, totalRetailCommission, ""]);
+      allRows.push([t, "", "Subtotal", "", data.totalService, data.totalTip, r2(data.totalService + data.totalTip), data.totalRetail, totalRetailCommission, ...(inc ? [data.totalIncentive] : []), ""]);
       allRows.push([]);
     });
-    const csv = allRows.map(r => r.join(",")).join("\n");
+    const csv = allRows.map(r => r.map(v => `"${String(v ?? "").replace(/"/g, '""')}"`).join(",")).join("\n");
     const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -6647,6 +6678,12 @@ function PayrollTab() {
     };
     const MONEY_FMT = '"$"#,##0.00';
 
+    // The Ticket Incentive column (I) only exists for a period that overlaps an incentive
+    // campaign, so other months keep the exact layout the office is used to.
+    const inc = payrollData.hasIncentive;
+    const lastCol = inc ? 10 : 9;
+    const moneyCols = inc ? [4, 5, 6, 7, 8, 9] : [4, 5, 6, 7, 8];
+
     const wb = new ExcelJS.Workbook();
     THERAPISTS.forEach(t => {
       const data = payrollData.byTherapist[t];
@@ -6659,26 +6696,26 @@ function PayrollTab() {
       const ws = wb.addWorksheet(t.slice(0, 31));
       ws.columns = [
         { width: 12 }, { width: 22 }, { width: 12 }, { width: 11 },
-        { width: 9 }, { width: 11 }, { width: 14 }, { width: 14 }, { width: 44 },
+        { width: 9 }, { width: 11 }, { width: 14 }, { width: 14 }, ...(inc ? [{ width: 14 }] : []), { width: inc ? 80 : 44 },
       ];
 
-      const titleRow = ws.addRow([`${t}  (Retail commission rate: ${Math.round(rate * 100)}%)`, "", "", "", "", "", "", "", ""]);
+      const titleRow = ws.addRow([`${t}  (Retail commission rate: ${Math.round(rate * 100)}%)`, ...Array(lastCol - 1).fill("")]);
       titleRow.font = { bold: true, size: 13 };
       titleRow.eachCell({ includeEmpty: true }, cell => { cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF2F2F2" } }; });
 
-      const headerRow = ws.addRow(["Date", "Client", "Minutes (Maki only)", "Treatment", "Tip", "Total", "Retail (tax-excl.)", "Retail Commission", "Remarks"]);
+      const headerRow = ws.addRow(["Date", "Client", "Minutes (Maki only)", "Treatment", "Tip", "Total", "Retail (tax-excl.)", "Retail Commission", ...(inc ? ["Ticket Incentive"] : []), "Remarks"]);
       headerRow.font = { bold: true };
       headerRow.eachCell({ includeEmpty: true }, cell => { cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFD9D9D9" } }; });
 
       sortedRows.forEach(r => {
         const row = ws.addRow([
           fmtDate(r.date), r.client, t === "Maki" ? (r.duration || "") : "",
-          r.service || "", r.tip || "", r2(r.service + r.tip), r.retail || "", r.retail ? r2(r.retail * rate) : "", remarksForAll(r)
+          r.service || "", r.tip || "", r2(r.service + r.tip), r.retail || "", r.retail ? r2(r.retail * rate) : "", ...(inc ? [r.incentive || ""] : []), remarksForAll(r)
         ]);
-        [4, 5, 6, 7, 8].forEach(col => { row.getCell(col).numFmt = MONEY_FMT; });
+        moneyCols.forEach(col => { row.getCell(col).numFmt = MONEY_FMT; });
       });
 
-      const subtotalRow = ws.addRow(["", "Subtotal", totalMinutes, data.totalService, data.totalTip, r2(data.totalService + data.totalTip), data.totalRetail, totalRetailCommission, ""]);
+      const subtotalRow = ws.addRow(["", "Subtotal", totalMinutes, data.totalService, data.totalTip, r2(data.totalService + data.totalTip), data.totalRetail, totalRetailCommission, ...(inc ? [data.totalIncentive] : []), ""]);
       subtotalRow.font = { bold: true };
       subtotalRow.eachCell({ includeEmpty: true }, cell => { cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFFF2CC" } }; });
 
@@ -6690,7 +6727,7 @@ function PayrollTab() {
       // export, or a script) still sees the right number, not blank/zero until a recalc.
       const firstDataRow = headerRow.number + 1;
       const lastDataRow = subtotalRow.number - 1;
-      const colLetter = ["A", "B", "C", "D", "E", "F", "G", "H", "I"];
+      const colLetter = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J"];
       const sumFormula = (col) => `SUM(${colLetter[col - 1]}${firstDataRow}:${colLetter[col - 1]}${lastDataRow})`;
       if (t === "Maki") subtotalRow.getCell(3).value = { formula: sumFormula(3), result: totalMinutes };
       subtotalRow.getCell(4).value = { formula: sumFormula(4), result: data.totalService };
@@ -6698,9 +6735,10 @@ function PayrollTab() {
       subtotalRow.getCell(6).value = { formula: sumFormula(6), result: r2(data.totalService + data.totalTip) };
       subtotalRow.getCell(7).value = { formula: sumFormula(7), result: data.totalRetail };
       subtotalRow.getCell(8).value = { formula: sumFormula(8), result: totalRetailCommission };
-      [4, 5, 6, 7, 8].forEach(col => { subtotalRow.getCell(col).numFmt = MONEY_FMT; });
+      if (inc) subtotalRow.getCell(9).value = { formula: sumFormula(9), result: data.totalIncentive };
+      moneyCols.forEach(col => { subtotalRow.getCell(col).numFmt = MONEY_FMT; });
 
-      applyGridBorders(ws, titleRow.number, subtotalRow.number, 1, 9);
+      applyGridBorders(ws, titleRow.number, subtotalRow.number, 1, lastCol);
     });
 
     const buf = await wb.xlsx.writeBuffer();
@@ -6790,6 +6828,7 @@ function PayrollTab() {
                 <span style={{ fontWeight: 700, color: "#C62828", fontSize: 15 }}>Treatment {formatCurrency(data.totalService)}</span>
                 <span style={{ fontWeight: 700, color: "#E65100", fontSize: 15 }}>Tip {formatCurrency(data.totalTip)}</span>
                 {data.totalRetail > 0 && <span style={{ fontWeight: 700, color: "#6A1B9A", fontSize: 15 }}>Retail {formatCurrency(data.totalRetail)}</span>}
+                {data.totalIncentive > 0 && <span style={{ fontWeight: 700, color: "#00838F", fontSize: 15 }}>🎫 Ticket Incentive ${data.totalIncentive.toFixed(2)}</span>}
                 <span style={{ fontWeight: 800, color: "#0D4F4F", fontSize: 15 }}>Total {formatCurrency(data.totalService + data.totalTip + data.totalRetail)}</span>
                 <button onClick={() => downloadCSV(t)}
                   style={{ padding: "5px 12px", borderRadius: 8, border: "none", background: "#1565C0", color: "#fff", fontWeight: 700, cursor: "pointer", fontSize: 12 }}>
@@ -6803,7 +6842,7 @@ function PayrollTab() {
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
                 <thead>
                   <tr style={{ borderBottom: "2px solid #EEE", background: "#F9F9F9" }}>
-                    {["Date", "Client", ...(t === "Maki" ? ["Minutes"] : []), "Treatment", "Tip", "Total", "Retail", "Remarks"].map(h => (
+                    {["Date", "Client", ...(t === "Maki" ? ["Minutes"] : []), "Treatment", "Tip", "Total", "Retail", ...(payrollData.hasIncentive ? ["Ticket Incentive"] : []), "Remarks"].map(h => (
                       <th key={h} style={{ padding: "6px 8px", textAlign: "left", color: "#888", fontWeight: 600, whiteSpace: "nowrap" }}>{h}</th>
                     ))}
                   </tr>
@@ -6818,6 +6857,7 @@ function PayrollTab() {
                       <td style={{ padding: "6px 8px", color: "#E65100", fontWeight: 700 }}>{r.tip > 0 ? formatCurrency(r.tip) : "—"}</td>
                       <td style={{ padding: "6px 8px", color: "#0D4F4F", fontWeight: 800 }}>{formatCurrency(r2(r.service + r.tip))}</td>
                       <td style={{ padding: "6px 8px", color: "#6A1B9A", fontWeight: r.retail ? 700 : 400 }}>{r.retail ? formatCurrency(r.retail) : "—"}</td>
+                      {payrollData.hasIncentive && <td style={{ padding: "6px 8px", color: "#00838F", fontWeight: r.incentive ? 700 : 400 }}>{r.incentive ? `$${r.incentive.toFixed(2)}` : "—"}</td>}
                       <td style={{ padding: "6px 8px", fontSize: 11, color: "#888", whiteSpace: "nowrap" }}>
                         {r.isTicket && r.ticketInfo && <span>🎟️ {r.ticketInfo}　</span>}
                         {r.partner && <span>with {r.partner}　</span>}
@@ -6833,6 +6873,7 @@ function PayrollTab() {
                     <td style={{ padding: "8px", fontWeight: 800, color: "#E65100" }}>{formatCurrency(data.totalTip)}</td>
                     <td style={{ padding: "8px", fontWeight: 800, color: "#0D4F4F" }}>{formatCurrency(r2(data.totalService + data.totalTip))}</td>
                     <td style={{ padding: "8px", fontWeight: 800, color: "#6A1B9A" }}>{data.totalRetail > 0 ? formatCurrency(data.totalRetail) : "—"}</td>
+                    {payrollData.hasIncentive && <td style={{ padding: "8px", fontWeight: 800, color: "#00838F" }}>{data.totalIncentive > 0 ? `$${data.totalIncentive.toFixed(2)}` : "—"}</td>}
                     <td />
                   </tr>
                 </tfoot>
