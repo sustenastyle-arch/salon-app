@@ -19,10 +19,13 @@ export const TICKET_INCENTIVE_CAMPAIGNS = [
 export const FIRST_VISIT_WINDOW_DAYS = 30;
 
 // Sales the automatic rule can't see by itself, e.g. a couple sharing one ticket: credit the
-// minutes spent on all of `creditClients` on `creditDate`.
+// minutes spent on all of `creditClients` on `creditDate`. `minutes` ({ staff: mins }) replaces
+// the saved minutes when the owner decides the split by hand.
 export const TICKET_INCENTIVE_CREDITS = [
+  // Owner: split as if each did one 90-min session of the ticket (the first visits were 75/60).
   { date: "2026-11-17", client: "Matt Hickson", creditDate: "2026-10-27", creditClients: ["Matt Hickson", "Raychel Hamado"],
-    note: "couple sharing one IP-90-5 (Hiromi: Matt, Megumi: Raychel)" },
+    minutes: { Hiromi: 90, Megumi: 90 },
+    note: "couple sharing one IP-90-5, split as one 90-min session each (Hiromi: Matt, Megumi: Raychel)" },
 ];
 
 const n = (x) => Number(x || 0);
@@ -108,7 +111,9 @@ export function computeTicketIncentives(days, start, end) {
         let staff, creditDate = null, creditNote = "";
         if (override) {
           creditDate = override.creditDate; creditNote = override.note || "";
-          staff = days[creditDate] ? minutesForClients(days[creditDate], override.creditClients) : [];
+          staff = override.minutes
+            ? Object.entries(override.minutes).map(([t, mins]) => ({ t, mins, parts: [{ kind: "service", name: "set by owner", mins }] }))
+            : days[creditDate] ? minutesForClients(days[creditDate], override.creditClients) : [];
         } else if (["NL", "NT"].includes(a.customerType)) {
           staff = minutesByStaff(days[date], a.clientName);
         } else if ((creditDate = firstVisitWithin(days, date, a.clientName))) {
