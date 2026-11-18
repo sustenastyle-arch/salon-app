@@ -8,7 +8,7 @@ import * as XLSX from "xlsx";
 import ExcelJS from "exceljs";
 import { REFERRAL_SOURCES, getRetailItems, getStaffPurchaseItems, computeDayTotals } from "./lib/reportTotals.js";
 import { buildSalesReportEmail } from "./lib/salesReportEmail.js";
-import { computeTicketIncentives, describeSplit, periodHasCampaign } from "./lib/ticketIncentive.js";
+import { computeTicketIncentives, describeSplit, periodHasCampaign, FIRST_VISIT_WINDOW_DAYS } from "./lib/ticketIncentive.js";
 import { TICKET_PACKAGE_PRICES } from "./lib/ticketPrices.js";
 
 const THERAPISTS = ["Mami", "Aya", "Megumi", "Hiromi", "Maki", "Yuka", "Mai", "Betsy", "Mikiko", "Saori"];
@@ -6522,8 +6522,12 @@ function PayrollTab() {
     // staff member can check their own share from their own sheet.
     const hasIncentive = periodHasCampaign(start, end);
     if (hasIncentive) {
-      const periodDays = Object.fromEntries(Object.entries(days).filter(([d]) => d >= start && d <= end));
-      computeTicketIncentives(periodDays, start, end).sales.forEach(sale => {
+      // A client who buys within a month of their first visit is credited to that visit's staff,
+      // so the incentive also needs the days just before the period.
+      const lookbackD = new Date(start + "T12:00:00Z");
+      lookbackD.setUTCDate(lookbackD.getUTCDate() - FIRST_VISIT_WINDOW_DAYS);
+      const { days: earlierDays } = await apiFetch(`/api/day-data-range?start=${lookbackD.toISOString().slice(0, 10)}&end=${end}`);
+      computeTicketIncentives(earlierDays || {}, start, end).sales.forEach(sale => {
         sale.staff.forEach(x => {
           if (!byTherapist[x.t]) return;
           byTherapist[x.t].rows.push({

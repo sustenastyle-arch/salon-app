@@ -13,6 +13,18 @@ export const TICKET_INCENTIVE_CAMPAIGNS = [
   { start: "2026-11-01", end: "2026-11-30", rate: 0.05, label: "November 2026 new-client ticket incentive" },
 ];
 
+// Owner, 2026-11-17: a client who comes back and buys within a month of their first visit still
+// counts as a new-client sale, and the incentive goes to the staff of that FIRST visit (split by
+// their minutes that day), not to whoever treated them on the day they bought.
+export const FIRST_VISIT_WINDOW_DAYS = 30;
+
+// Sales the automatic rule can't see by itself, e.g. a couple sharing one ticket: credit the
+// minutes spent on all of `creditClients` on `creditDate`.
+export const TICKET_INCENTIVE_CREDITS = [
+  { date: "2026-11-17", client: "Matt Hickson", creditDate: "2026-10-27", creditClients: ["Matt Hickson", "Raychel Hamado"],
+    note: "couple sharing one IP-90-5 (Hiromi: Matt, Megumi: Raychel)" },
+];
+
 const n = (x) => Number(x || 0);
 const r2 = (x) => Math.round(x * 100) / 100;
 const norm = (s) => (s || "").toLowerCase().trim().replace(/\s+/g, " ");
@@ -60,9 +72,30 @@ export function minutesByStaff(day, clientName) {
   return Object.entries(staff).map(([t, parts]) => ({ t, parts, mins: parts.reduce((s, p) => s + p.mins, 0) }));
 }
 
+const addDays = (date, n) => { const d = new Date(date + "T12:00:00Z"); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
+
+// The day (within FIRST_VISIT_WINDOW_DAYS before `date`) this client came as a new client, or null.
+function firstVisitWithin(days, date, clientName) {
+  const client = norm(clientName), from = addDays(date, -FIRST_VISIT_WINDOW_DAYS);
+  return Object.keys(days).filter(d => d >= from && d < date).sort()
+    .find(d => (days[d]?.appointments || []).some(a => !a.isCavSlot && !a.isStaffPractice && norm(a.clientName) === client && ["NL", "NT"].includes(a.customerType))) || null;
+}
+
+// Combined minutes per staff member for several clients on one day.
+function minutesForClients(day, clients) {
+  const merged = {};
+  for (const c of clients) for (const x of minutesByStaff(day, c)) {
+    const m = (merged[x.t] ||= { t: x.t, parts: [], mins: 0 });
+    m.parts.push(...x.parts); m.mins += x.mins;
+  }
+  return Object.values(merged);
+}
+
 // Every ticket sale in [start, end] that falls inside a campaign, split per staff member.
-// `days` maps "YYYY-MM-DD" → that day's saved blob. Sales by repeat clients come back in
-// `excluded` (with the client's type) so a report can list what didn't count and why.
+// `days` maps "YYYY-MM-DD" → that day's saved blob, and should reach FIRST_VISIT_WINDOW_DAYS
+// before `start` so a return-within-a-month sale can find the first visit. Sales by repeat
+// clients come back in `excluded` (with the client's type) so a report can list what didn't
+// count and why. A sale credited to an earlier visit has `creditDate` (and `creditNote`).
 export function computeTicketIncentives(days, start, end) {
   const sales = [], excluded = [];
   for (const date of Object.keys(days).filter(d => d >= start && d <= end).sort()) {
@@ -71,15 +104,25 @@ export function computeTicketIncentives(days, start, end) {
     for (const a of days[date]?.appointments || []) {
       for (const sale of ticketSalesOf(a)) {
         const base = { date, client: (a.clientName || "").trim(), customerType: a.customerType || "", ...sale };
-        if (!["NL", "NT"].includes(a.customerType)) { excluded.push(base); continue; }
-        const staff = minutesByStaff(days[date], a.clientName);
+        const override = TICKET_INCENTIVE_CREDITS.find(o => o.date === date && norm(o.client) === norm(a.clientName));
+        let staff, creditDate = null, creditNote = "";
+        if (override) {
+          creditDate = override.creditDate; creditNote = override.note || "";
+          staff = days[creditDate] ? minutesForClients(days[creditDate], override.creditClients) : [];
+        } else if (["NL", "NT"].includes(a.customerType)) {
+          staff = minutesByStaff(days[date], a.clientName);
+        } else if ((creditDate = firstVisitWithin(days, date, a.clientName))) {
+          creditNote = `bought within ${FIRST_VISIT_WINDOW_DAYS} days of first visit`;
+          staff = minutesByStaff(days[creditDate], a.clientName);
+        } else { excluded.push(base); continue; }
+        if (!staff.length) { excluded.push({ ...base, creditDate, creditNote: `${creditNote} (no data for ${creditDate})` }); continue; }
         const totalMins = staff.reduce((s, x) => s + x.mins, 0);
         const pot = r2(sale.amount * campaign.rate);
         const shares = staff.map(x => ({ ...x, share: totalMins ? x.mins / totalMins : 1, amount: totalMins ? r2(pot * x.mins / totalMins) : pot }));
         // Put any rounding cent on the largest share so the shares add up to exactly `pot`.
         const diff = r2(pot - shares.reduce((s, x) => s + x.amount, 0));
         if (diff && shares.length) { const top = [...shares].sort((p, q) => q.mins - p.mins)[0]; top.amount = r2(top.amount + diff); }
-        sales.push({ ...base, rate: campaign.rate, pot, totalMins, staff: shares });
+        sales.push({ ...base, rate: campaign.rate, pot, totalMins, staff: shares, creditDate, creditNote });
       }
     }
   }
@@ -88,7 +131,8 @@ export function computeTicketIncentives(days, start, end) {
 
 // "Hiromi body 75 + Mikiko machine 15 of 90 min" style summary of how one sale was split.
 export function describeSplit(sale) {
-  if (sale.staff.length === 1) return `${sale.staff[0].t} alone (100%)`;
+  const from = sale.creditDate ? ` (first visit ${+sale.creditDate.slice(5, 7)}/${+sale.creditDate.slice(8, 10)}${sale.creditNote ? `: ${sale.creditNote}` : ""})` : "";
+  if (sale.staff.length === 1) return `${sale.staff[0].t} alone (100%)${from}`;
   const kind = (x) => x.parts.map(p => p.kind === "machine" || p.kind === "addonMachine" ? "machine" : p.kind === "body" ? "body" : p.name).join(" + ");
-  return `${sale.staff.map(x => `${x.t} ${kind(x)} ${x.mins}min`).join(" / ")} of ${sale.totalMins}min`;
+  return `${sale.staff.map(x => `${x.t} ${kind(x)} ${x.mins}min`).join(" / ")} of ${sale.totalMins}min${from}`;
 }

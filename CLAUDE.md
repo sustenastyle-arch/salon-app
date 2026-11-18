@@ -228,7 +228,11 @@ the script in sync with `THERAPISTS` / `CAV_CAPABLE` / `BODY_CAPABLE` / `DUAL_LI
 When a new client (`customerType` NL or NT) buys a ticket package, the staff get 5% of the
 package price after discounts, tips excluded. If several staff treated that client that day, the
 5% is split by each one's minutes across all of that client's cards that day (body, machine,
-facial, add-ons). The rule and the math live once in `src/lib/ticketIncentive.js`
+facial, add-ons). A client who comes back and buys within 30 days of their new-client visit
+still counts, and the 5% goes to the staff of that **first** visit, by their minutes that day,
+not to whoever treated them on the day they bought (owner, 2026-11-17). Cases the rule can't
+see, like a couple sharing one ticket, go in `TICKET_INCENTIVE_CREDITS`. Both callers must pass
+days reaching 30 days before the period. The rule and the math live once in `src/lib/ticketIncentive.js`
 (`TICKET_INCENTIVE_CAMPAIGNS` turns it on per date range). Two places use it:
 - `PayrollTab` adds one 🎫 row per sale to each staff member's payroll, with the split in
   Remarks, plus a Ticket Incentive column in the CSV and Excel. The column only appears for a
