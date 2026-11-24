@@ -257,8 +257,6 @@ const SQUARE_SERVICES = [
   { name: "Hot Stone", duration: 0 },
   { name: "Shaving 30min", duration: 30 },
   { name: "Head Massage 15min", duration: 15 },
-  { name: "Radio Frequency 10min", duration: 10 },
-  { name: "Radio Frequency 15min", duration: 15 },
   { name: "Hydro Diet 50min", duration: 50 },
   { name: "Added Massage 15min", duration: 15 },
   { name: "Added Massage 30min", duration: 30 },
