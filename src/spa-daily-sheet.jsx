@@ -902,7 +902,12 @@ export default function SpaDailySheet() {
           serviceName: b.serviceName || "",
           notes: b.notes || "",
           fromSquare: true,
-        }));
+        }))
+          // "Appointment Verification" ($0, 5 min) is an online-booking item that exists only so a
+          // client booked by phone can leave a card number; it's never a treatment, so it would
+          // just be an empty card with no staff (11/21/2026 Irin Mancao). Filtered after the map
+          // so the other bookings keep the same index-based ids as on earlier syncs.
+          .filter(a => !/^appointment verification$/i.test(a.serviceName.trim()));
 
         // Read the latest state via the ref, not the closure — a manual edit made while this
         // fetch was in flight would otherwise get silently overwritten/lost here.

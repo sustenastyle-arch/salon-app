@@ -107,7 +107,9 @@ it never undoes the lock.
 A day with any appointment card that has no amounts entered (price, tip, package and new-ticket
 amount all 0) can't be locked at all, and there is no PIN override. Such a card is a Square-synced
 booking that either someone forgot to enter or that was cancelled and left on the sheet, and it
-still counts as a client. The card has to be filled in or deleted.
+still counts as a client. The card has to be filled in or deleted. Square's "Appointment
+Verification" item ($0, 5 min) must stay bookable online, because phone clients book it to leave a
+card number. `fetchSquare` therefore never puts such a booking on the sheet.
 
 A day can only be locked once it matches Square (`checkSquareBeforeLock` in
 `spa-daily-sheet.jsx`): locking first calls `/api/square-payments` and requires all of
