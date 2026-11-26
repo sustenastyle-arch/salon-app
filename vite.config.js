@@ -431,6 +431,8 @@ function squareBookingsApi(env) {
     'TMwBMik2I8Xpyog2': 'Maki',
     'TMW8eccMtM4pdMiM': 'Hiromi',
     'TMHk1qR9eC5ww6WP': 'Mikiko',
+    'TMcjDqXaAD9DiqDx': 'Saori',
+    'TMesLDj3U4ecnoSa': 'Meggy',
   }
   // Same name-based fallback as api/square-bookings.js for staff not yet in TEAM_MEMBER_MAP.
   const KNOWN_STAFF = [...Object.values(TEAM_MEMBER_MAP), 'Saori']

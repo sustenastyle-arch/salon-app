@@ -11,7 +11,7 @@ import { buildSalesReportEmail } from "./lib/salesReportEmail.js";
 import { computeTicketIncentives, describeSplit, periodHasCampaign, FIRST_VISIT_WINDOW_DAYS } from "./lib/ticketIncentive.js";
 import { TICKET_PACKAGE_PRICES } from "./lib/ticketPrices.js";
 
-const THERAPISTS = ["Mami", "Aya", "Megumi", "Hiromi", "Maki", "Yuka", "Mai", "Betsy", "Mikiko", "Saori"];
+const THERAPISTS = ["Mami", "Aya", "Megumi", "Hiromi", "Maki", "Yuka", "Mai", "Betsy", "Mikiko", "Saori", "Meggy"];
 const CUSTOMER_TYPES = ["RL", "RT", "NL", "NT"];
 // Stored value stays "紹介" (already-saved appointments are matched against it by exact equality
 // in reporting) — this only translates it for display, same pattern as CUSTOMER_TYPE_LABELS below.
@@ -161,14 +161,14 @@ const ADDON_TICKET_MENU_OPTIONS = MENU_OPTIONS.flatMap(({ group, prefix, duratio
 ).filter(Boolean);
 
 // Staff capabilities
-const CAV_CAPABLE = ["Mami", "Betsy", "Megumi", "Yuka", "Mai", "Mikiko"]; // can operate machine
+const CAV_CAPABLE = ["Mami", "Betsy", "Megumi", "Yuka", "Mai", "Mikiko", "Meggy"]; // can operate machine
 const BODY_CAPABLE = ["Mami", "Betsy", "Megumi", "Aya", "Hiromi", "Mai", "Maki", "Mikiko", "Saori"]; // can do body massage
 const DUAL_LICENSE = ["Mami", "Betsy", "Megumi", "Mai", "Mikiko"]; // body + machine (handles both themselves)
-// Yuka: machine/facial only (no body massage)
+// Yuka, Meggy (Meggy Matsuyama, joined 2026-11): esthetician license only — machine/facial, no body massage
 // Saori (joined 2026-11-14): massage license only, no facials yet.
 const isCavCapable = (name) => CAV_CAPABLE.includes(name);
 const isDualLicense = (name) => DUAL_LICENSE.includes(name);
-const isBodyOnly = (name) => BODY_CAPABLE.includes(name) && !DUAL_LICENSE.includes(name) && name !== "Yuka";
+const isBodyOnly = (name) => BODY_CAPABLE.includes(name) && !DUAL_LICENSE.includes(name) && name !== "Yuka" && name !== "Meggy";
 
 const EMPTY_APPOINTMENT = {
   id: null,

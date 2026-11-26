@@ -24,8 +24,8 @@ const env = Object.fromEntries(fs.readFileSync(path.join(REPO_ROOT, ".env"), "ut
   .map(l => { const i = l.indexOf("="); return [l.slice(0, i).trim(), l.slice(i + 1).trim().replace(/^"|"$/g, "")]; }));
 
 // Keep in sync with THERAPISTS / CAV_CAPABLE / BODY_CAPABLE / DUAL_LICENSE in spa-daily-sheet.jsx.
-const THERAPISTS = ["Mami", "Aya", "Megumi", "Hiromi", "Maki", "Yuka", "Mai", "Betsy", "Mikiko", "Saori"];
-const CAV = ["Mami", "Betsy", "Megumi", "Yuka", "Mai", "Mikiko"];
+const THERAPISTS = ["Mami", "Aya", "Megumi", "Hiromi", "Maki", "Yuka", "Mai", "Betsy", "Mikiko", "Saori", "Meggy"];
+const CAV = ["Mami", "Betsy", "Megumi", "Yuka", "Mai", "Mikiko", "Meggy"];
 const BODY = ["Mami", "Betsy", "Megumi", "Aya", "Hiromi", "Mai", "Maki", "Mikiko", "Saori"];
 const DUAL = ["Mami", "Betsy", "Megumi", "Mai", "Mikiko"];
 // Square categories whose sales are retail (物販) or staff purchases (社販).

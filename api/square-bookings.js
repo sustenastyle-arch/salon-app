@@ -10,6 +10,8 @@ const TEAM_MEMBER_MAP = {
   'TMwBMik2I8Xpyog2': 'Maki',
   'TMW8eccMtM4pdMiM': 'Hiromi',
   'TMHk1qR9eC5ww6WP': 'Mikiko',
+  'TMcjDqXaAD9DiqDx': 'Saori',
+  'TMesLDj3U4ecnoSa': 'Meggy',
 };
 // Staff whose Square team member ID isn't in TEAM_MEMBER_MAP yet (e.g. a new hire) are
 // matched by their Square first name instead, so their bookings still sync with a therapist.
