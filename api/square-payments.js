@@ -150,7 +150,9 @@ export default async function handler(req, res) {
         const tipBreakdown = netTotal > 0
           ? [tipMoney, ...orderTipLineItems].filter(t => t > 0).map(t => Math.round(t * 100) / 100)
           : [];
-        const tender = p.source_type === 'CASH' ? 'cash' : 'card';
+        // An "Other payment type" (EXTERNAL) noted "Cash" is cash in the drawer (11/27/2026: $13.10
+        // of a gift card shortfall paid from a cash tip). Same rule in vite.config.js and payroll-audit.mjs.
+        const tender = (p.source_type === 'CASH' || (p.source_type === 'EXTERNAL' && /cash/i.test(p.note || ''))) ? 'cash' : 'card';
         if (tender === 'cash') {
           cashTotal += netTotal;
           cashTip += netTip;

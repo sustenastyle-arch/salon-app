@@ -112,7 +112,8 @@ async function squareDay(date) {
         }
       }
       if (net <= 0) tip = 0;
-      if (p.source_type === "CASH") { out.cashTotal += net; out.cashTip += tip; } else { out.cardTotal += net; out.cardTip += tip; }
+      // "Other payment type" noted "Cash" counts as cash — same as api/square-payments.js.
+      if (p.source_type === "CASH" || (p.source_type === "EXTERNAL" && /cash/i.test(p.note || ""))) { out.cashTotal += net; out.cashTip += tip; } else { out.cardTotal += net; out.cardTip += tip; }
       if (p.card_details?.card?.card_brand === "SQUARE_GIFT_CARD") { out.gcTotal += net; out.gcTip += tip; }
     }
     cursor = r.cursor;

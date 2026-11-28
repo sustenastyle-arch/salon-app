@@ -307,7 +307,8 @@ function squarePaymentsApi(env) {
               if (await ownsOrderTipLine(p)) tip += await getOrderTipLineItems(p.order_id)
               // A fully refunded payment kept no money at all, tip included.
               const netTip = netTotal > 0 ? tip : 0
-              const tender = p.source_type === 'CASH' ? 'cash' : 'card'
+              // "Other payment type" noted "Cash" counts as cash — same as api/square-payments.js.
+              const tender = (p.source_type === 'CASH' || (p.source_type === 'EXTERNAL' && /cash/i.test(p.note || ''))) ? 'cash' : 'card'
               if (tender === 'cash') {
                 cashTotal += netTotal
                 cashTip += netTip
