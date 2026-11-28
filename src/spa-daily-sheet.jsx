@@ -1006,7 +1006,8 @@ export default function SpaDailySheet() {
           tipPaymentType: "cash",
           appointmentDate: "",
           appointmentTime: "",
-          notes: `Auto-fetched from Square${a.createdAt ? ` (${a.createdAt})` : ""}`,
+          // amount = what was paid; the card's value differs during a gift card discount sale.
+          notes: `Auto-fetched from Square${a.createdAt ? ` (${a.createdAt})` : ""}${a.last4 ? ` · card …${a.last4}` : ""}${a.type === "LOAD" ? " · reload" : ""}${a.loadedAmount && a.loadedAmount !== a.amount ? ` · card value $${a.loadedAmount} (paid $${a.amount})` : ""}`,
         }));
       if (newDeposits.length === 0) {
         showToast(activities.length === 0 ? "No gift card purchases this day" : "Already up to date", "info");

@@ -2,6 +2,7 @@ import { defineConfig, loadEnv } from 'vite'
 import react from '@vitejs/plugin-react'
 import { getDay, setDay, getDaysInRange, getAllDayBlobs, setDays, checkAuth, saveAutoBackup, listAutoBackups, restoreAutoBackup } from './api/_lib/dayDataStore.js'
 import { createSalesReportDraftIfChanged } from './api/_lib/gmailDraft.js'
+import { fetchGiftCardSales } from './api/_lib/giftCardSales.js'
 
 function readJsonBody(req) {
   return new Promise((resolve, reject) => {
@@ -37,69 +38,14 @@ function squareGiftCardApi(env) {
             res.end(JSON.stringify({ error: 'date query param required (YYYY-MM-DD)' }))
             return
           }
-          // Hawaii is UTC-10, no DST
-          const beginTime = `${date}T00:00:00-10:00`
-          const next = new Date(`${date}T00:00:00Z`)
-          next.setUTCDate(next.getUTCDate() + 1)
-          const endTime = `${next.toISOString().slice(0, 10)}T00:00:00-10:00`
-
-          const params = new URLSearchParams({
-            location_id: locationId,
-            type: 'ACTIVATE',
-            begin_time: beginTime,
-            end_time: endTime,
-          })
-          const squareRes = await fetch(`https://connect.squareup.com/v2/gift-cards/activities?${params}`, {
-            headers: {
-              Authorization: `Bearer ${token}`,
-              'Square-Version': '2024-01-18',
-            },
-          })
-          const data = await squareRes.json()
-          if (!squareRes.ok) {
-            res.statusCode = squareRes.status
-            res.setHeader('Content-Type', 'application/json')
-            res.end(JSON.stringify({ error: 'Square API error', details: data }))
-            return
-          }
-
-          const activities = (data.gift_card_activities || []).map(a => {
-            const details = a.activate_activity_details || a.gift_card_activate_activity_details || {}
-            return {
-              id: a.id,
-              giftCardId: a.gift_card_id,
-              amount: (details.amount_money?.amount || 0) / 100,
-              createdAt: a.created_at,
-              orderId: details.order_id || null,
-            }
-          })
-
-          // Look up each order's actual tender (CASH vs CARD) — activations happen both
-          // in-person (POS, often cash) and online (checkout, always card), so the payment
-          // method can't be assumed. Cache by order_id since a few activations can share one.
-          const orderHeaders = { Authorization: `Bearer ${token}`, 'Square-Version': '2024-01-18' }
-          const tenderCache = {}
-          for (const act of activities) {
-            if (!act.orderId) { act.paymentType = 'card'; continue }
-            if (tenderCache[act.orderId] === undefined) {
-              try {
-                const orderRes = await fetch(`https://connect.squareup.com/v2/orders/${act.orderId}`, { headers: orderHeaders })
-                const orderData = await orderRes.json()
-                const tenderType = orderRes.ok ? orderData.order?.tenders?.[0]?.type : null
-                tenderCache[act.orderId] = tenderType === 'CASH' ? 'cash' : 'card'
-              } catch {
-                tenderCache[act.orderId] = 'card'
-              }
-            }
-            act.paymentType = tenderCache[act.orderId]
-          }
-
+          // Same logic as api/giftcard-activities.js (shared in api/_lib/giftCardSales.js).
+          const activities = await fetchGiftCardSales({ token, locationId, date })
           res.setHeader('Content-Type', 'application/json')
           res.end(JSON.stringify({ activities }))
         } catch (e) {
-          res.statusCode = 500
+          res.statusCode = e.status || 500
           res.setHeader('Content-Type', 'application/json')
-          res.end(JSON.stringify({ error: String(e) }))
+          res.end(JSON.stringify({ error: e.status ? 'Square API error' : String(e), details: e.details }))
         }
       })
     },
